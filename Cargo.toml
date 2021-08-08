@@ -1,0 +1,16 @@
+[package]
+name = "fork-observer"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+bitcoincore-rpc = { git = "https://github.com/rust-bitcoin/rust-bitcoincore-rpc", branch = "master" }
+sled = "0.34.6"
+byteorder = "1.4.3"
+zerocopy = "0.5.0"
+tokio = { version = "1", features = ["full"] }
+warp = "0.3"
+serde = "1.0.127"
