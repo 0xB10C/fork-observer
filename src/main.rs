@@ -135,8 +135,12 @@ async fn main() {
         Ok(config) => config,
         Err(e) => panic!("Could not load the configuration: {}", e),
     };
+    let sled_db: sled::Db = match sled::open(config.database_path.clone()) {
+        Ok(db) => db,
+        Err(e) => panic!("Could not open the database {:?}: {}", config.database_path, e),
+    };
+    let db: Db = Arc::new(Mutex::new(sled_db));
 
-    let db: Db = Arc::new(Mutex::new(sled::open(config.database_path).unwrap()));
     let rpc: Rpc = Arc::new(
         Client::new(
             &config.rpc_url,
