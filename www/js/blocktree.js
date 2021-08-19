@@ -1,9 +1,3 @@
-// set the dimensions and margins of the diagram
-var margin = { top: 0, right: 0, bottom: 0, left: 0 },
-  width = window.innerWidth - margin.left - margin.right,
-  height = window.innerHeight - margin.top - margin.bottom;
-
-
 const orientations = {
   "bottom-to-top": {
     nodeSize: [100, 75],
@@ -21,11 +15,7 @@ const orientations = {
 
 const o = orientations["bottom-to-top"];
 
-function gen_treemap(o, tips, unique_heights) {
-  return d3.tree().size([tips, unique_heights]).nodeSize(o.nodeSize);
-}
-
-status_to_color = {
+const status_to_color = {
   "active": "lime",
   "invalid": "fuchsia",
   "valid-fork": "cyan",
@@ -178,6 +168,10 @@ function findNextForkOrTip(node) {
       }
     }
   }
+}
+
+function gen_treemap(o, tips, unique_heights) {
+  return d3.tree().size([tips, unique_heights]).nodeSize(o.nodeSize);
 }
 
 const getBlocks = new Request('data.json');
