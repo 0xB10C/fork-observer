@@ -1,8 +1,12 @@
+const height = window.innerHeight - d3.select("body").node().getBoundingClientRect().height;
+const width = d3.select("body").node().getBoundingClientRect().width;
+
+
 const orientations = {
   "bottom-to-top": {
     nodeSize: [100, 75],
-    x: (d, _) => d.x,
-    y: (d, htoi) =>  height - htoi[d.data.data.block_height] * o.nodeSize[1],
+    x: (d, _) => (width/2) - d.x,
+    y: (d, htoi) => height - htoi[d.data.data.block_height] * o.nodeSize[1] - 30,
     linkDir: htoi => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
   },
   "left-to-right": {
@@ -68,7 +72,7 @@ function draw(data) {
   var svg = d3
     .select("#drawing-area")
     .attr("width", "100%")
-    .attr("height", window.innerHeight - d3.select("body").node().getBoundingClientRect().height)
+    .attr("height", height)
     .style("border", "1px solid")
 
   // appends a 'group' element to 'svg'
@@ -107,7 +111,7 @@ function draw(data) {
   // adds the rect to the node
   node
     .append("rect")
-    .attr("height", 50 )
+    .attr("height", 50)
     .attr("width", 50)
     .attr("fill", d => status_to_color[d.data.data.status])
     .attr("transform", "translate(-25, -25)")
