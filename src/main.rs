@@ -194,7 +194,7 @@ async fn sleepy(db: Db) -> Result<impl warp::Reply, Infallible> {
 async fn response(db: Db) -> JsonResponse {
 
     let start_key = BlockInfoKey::new(0, &BlockHash::default());
-    let end_key = BlockInfoKey::new(100, &BlockHash::default());
+    let end_key = BlockInfoKey::new(1000, &BlockHash::default());
 
     let mut block_infos = vec![];
 
