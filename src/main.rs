@@ -164,17 +164,19 @@ async fn main() {
         }
     });
 
+    println!("{:?}", config.www_path.join("index.html"));
+
     let index_html = warp::get()
         .and(warp::path::end())
-        .and(warp::fs::file("./www/index.html"));
+        .and(warp::fs::file(config.www_path.join("index.html")));
 
     let style_css = warp::get()
         .and(warp::path!("css" / "style.css"))
-        .and(warp::fs::file("./www/css/style.css"));
+        .and(warp::fs::file(config.www_path.join("css/style.css")));
 
     let blocktree_js = warp::get()
         .and(warp::path!("js" / "blocktree.js"))
-        .and(warp::fs::file("./www/js/blocktree.js"));
+        .and(warp::fs::file(config.www_path.join("js/blocktree.js")));
 
     let data_json = warp::get()
         .and(warp::path("data.json"))
