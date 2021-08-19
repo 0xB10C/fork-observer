@@ -162,20 +162,20 @@ async fn main() {
 
     let index_html = warp::get()
         .and(warp::path::end())
-        .and(warp::fs::file("./d3-blocktree/index.html"));
+        .and(warp::fs::file("./www/index.html"));
 
     let style_css = warp::get()
         .and(warp::path!("css" / "style.css"))
-        .and(warp::fs::file("./d3-blocktree/css/style.css"));
+        .and(warp::fs::file("./www/css/style.css"));
 
     let blocktree_js = warp::get()
         .and(warp::path!("js" / "blocktree.js"))
-        .and(warp::fs::file("./d3-blocktree/js/blocktree.js"));
+        .and(warp::fs::file("./www/js/blocktree.js"));
 
     let data_json = warp::get()
         .and(warp::path("data.json"))
         .and(with_db(db))
-        .and_then(sleepy);
+        .and_then(block_and_tip_info_response);
 
     let routes = index_html.or(blocktree_js).or(style_css).or(data_json);
 
@@ -186,12 +186,7 @@ fn with_db(db: Db) -> impl Filter<Extract = (Db,), Error = std::convert::Infalli
     warp::any().map(move || db.clone())
 }
 
-async fn sleepy(db: Db) -> Result<impl warp::Reply, Infallible> {
-    let r = response(db).await;
-    Ok(warp::reply::json(&r))
-}
-
-async fn response(db: Db) -> JsonResponse {
+async fn block_and_tip_info_response(db: Db) -> Result<impl warp::Reply, Infallible> {
 
     let start_key = BlockInfoKey::new(0, &BlockHash::default());
     let end_key = BlockInfoKey::new(1000, &BlockHash::default());
@@ -224,5 +219,6 @@ async fn response(db: Db) -> JsonResponse {
         tip_infos.push(TipInfoJson::new(tip_info));
     }
 
-    JsonResponse{tip_infos: tip_infos, block_infos: block_infos}
+
+    Ok(warp::reply::json(&JsonResponse{tip_infos: tip_infos, block_infos: block_infos}))
 }
