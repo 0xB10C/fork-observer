@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::convert::{TryInto};
+use std::convert::TryInto;
 use std::sync::Arc;
 
 // TODO: remove?
@@ -19,8 +19,9 @@ use bitcoincore_rpc::{Auth, Client, RpcApi};
 
 mod types;
 
-use types::{TipInfo, TipInfoJson, JsonResponse, TipInfoKey, BlockInfo, BlockInfoJson, BlockInfoKey};
-
+use types::{
+    BlockInfo, BlockInfoJson, BlockInfoKey, JsonResponse, TipInfo, TipInfoJson, TipInfoKey,
+};
 
 async fn get_tips(rpc: Rpc) -> GetChainTipsResult {
     let res = task::spawn_blocking(move || {
@@ -30,7 +31,11 @@ async fn get_tips(rpc: Rpc) -> GetChainTipsResult {
     res.unwrap()
 }
 
-async fn write_to_db(db_adds: &HashSet<(BlockInfoKey, BlockInfo)>, tips: &GetChainTipsResult, db: Db) {
+async fn write_to_db(
+    db_adds: &HashSet<(BlockInfoKey, BlockInfo)>,
+    tips: &GetChainTipsResult,
+    db: Db,
+) {
     let mut batch = sled::Batch::default();
     for (k, v) in db_adds.iter() {
         batch.insert(k.as_bytes(), v.as_bytes());
@@ -42,16 +47,18 @@ async fn write_to_db(db_adds: &HashSet<(BlockInfoKey, BlockInfo)>, tips: &GetCha
         .await
         .range(TipInfoKey::new(&BlockHash::default()).as_bytes()..)
     {
-        let (k,_) = kv_option.unwrap();
+        let (k, _) = kv_option.unwrap();
         batch.remove(k);
     }
 
     for tip in tips.iter() {
-        batch.insert(TipInfoKey::new(&tip.hash).as_bytes(), TipInfo::new(&tip).as_bytes());
+        batch.insert(
+            TipInfoKey::new(&tip.hash).as_bytes(),
+            TipInfo::new(&tip).as_bytes(),
+        );
     }
 
     db.lock().await.apply_batch(batch).unwrap();
-
 }
 
 async fn process_tips(
@@ -64,7 +71,6 @@ async fn process_tips(
     let min_height = tips.iter().min_by_key(|tip| tip.height).unwrap().height;
     let scan_start_height = std::cmp::max(min_height as i64 - 3, 0);
 
-
     let active_tip = tips
         .iter()
         .filter(|tip| tip.status == GetChainTipsResultStatus::Active)
@@ -73,17 +79,12 @@ async fn process_tips(
     if !known_tips.contains(&active_tip.hash) {
         let mut next_header = active_tip.hash;
         for i in 0..=(active_tip.height as i64 - scan_start_height) {
-
             if known_tips.contains(&next_header) {
                 break;
             }
 
-            let header = rpc
-                .get_block_header(&next_header)
-                .unwrap();
-
+            let header = rpc.get_block_header(&next_header).unwrap();
             let key = BlockInfoKey::new(active_tip.height - i as u64, &header.block_hash());
-
             let header_bytes = bitcoincore_rpc::bitcoin::consensus::serialize(&header);
             let value = BlockInfo {
                 height: U64::new(active_tip.height - i as u64),
@@ -106,13 +107,8 @@ async fn process_tips(
                     break;
                 }
 
-                let header = rpc
-                    .get_block_header(&next_header)
-                    .unwrap();
-
-
+                let header = rpc.get_block_header(&next_header).unwrap();
                 let key = BlockInfoKey::new(inactiv_tip.height - i as u64, &header.block_hash());
-
                 let header_bytes = bitcoincore_rpc::bitcoin::consensus::serialize(&header);
                 let value = BlockInfo {
                     height: U64::new(inactiv_tip.height - i as u64),
@@ -137,10 +133,7 @@ async fn main() {
     let rpc: Rpc = Arc::new(
         Client::new(
             "http://127.0.0.1:38332",
-            Auth::UserPass(
-                "__cookie__".to_string(),
-                "".to_string(),
-            ),
+            Auth::UserPass("__cookie__".to_string(), "".to_string()),
         )
         .unwrap(),
     );
@@ -187,7 +180,6 @@ fn with_db(db: Db) -> impl Filter<Extract = (Db,), Error = std::convert::Infalli
 }
 
 async fn block_and_tip_info_response(db: Db) -> Result<impl warp::Reply, Infallible> {
-
     let start_key = BlockInfoKey::new(0, &BlockHash::default());
     let end_key = BlockInfoKey::new(1000, &BlockHash::default());
 
@@ -219,6 +211,8 @@ async fn block_and_tip_info_response(db: Db) -> Result<impl warp::Reply, Infalli
         tip_infos.push(TipInfoJson::new(tip_info));
     }
 
-
-    Ok(warp::reply::json(&JsonResponse{tip_infos: tip_infos, block_infos: block_infos}))
+    Ok(warp::reply::json(&JsonResponse {
+        tip_infos: tip_infos,
+        block_infos: block_infos,
+    }))
 }

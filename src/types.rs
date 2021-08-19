@@ -1,13 +1,11 @@
-
-use std::convert::{TryInto, TryFrom};
-use byteorder::{BigEndian, LittleEndian};
-use zerocopy::{byteorder::U128, byteorder::U64, AsBytes, FromBytes, Unaligned};
-use serde::Serialize;
-use bitcoincore_rpc::json::{ GetChainTipsResultTip, GetChainTipsResultStatus};
 use bitcoincore_rpc::bitcoin::hash_types::BlockHash;
-use bitcoincore_rpc::bitcoin::BlockHeader;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
-
+use bitcoincore_rpc::bitcoin::BlockHeader;
+use bitcoincore_rpc::json::{GetChainTipsResultStatus, GetChainTipsResultTip};
+use byteorder::{BigEndian, LittleEndian};
+use serde::Serialize;
+use std::convert::{TryFrom, TryInto};
+use zerocopy::{byteorder::U128, byteorder::U64, AsBytes, FromBytes, Unaligned};
 
 pub const PREFIX_BLOCKINFO: u8 = b'b';
 pub const PREFIX_TIPINFO: u8 = b't';
@@ -25,7 +23,7 @@ impl From<GetChainTipsResultStatus> for TipStatus {
     fn from(status: GetChainTipsResultStatus) -> Self {
         match status {
             GetChainTipsResultStatus::Active => TipStatus::Active,
-            GetChainTipsResultStatus::HeadersOnly => TipStatus::HeadersOnly ,
+            GetChainTipsResultStatus::HeadersOnly => TipStatus::HeadersOnly,
             GetChainTipsResultStatus::Invalid => TipStatus::Invalid,
             GetChainTipsResultStatus::ValidFork => TipStatus::ValidFork,
             GetChainTipsResultStatus::ValidHeaders => TipStatus::ValidHeaders,
@@ -39,11 +37,11 @@ impl TryFrom<u8> for TipStatus {
     fn try_from(status: u8) -> Result<Self, Self::Error> {
         match status {
             b'a' => Ok(TipStatus::Active),
-            b'h' => Ok(TipStatus::HeadersOnly) ,
+            b'h' => Ok(TipStatus::HeadersOnly),
             b'i' => Ok(TipStatus::Invalid),
             b'f' => Ok(TipStatus::ValidFork),
             b'p' => Ok(TipStatus::ValidHeaders),
-            _ => Err("Invalid TipStatus")
+            _ => Err("Invalid TipStatus"),
         }
     }
 }
@@ -60,7 +58,6 @@ impl Into<u8> for TipStatus {
     }
 }
 
-
 impl ToString for TipStatus {
     fn to_string(&self) -> String {
         match self {
@@ -73,8 +70,6 @@ impl ToString for TipStatus {
     }
 }
 
-
-
 #[derive(FromBytes, AsBytes, Unaligned, Eq, Hash, PartialEq)]
 #[repr(C)]
 pub struct BlockInfoKey {
@@ -85,10 +80,13 @@ pub struct BlockInfoKey {
 
 impl BlockInfoKey {
     pub fn new(height: u64, block_hash: &BlockHash) -> BlockInfoKey {
-        BlockInfoKey{prefix: PREFIX_BLOCKINFO, height: U64::new(height), hash_part: U128::new(short_hash(&block_hash))}
+        BlockInfoKey {
+            prefix: PREFIX_BLOCKINFO,
+            height: U64::new(height),
+            hash_part: U128::new(short_hash(&block_hash)),
+        }
     }
 }
-
 
 #[derive(FromBytes, AsBytes, Unaligned, Debug, Eq, Hash, PartialEq)]
 #[repr(C)]
@@ -106,7 +104,10 @@ pub struct TipInfoKey {
 
 impl TipInfoKey {
     pub fn new(block_hash: &BlockHash) -> TipInfoKey {
-        TipInfoKey{prefix: PREFIX_TIPINFO, hash_part: U128::new(short_hash(&block_hash))}
+        TipInfoKey {
+            prefix: PREFIX_TIPINFO,
+            hash_part: U128::new(short_hash(&block_hash)),
+        }
     }
 }
 
@@ -120,10 +121,13 @@ pub struct TipInfo {
 
 impl TipInfo {
     pub fn new(tip: &GetChainTipsResultTip) -> TipInfo {
-        TipInfo{height: U64::new(tip.height), hash: tip.hash[0..32].try_into().unwrap(), status: TipStatus::from(tip.status).into()}
+        TipInfo {
+            height: U64::new(tip.height),
+            hash: tip.hash[0..32].try_into().unwrap(),
+            status: TipStatus::from(tip.status).into(),
+        }
     }
 }
-
 
 #[derive(Serialize)]
 pub struct BlockInfoJson {
@@ -162,18 +166,16 @@ impl TipInfoJson {
         TipInfoJson {
             block_height: u64::from(tip_info.height),
             hash: block_hash.to_string(),
-            status: TipStatus::try_from(tip_info.status).unwrap().to_string()
+            status: TipStatus::try_from(tip_info.status).unwrap().to_string(),
         }
     }
 }
-
 
 #[derive(Serialize)]
 pub struct JsonResponse {
     pub block_infos: Vec<BlockInfoJson>,
     pub tip_infos: Vec<TipInfoJson>,
 }
-
 
 fn short_hash(hash: &BlockHash) -> u128 {
     assert_eq!(hash.len(), 32);
