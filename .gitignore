@@ -9,4 +9,4 @@
 # Added by cargo
 /target
 
-./config.toml
+config.toml
