@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::sync::Arc;
+use std::cmp::max;
 
 // TODO: remove?
 use std::convert::Infallible;
@@ -15,9 +16,10 @@ use zerocopy::{byteorder::U64, AsBytes, LayoutVerified};
 
 use bitcoincore_rpc::bitcoin::hash_types::BlockHash;
 use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus};
-use bitcoincore_rpc::{Auth, Client, RpcApi};
+use bitcoincore_rpc::{Client, RpcApi};
 
 mod types;
+mod config;
 
 use types::{
     BlockInfo, BlockInfoJson, BlockInfoKey, JsonResponse, TipInfo, TipInfoJson, TipInfoKey,
@@ -69,7 +71,7 @@ async fn process_tips(
     let mut db_adds: HashSet<(BlockInfoKey, BlockInfo)> = HashSet::new();
 
     let min_height = tips.iter().min_by_key(|tip| tip.height).unwrap().height;
-    let scan_start_height = std::cmp::max(min_height as i64 - 3, 0);
+    let scan_start_height = max(min_height as i64 - 5, 0);
 
     let active_tip = tips
         .iter()
@@ -102,7 +104,7 @@ async fn process_tips(
     {
         if !known_tips.contains(&inactiv_tip.hash) {
             let mut next_header = inactiv_tip.hash;
-            for i in 0..=inactiv_tip.branch_length {
+            for i in 0..=inactiv_tip.branch_length + 1 {
                 if known_tips.contains(&next_header) {
                     break;
                 }
@@ -129,16 +131,21 @@ type Rpc = Arc<Client>;
 
 #[tokio::main]
 async fn main() {
-    let db: Db = Arc::new(Mutex::new(sled::open("my_db").unwrap()));
+    let config = match config::load_config() {
+        Ok(config) => config,
+        Err(e) => panic!("Could not load the configuration: {}", e),
+    };
+
+    let db: Db = Arc::new(Mutex::new(sled::open(config.database_path).unwrap()));
     let rpc: Rpc = Arc::new(
         Client::new(
-            "http://127.0.0.1:38332",
-            Auth::UserPass("__cookie__".to_string(), "".to_string()),
+            &config.rpc_url,
+            config.rpc_auth,
         )
         .unwrap(),
     );
 
-    let mut interval = time::interval(time::Duration::from_secs(10));
+    let mut interval = time::interval(config.query_interval);
 
     let db_write = db.clone();
     task::spawn(async move {
