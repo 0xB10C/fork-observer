@@ -5,15 +5,15 @@ const width = d3.select("body").node().getBoundingClientRect().width;
 const orientations = {
   "bottom-to-top": {
     nodeSize: [100, 75],
-    x: (d, _) => (width/2) - d.x,
-    y: (d, htoi) => height - htoi[d.data.data.block_height] * o.nodeSize[1] - 30,
-    linkDir: htoi => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
+    x: (d, _, offset = 0) => (width/2) - d.x + offset,
+    y: (d, htoi, offset = 0) => height - htoi[d.data.data.block_height] * o.nodeSize[1] - 30 + offset,
+    linkDir: (htoi, offset_x, offset_y) => d3.linkVertical().x(d => o.x(d, htoi, offset_x)).y(d => o.y(d, htoi, offset_y)),
   },
   "left-to-right": {
     nodeSize: [100, 75],
-    x: (d, htoi) => htoi[d.data.data.block_height] * o.nodeSize[1],
-    y: (d, _) => d.x,
-    linkDir: htoi => d3.linkHorizontal().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
+    x: (d, htoi, offset = 0) => htoi[d.data.data.block_height] * o.nodeSize[1] + offset,
+    y: (d, _, offset = 0) => d.x + offset,
+    linkDir: (htoi, offset_x, offset_y) => d3.linkHorizontal().x(d => o.x(d, htoi, offset_x)).y(d => o.y(d, htoi, offset_y)),
   }
 };
 
@@ -75,6 +75,10 @@ function draw(data) {
     .attr("height", height)
     .style("border", "1px solid")
 
+  let active_tip = root_node.leaves().filter(d => d.data.data.status == "active")[0]
+  let offset_x = active_tip.x;
+  let offset_y = active_tip.y;
+
   // appends a 'group' element to 'svg'
   // moves the 'group' element to the top left margin
   var g = svg
@@ -89,13 +93,13 @@ function draw(data) {
 
   links.append("path")
     .attr("class", "link")
-    .attr("d", o.linkDir(htoi))
+    .attr("d", o.linkDir(htoi, offset_x, offset_y))
 
   links
     .filter(d => d.target.data.data.block_height - d.source.data.data.block_height != 1)
     .append("text")
-    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
-    .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2))
+    .attr("x", d => o.x(d.target, htoi, offset_x) - ((o.x(d.target, htoi, offset_x) - o.x(d.source, htoi, offset_x))/2))
+    .attr("y", d => o.y(d.target, htoi, offset_y) - ((o.y(d.target, htoi, offset_y) - o.y(d.source, htoi, offset_y))/2))
     .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1) + " blocks hidden" )
 
 
@@ -106,7 +110,7 @@ function draw(data) {
     .enter()
     .append("g")
     .attr("class", d => "node" + (d.children ? " node--internal" : " node--leaf"))
-    .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")");
+    .attr("transform", d => "translate(" + o.x(d, htoi, offset_x) + "," + o.y(d, htoi, offset_y) + ")");
 
   // adds the rect to the node
   node
@@ -138,7 +142,7 @@ function draw(data) {
     .text(d => "status: " + d.data.data.status);
 
   // enables zoom and panning
-  svg.call(d3.zoom().scaleExtent([0.5, 3]).on("zoom", e => g.attr("transform", e.transform)));
+  svg.call(d3.zoom().scaleExtent([0.5, 3]).on("zoom", e => {console.log(e); g.attr("transform", e.transform)}));
 }
 
 // recursivly collapses linear branches of blocks longer than x,
