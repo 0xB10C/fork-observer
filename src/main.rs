@@ -185,7 +185,7 @@ async fn main() {
 
     let routes = index_html.or(blocktree_js).or(style_css).or(data_json);
 
-    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    warp::serve(routes).run(config.address).await;
 }
 
 fn with_db(db: Db) -> impl Filter<Extract = (Db,), Error = std::convert::Infallible> + Clone {

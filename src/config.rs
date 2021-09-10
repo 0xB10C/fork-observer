@@ -2,10 +2,11 @@
 use std::path::PathBuf;
 use std::{env, error, fmt, fs, io};
 use std::time::Duration;
+use std::net::{SocketAddr, AddrParseError};
+use std::str::FromStr;
 
 use bitcoincore_rpc::Auth;
 use serde::{Deserialize};
-
 
 const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
@@ -17,6 +18,7 @@ struct TomlConfig {
     rpc_cookie_file: Option<PathBuf>,
     rpc_user: Option<String>,
     rpc_password: Option<String>,
+    address: String,
     database_path: String,
     www_path: String,
     query_interval: u64,
@@ -28,6 +30,7 @@ pub struct Config {
     pub database_path: PathBuf,
     pub www_path: PathBuf,
     pub query_interval: Duration,
+    pub address: SocketAddr,
 }
 
 pub fn load_config() -> Result<Config, ConfigError> {
@@ -58,6 +61,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
         database_path: PathBuf::from(config.database_path),
         www_path: PathBuf::from(config.www_path),
         query_interval: Duration::from_secs(config.query_interval),
+        address: SocketAddr::from_str(&config.address)?,
     });
 }
 
@@ -68,6 +72,7 @@ pub enum ConfigError {
     NoRpcAuth,
     TomlError(toml::de::Error),
     ReadError(io::Error),
+    AddrError(AddrParseError),
 }
 
 impl fmt::Display for ConfigError {
@@ -77,6 +82,7 @@ impl fmt::Display for ConfigError {
             ConfigError::NoRpcAuth => write!(f, "please specify a Bitcoin Core RPC .cookie file (option: 'rpc_cookie_file') or a rpc_user and rpc_password"),
             ConfigError::TomlError(e) => write!(f, "the TOML in the configuration file could not be parsed: {}", e),
             ConfigError::ReadError(e) => write!(f, "the configuration file could not be read: {}", e),
+            ConfigError::AddrError(e) => write!(f, "the address could not be parsed: {}", e),
         }
     }
 }
@@ -88,6 +94,7 @@ impl error::Error for ConfigError {
             ConfigError::CookieFileDoesNotExist => None,
             ConfigError::TomlError(ref e) => Some(e),
             ConfigError::ReadError(ref e) => Some(e),
+            ConfigError::AddrError(ref e) => Some(e),
         }
     }
 }
@@ -101,5 +108,11 @@ impl From<io::Error> for ConfigError {
 impl From<toml::de::Error> for ConfigError {
     fn from(err: toml::de::Error) -> ConfigError {
         ConfigError::TomlError(err)
+    }
+}
+
+impl From<AddrParseError> for ConfigError {
+    fn from(err: AddrParseError) -> ConfigError {
+        ConfigError::AddrError(err)
     }
 }
