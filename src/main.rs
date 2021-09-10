@@ -164,8 +164,6 @@ async fn main() {
         }
     });
 
-    println!("{:?}", config.www_path.join("index.html"));
-
     let index_html = warp::get()
         .and(warp::path::end())
         .and(warp::fs::file(config.www_path.join("index.html")));
