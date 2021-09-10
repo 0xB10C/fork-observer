@@ -23,6 +23,7 @@ const status_to_color = {
   "active": "lime",
   "invalid": "fuchsia",
   "valid-fork": "cyan",
+  "valid-headers": "red",
   "in-chain": "lightgray",
   "headers-only": "yellow",
 }
