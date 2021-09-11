@@ -191,8 +191,8 @@ fn with_db(db: Db) -> impl Filter<Extract = (Db,), Error = std::convert::Infalli
 }
 
 async fn block_and_tip_info_response(db: Db) -> Result<impl warp::Reply, Infallible> {
-    let start_key = BlockInfoKey::new(0, &BlockHash::default());
-    let end_key = BlockInfoKey::new(1000, &BlockHash::default());
+    let start_key = BlockInfoKey::new(u64::MIN, &BlockHash::default());
+    let end_key = BlockInfoKey::new(u64::MAX, &BlockHash::default());
 
     let mut block_infos = vec![];
 
