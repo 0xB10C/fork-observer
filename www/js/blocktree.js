@@ -76,10 +76,14 @@ function draw(data) {
     .attr("height", height)
     .style("border", "1px solid")
 
+  let offset_x = 0;
+  let offset_y = 0;
   let active_tip = root_node.leaves().filter(d => d.data.data.status == "active")[0]
-  let offset_x = active_tip.x;
-  let offset_y = active_tip.y;
-
+  if (active_tip !== undefined) {
+    offset_x = active_tip.x;
+    offset_y = active_tip.y;
+  }
+  
   // appends a 'group' element to 'svg'
   // moves the 'group' element to the top left margin
   var g = svg
