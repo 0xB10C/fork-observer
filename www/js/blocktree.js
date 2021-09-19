@@ -1,23 +1,24 @@
-const height = window.innerHeight - d3.select("body").node().getBoundingClientRect().height;
-const width = d3.select("body").node().getBoundingClientRect().width;
+const svgheight = window.innerHeight - d3.select("body").node().getBoundingClientRect().height;
+const svgwidth = d3.select("body").node().getBoundingClientRect().width;
 
+const getBlocks = new Request('data.json');
 
 const orientations = {
   "bottom-to-top": {
-    nodeSize: [100, 75],
-    x: (d, _, offset = 0) => (width/2) - d.x + offset,
-    y: (d, htoi, offset = 0) => height - htoi[d.data.data.block_height] * o.nodeSize[1] - 30 + offset,
-    linkDir: (htoi, offset_x, offset_y) => d3.linkVertical().x(d => o.x(d, htoi, offset_x)).y(d => o.y(d, htoi, offset_y)),
+    nodeSize: [100, 100],
+    x: (d, _, __) => d.x,
+    y: (d, htoi, max_index) => -(htoi[d.data.data.block_height] - max_index) * o.nodeSize[1] + (svgheight * 1/5 ),
+    linkDir: (htoi, max_index) => d3.linkVertical().x(d => o.x(d, htoi, max_index)).y(d => o.y(d, htoi, max_index)),
   },
   "left-to-right": {
-    nodeSize: [100, 75],
-    x: (d, htoi, offset = 0) => htoi[d.data.data.block_height] * o.nodeSize[1] + offset,
-    y: (d, _, offset = 0) => d.x + offset,
-    linkDir: (htoi, offset_x, offset_y) => d3.linkHorizontal().x(d => o.x(d, htoi, offset_x)).y(d => o.y(d, htoi, offset_y)),
-  }
+    nodeSize: [100, 100],
+    x: (d, htoi, max_index) => (htoi[d.data.data.block_height] - max_index) * o.nodeSize[1] + (svgwidth * 4/5),
+    y: (d, _, __) => d.x,
+    linkDir: (htoi, max_index) => d3.linkHorizontal().x(d => o.x(d, htoi, max_index)).y(d => o.y(d, htoi, max_index)),
+  },
 };
 
-const o = orientations["bottom-to-top"];
+let o = orientations["left-to-right"];
 
 const status_to_color = {
   "active": "lime",
@@ -73,19 +74,14 @@ function draw(data) {
   var svg = d3
     .select("#drawing-area")
     .attr("width", "100%")
-    .attr("height", height)
+    .attr("height", svgheight)
     .style("border", "1px solid")
 
-  let offset_x = 0;
-  let offset_y = 0;
-  let active_tip = root_node.leaves().filter(d => d.data.data.status == "active")[0]
-  if (active_tip !== undefined) {
-    offset_x = active_tip.x;
-    offset_y = active_tip.y;
-  }
-  
-  // appends a 'group' element to 'svg'
-  // moves the 'group' element to the top left margin
+  svg.selectAll("*").remove()
+
+  let max_index = Math.max(...Object.values(htoi))
+
+  // append a 'group' element to 'svg' and
   var g = svg
       .append("g")
       .attr("transform", "translate(0, 0)");
@@ -98,15 +94,14 @@ function draw(data) {
 
   links.append("path")
     .attr("class", "link")
-    .attr("d", o.linkDir(htoi, offset_x, offset_y))
+    .attr("d", o.linkDir(htoi, max_index))
 
   links
     .filter(d => d.target.data.data.block_height - d.source.data.data.block_height != 1)
     .append("text")
-    .attr("x", d => o.x(d.target, htoi, offset_x) - ((o.x(d.target, htoi, offset_x) - o.x(d.source, htoi, offset_x))/2))
-    .attr("y", d => o.y(d.target, htoi, offset_y) - ((o.y(d.target, htoi, offset_y) - o.y(d.source, htoi, offset_y))/2))
+    .attr("x", d => o.x(d.target, htoi, max_index) - ((o.x(d.target, htoi, max_index) - o.x(d.source, htoi, max_index))/2))
+    .attr("y", d => o.y(d.target, htoi, max_index) - ((o.y(d.target, htoi, max_index) - o.y(d.source, htoi, max_index))/2))
     .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1) + " blocks hidden" )
-
 
   // adds each node as a group
   var node = g
@@ -115,7 +110,7 @@ function draw(data) {
     .enter()
     .append("g")
     .attr("class", d => "node" + (d.children ? " node--internal" : " node--leaf"))
-    .attr("transform", d => "translate(" + o.x(d, htoi, offset_x) + "," + o.y(d, htoi, offset_y) + ")");
+    .attr("transform", d => "translate(" + o.x(d, htoi, max_index) + "," + o.y(d, htoi, max_index) + ")");
 
   // adds the rect to the node
   node
@@ -126,7 +121,7 @@ function draw(data) {
     .attr("transform", "translate(-25, -25)")
     .style("cursor", "pointer")
     .on("mouseover", (c, d, e) => {
-      d3.select("#block_info").text(JSON.stringify(d.data.data, null, 2))
+      d3.select("#block_info").text(JSON.stringify([d.data.data, d.x, d.y], null, 2))
     })
 
   // adds the text to the node
@@ -147,7 +142,7 @@ function draw(data) {
     .text(d => "status: " + d.data.data.status);
 
   // enables zoom and panning
-  svg.call(d3.zoom().scaleExtent([0.5, 3]).on("zoom", e => {console.log(e); g.attr("transform", e.transform)}));
+  svg.call(d3.zoom().scaleExtent([0.05, 3]).on("zoom", e => g.attr("transform", e.transform) ));
 }
 
 // recursivly collapses linear branches of blocks longer than x,
@@ -187,10 +182,20 @@ function gen_treemap(o, tips, unique_heights) {
   return d3.tree().size([tips, unique_heights]).nodeSize(o.nodeSize);
 }
 
-const getBlocks = new Request('data.json');
-fetch(getBlocks)
-  .then(response => response.json())
-  .then(data => {
-    draw(data)
-  })
-  .catch(console.error);
+async function fetch_and_draw() {
+  fetch(getBlocks)
+    .then(response => response.json())
+    .then(data => draw(data))
+    .catch(console.error);
+} 
+
+let orientationSelect = d3.select("#orientation")
+
+orientationSelect.on("input", function() {
+  o = orientations[this.value]
+  fetch_and_draw()
+})
+
+o = orientations[orientationSelect.node().value]
+
+fetch_and_draw()
