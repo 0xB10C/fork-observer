@@ -3,18 +3,18 @@ const svgwidth = d3.select("body").node().getBoundingClientRect().width;
 
 const getBlocks = new Request('data.json');
 
+const NODE_SIZE = 100
+
 const orientations = {
   "bottom-to-top": {
-    nodeSize: [100, 100],
-    x: (d, _, __) => d.x,
-    y: (d, htoi, max_index) => -(htoi[d.data.data.block_height] - max_index) * o.nodeSize[1] + (svgheight * 1/5 ),
-    linkDir: (htoi, max_index) => d3.linkVertical().x(d => o.x(d, htoi, max_index)).y(d => o.y(d, htoi, max_index)),
+    x: (d, _) => d.x,
+    y: (d, htoi) => -htoi[d.data.data.block_height] * NODE_SIZE,
+    linkDir: (htoi) => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
   },
   "left-to-right": {
-    nodeSize: [100, 100],
-    x: (d, htoi, max_index) => (htoi[d.data.data.block_height] - max_index) * o.nodeSize[1] + (svgwidth * 4/5),
-    y: (d, _, __) => d.x,
-    linkDir: (htoi, max_index) => d3.linkHorizontal().x(d => o.x(d, htoi, max_index)).y(d => o.y(d, htoi, max_index)),
+    x: (d, htoi) => htoi[d.data.data.block_height] * NODE_SIZE,
+    y: (d, _) => d.x,
+    linkDir: (htoi) => d3.linkHorizontal().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
   },
 };
 
@@ -79,8 +79,6 @@ function draw(data) {
 
   svg.selectAll("*").remove()
 
-  let max_index = Math.max(...Object.values(htoi))
-
   // append a 'group' element to 'svg' and
   var g = svg
       .append("g")
@@ -94,13 +92,13 @@ function draw(data) {
 
   links.append("path")
     .attr("class", "link")
-    .attr("d", o.linkDir(htoi, max_index))
+    .attr("d", o.linkDir(htoi))
 
   links
     .filter(d => d.target.data.data.block_height - d.source.data.data.block_height != 1)
     .append("text")
-    .attr("x", d => o.x(d.target, htoi, max_index) - ((o.x(d.target, htoi, max_index) - o.x(d.source, htoi, max_index))/2))
-    .attr("y", d => o.y(d.target, htoi, max_index) - ((o.y(d.target, htoi, max_index) - o.y(d.source, htoi, max_index))/2))
+    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
+    .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2))
     .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1) + " blocks hidden" )
 
   // adds each node as a group
@@ -110,7 +108,7 @@ function draw(data) {
     .enter()
     .append("g")
     .attr("class", d => "node" + (d.children ? " node--internal" : " node--leaf"))
-    .attr("transform", d => "translate(" + o.x(d, htoi, max_index) + "," + o.y(d, htoi, max_index) + ")");
+    .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")");
 
   // adds the rect to the node
   node
@@ -121,7 +119,7 @@ function draw(data) {
     .attr("transform", "translate(-25, -25)")
     .style("cursor", "pointer")
     .on("mouseover", (c, d, e) => {
-      d3.select("#block_info").text(JSON.stringify([d.data.data, d.x, d.y], null, 2))
+      d3.select("#block_info").text(JSON.stringify([d.data.data, o.x(d, htoi), o.y(d, htoi)], null, 2))
     })
 
   // adds the text to the node
@@ -141,8 +139,18 @@ function draw(data) {
     .attr("font-size", "1px")
     .text(d => "status: " + d.data.data.status);
 
+  let offset_x = 0;
+  let offset_y = 0;
+  let active_tip = root_node.leaves().filter(d => d.data.data.status == "active")[0]
+  if (active_tip !== undefined) {
+    offset_x = o.x(active_tip, htoi);
+    offset_y = o.y(active_tip, htoi);
+  }
+  
   // enables zoom and panning
-  svg.call(d3.zoom().scaleExtent([0.05, 3]).on("zoom", e => g.attr("transform", e.transform) ));
+  const zoom = d3.zoom().scaleExtent([0.5, 1.5]).on( "zoom", e => g.attr("transform", e.transform) )
+  svg.call(zoom)
+  zoom.translateTo(svg, offset_x, offset_y, [svgwidth/2,svgheight/2]); 
 }
 
 // recursivly collapses linear branches of blocks longer than x,
@@ -179,8 +187,9 @@ function findNextForkOrTip(node) {
 }
 
 function gen_treemap(o, tips, unique_heights) {
-  return d3.tree().size([tips, unique_heights]).nodeSize(o.nodeSize);
+  return d3.tree().size([tips, unique_heights]).nodeSize([NODE_SIZE, NODE_SIZE]);
 }
+
 
 async function fetch_and_draw() {
   fetch(getBlocks)
