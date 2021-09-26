@@ -1,7 +1,7 @@
+use std::cmp::max;
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::sync::Arc;
-use std::cmp::max;
 
 // TODO: remove?
 use std::convert::Infallible;
@@ -18,8 +18,8 @@ use bitcoincore_rpc::bitcoin::hash_types::BlockHash;
 use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus};
 use bitcoincore_rpc::{Client, RpcApi};
 
-mod types;
 mod config;
+mod types;
 
 use types::{
     BlockInfo, BlockInfoJson, BlockInfoKey, JsonResponse, TipInfo, TipInfoJson, TipInfoKey,
@@ -135,34 +135,45 @@ async fn main() {
         Ok(config) => config,
         Err(e) => panic!("Could not load the configuration: {}", e),
     };
+
+    if config.networks.is_empty() {
+        panic!("No networks and nodes defined in the configuration.");
+    }
+
     let sled_db: sled::Db = match sled::open(config.database_path.clone()) {
         Ok(db) => db,
-        Err(e) => panic!("Could not open the database {:?}: {}", config.database_path, e),
+        Err(e) => panic!(
+            "Could not open the database {:?}: {}",
+            config.database_path, e
+        ),
     };
     let db: Db = Arc::new(Mutex::new(sled_db));
 
-    let rpc: Rpc = Arc::new(
-        Client::new(
-            &config.rpc_url,
-            config.rpc_auth,
-        )
-        .unwrap(),
-    );
+    for network in config.networks.iter() {
+        println!(
+            "Network {} with {} nodes",
+            network.name,
+            network.nodes.len()
+        );
 
-    let mut interval = time::interval(config.query_interval);
+        for node in network.nodes.iter() {
+            let rpc: Rpc = Arc::new(Client::new(&node.rpc_url, node.rpc_auth.clone()).unwrap());
+            let mut interval = time::interval(config.query_interval);
 
-    let db_write = db.clone();
-    task::spawn(async move {
-        let mut known_tips: HashSet<BlockHash> = HashSet::new();
-        loop {
-            let db_write = db_write.clone();
-            let tips = get_tips(rpc.clone()).await;
-            let db_adds = process_tips(&tips, &known_tips, rpc.clone()).await;
-            write_to_db(&db_adds, &tips, db_write).await;
-            known_tips = tips.iter().map(|tip| tip.hash).collect();
-            interval.tick().await;
-        }
-    });
+            let db_write = db.clone();
+            task::spawn(async move {
+                let mut known_tips: HashSet<BlockHash> = HashSet::new();
+                loop {
+                    let db_write = db_write.clone();
+                    let tips = get_tips(rpc.clone()).await;
+                    let db_adds = process_tips(&tips, &known_tips, rpc.clone()).await;
+                    write_to_db(&db_adds, &tips, db_write).await;
+                    known_tips = tips.iter().map(|tip| tip.hash).collect();
+                    interval.tick().await;
+                }
+            });
+        };
+    };
 
     let index_html = warp::get()
         .and(warp::path::end())

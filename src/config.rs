@@ -1,36 +1,78 @@
-
+use std::net::{AddrParseError, SocketAddr};
 use std::path::PathBuf;
-use std::{env, error, fmt, fs, io};
-use std::time::Duration;
-use std::net::{SocketAddr, AddrParseError};
 use std::str::FromStr;
+use std::time::Duration;
+use std::{env, error, fmt, fs, io};
 
 use bitcoincore_rpc::Auth;
-use serde::{Deserialize};
+use serde::Deserialize;
 
 const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
 
 #[derive(Deserialize)]
 struct TomlConfig {
+    address: String,
+    database_path: String,
+    www_path: String,
+    query_interval: u64,
+    networks: Vec<TomlNetwork>,
+}
+
+pub struct Config {
+    pub database_path: PathBuf,
+    pub www_path: PathBuf,
+    pub query_interval: Duration,
+    pub address: SocketAddr,
+    pub networks: Vec<Network>,
+}
+
+#[derive(Deserialize)]
+struct TomlNetwork {
+    description: String,
+    name: String,
+    nodes: Vec<TomlNode>,
+}
+
+pub struct Network {
+    pub description: String,
+    pub name: String,
+    pub nodes: Vec<Node>,
+}
+
+#[derive(Deserialize)]
+struct TomlNode {
+    description: String,
+    name: String,
     rpc_host: String,
     rpc_port: u16,
     rpc_cookie_file: Option<PathBuf>,
     rpc_user: Option<String>,
     rpc_password: Option<String>,
-    address: String,
-    database_path: String,
-    www_path: String,
-    query_interval: u64,
 }
 
-pub struct Config {
+pub struct Node {
+    pub description: String,
+    pub name: String,
     pub rpc_url: String,
     pub rpc_auth: Auth,
-    pub database_path: PathBuf,
-    pub www_path: PathBuf,
-    pub query_interval: Duration,
-    pub address: SocketAddr,
+}
+
+fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
+    if node_config.rpc_cookie_file.is_some() {
+        if let Some(rpc_cookie_file) = node_config.rpc_cookie_file.clone() {
+            if !rpc_cookie_file.exists() {
+                return Err(ConfigError::CookieFileDoesNotExist);
+            }
+            return Ok(Auth::CookieFile(rpc_cookie_file));
+        }
+    } else if let (Some(user), Some(password)) = (
+        node_config.rpc_user.clone(),
+        node_config.rpc_password.clone(),
+    ) {
+        return Ok(Auth::UserPass(user, password));
+    }
+    return Err(ConfigError::NoRpcAuth);
 }
 
 pub fn load_config() -> Result<Config, ConfigError> {
@@ -38,33 +80,33 @@ pub fn load_config() -> Result<Config, ConfigError> {
         env::var(ENVVAR_CONFIG_FILE).unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
     println!("Reading configuration file from {}.", config_file_path);
     let config_string = fs::read_to_string(config_file_path)?;
-    let config: TomlConfig = toml::from_str(&config_string)?;
-
-    let rpc_auth: Auth;
-    if config.rpc_cookie_file.is_some() {
-        let rpc_cookie_file = config.rpc_cookie_file.unwrap();
-
-        if !rpc_cookie_file.exists() {
-            return Err(ConfigError::CookieFileDoesNotExist);
-        }
-
-        rpc_auth = Auth::CookieFile(rpc_cookie_file);
-    } else if config.rpc_user.is_some() && config.rpc_password.is_some() {
-        rpc_auth = Auth::UserPass(config.rpc_user.unwrap(), config.rpc_password.unwrap());
-    } else {
-        return Err(ConfigError::NoRpcAuth);
-    }
+    let toml_config: TomlConfig = toml::from_str(&config_string)?;
 
     return Ok(Config {
-        rpc_url: format!("{}:{}", config.rpc_host, config.rpc_port.to_string()),
-        rpc_auth,
-        database_path: PathBuf::from(config.database_path),
-        www_path: PathBuf::from(config.www_path),
-        query_interval: Duration::from_secs(config.query_interval),
-        address: SocketAddr::from_str(&config.address)?,
+        database_path: PathBuf::from(toml_config.database_path),
+        www_path: PathBuf::from(toml_config.www_path),
+        query_interval: Duration::from_secs(toml_config.query_interval),
+        address: SocketAddr::from_str(&toml_config.address)?,
+        networks: toml_config
+            .networks
+            .iter()
+            .map(|network| Network {
+                name: network.name.clone(),
+                description: network.description.clone(),
+                nodes: network
+                    .nodes
+                    .iter()
+                    .map(|node| Node {
+                        name: node.name.clone(),
+                        description: node.description.clone(),
+                        rpc_url: format!("{}:{}", node.rpc_host, node.rpc_port.to_string()),
+                        rpc_auth: parse_rpc_auth(node).unwrap(),
+                    })
+                    .collect(),
+            })
+            .collect(),
     });
 }
-
 
 #[derive(Debug)]
 pub enum ConfigError {
