@@ -1,0 +1,22 @@
+# fork-observer configuration file
+
+# Database path of the key value store. Will be created if non-existing.
+database_path = "example_db_dir"
+
+# path to the location of the static www files
+www_path = "./www"
+
+# Interval for checking for new blocks
+query_interval = 10
+
+# Webserver listen address
+address = "localhost:2323"
+
+
+
+# rpc_cookie_file = "~/.bitcoin/.cookie"
+rpc_host = "localhost"
+rpc_port = 8332
+rpc_user = "FIXME:"
+rpc_password = "FIXME:"
+
