@@ -3,9 +3,10 @@ use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::BlockHeader;
 use bitcoincore_rpc::json::{GetChainTipsResultStatus, GetChainTipsResultTip};
 use byteorder::{BigEndian, LittleEndian};
-use serde::Serialize;
-use std::convert::{TryFrom, TryInto};
+use serde::{Deserialize, Serialize};
 use zerocopy::{byteorder::U128, byteorder::U64, AsBytes, FromBytes, Unaligned};
+
+use std::convert::{TryFrom, TryInto};
 
 pub const PREFIX_BLOCKINFO: u8 = b'b';
 pub const PREFIX_TIPINFO: u8 = b't';
@@ -99,13 +100,17 @@ pub struct BlockInfo {
 #[repr(C)]
 pub struct TipInfoKey {
     prefix: u8,
+    network_id: U64<BigEndian>,
+    node_id: U64<BigEndian>,
     hash_part: U128<BigEndian>,
 }
 
 impl TipInfoKey {
-    pub fn new(block_hash: &BlockHash) -> TipInfoKey {
+    pub fn new(block_hash: &BlockHash, network_id: u64, node_id: u64) -> TipInfoKey {
         TipInfoKey {
             prefix: PREFIX_TIPINFO,
+            network_id: U64::new(network_id),
+            node_id: U64::new(node_id),
             hash_part: U128::new(short_hash(&block_hash)),
         }
     }
@@ -169,6 +174,11 @@ impl TipInfoJson {
             status: TipStatus::try_from(tip_info.status).unwrap().to_string(),
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct DataQuery {
+    pub network: u64,
 }
 
 #[derive(Serialize)]

@@ -2,7 +2,6 @@ use std::cmp::max;
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::sync::Arc;
-
 // TODO: remove?
 use std::convert::Infallible;
 
@@ -22,8 +21,11 @@ mod config;
 mod types;
 
 use types::{
-    BlockInfo, BlockInfoJson, BlockInfoKey, JsonResponse, TipInfo, TipInfoJson, TipInfoKey,
+    BlockInfo, BlockInfoJson, BlockInfoKey, DataQuery, JsonResponse, TipInfo, TipInfoJson,
+    TipInfoKey,
 };
+
+use config::{Network, Node};
 
 async fn get_tips(rpc: Rpc) -> GetChainTipsResult {
     let res = task::spawn_blocking(move || {
@@ -37,25 +39,25 @@ async fn write_to_db(
     db_adds: &HashSet<(BlockInfoKey, BlockInfo)>,
     tips: &GetChainTipsResult,
     db: Db,
+    network: &Network,
+    node: &Node,
 ) {
     let mut batch = sled::Batch::default();
     for (k, v) in db_adds.iter() {
         batch.insert(k.as_bytes(), v.as_bytes());
     }
 
-    // remove data about all tips from the db
-    for kv_option in db
-        .lock()
-        .await
-        .range(TipInfoKey::new(&BlockHash::default()).as_bytes()..)
-    {
+    // remove the tip data for this node from the db
+    for kv_option in db.lock().await.range(
+        TipInfoKey::new(&BlockHash::default(), network.calc_hash(), node.calc_hash()).as_bytes()..,
+    ) {
         let (k, _) = kv_option.unwrap();
         batch.remove(k);
     }
 
     for tip in tips.iter() {
         batch.insert(
-            TipInfoKey::new(&tip.hash).as_bytes(),
+            TipInfoKey::new(&tip.hash, network.calc_hash(), node.calc_hash()).as_bytes(),
             TipInfo::new(&tip).as_bytes(),
         );
     }
@@ -131,7 +133,7 @@ type Rpc = Arc<Client>;
 
 #[tokio::main]
 async fn main() {
-    let config = match config::load_config() {
+    let config: config::Config = match config::load_config() {
         Ok(config) => config,
         Err(e) => panic!("Could not load the configuration: {}", e),
     };
@@ -149,31 +151,37 @@ async fn main() {
     };
     let db: Db = Arc::new(Mutex::new(sled_db));
 
-    for network in config.networks.iter() {
+    for network in config.networks.iter().cloned() {
         println!(
             "Network {} with {} nodes",
             network.name,
             network.nodes.len()
         );
 
-        for node in network.nodes.iter() {
+        for node in network.nodes.iter().cloned() {
             let rpc: Rpc = Arc::new(Client::new(&node.rpc_url, node.rpc_auth.clone()).unwrap());
             let mut interval = time::interval(config.query_interval);
-
             let db_write = db.clone();
+            let network_cloned = network.clone();
             task::spawn(async move {
                 let mut known_tips: HashSet<BlockHash> = HashSet::new();
                 loop {
                     let db_write = db_write.clone();
                     let tips = get_tips(rpc.clone()).await;
                     let db_adds = process_tips(&tips, &known_tips, rpc.clone()).await;
-                    write_to_db(&db_adds, &tips, db_write).await;
+                    write_to_db(&db_adds, &tips, db_write, &network_cloned.clone(), &node).await;
                     known_tips = tips.iter().map(|tip| tip.hash).collect();
+                    println!(
+                        "Node {} on network {} has {} tips",
+                        node.name,
+                        network_cloned.name,
+                        tips.len()
+                    );
                     interval.tick().await;
                 }
             });
-        };
-    };
+        }
+    }
 
     let index_html = warp::get()
         .and(warp::path::end())
@@ -190,6 +198,7 @@ async fn main() {
     let data_json = warp::get()
         .and(warp::path("data.json"))
         .and(with_db(db))
+        .and(warp::query::<DataQuery>())
         .and_then(block_and_tip_info_response);
 
     let routes = index_html.or(blocktree_js).or(style_css).or(data_json);
@@ -201,7 +210,10 @@ fn with_db(db: Db) -> impl Filter<Extract = (Db,), Error = std::convert::Infalli
     warp::any().map(move || db.clone())
 }
 
-async fn block_and_tip_info_response(db: Db) -> Result<impl warp::Reply, Infallible> {
+async fn block_and_tip_info_response(
+    db: Db,
+    query: DataQuery,
+) -> Result<impl warp::Reply, Infallible> {
     let start_key = BlockInfoKey::new(u64::MIN, &BlockHash::default());
     let end_key = BlockInfoKey::new(u64::MAX, &BlockHash::default());
 
@@ -224,7 +236,7 @@ async fn block_and_tip_info_response(db: Db) -> Result<impl warp::Reply, Infalli
     for kv_option in db
         .lock()
         .await
-        .range(TipInfoKey::new(&BlockHash::default()).as_bytes()..)
+        .range(TipInfoKey::new(&BlockHash::default(), query.network, 0).as_bytes()..)
     {
         let (_, v_bytes) = kv_option.unwrap();
         let layout: LayoutVerified<&[u8], TipInfo> =

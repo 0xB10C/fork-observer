@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::net::{AddrParseError, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -19,6 +21,7 @@ struct TomlConfig {
     networks: Vec<TomlNetwork>,
 }
 
+#[derive(Clone)]
 pub struct Config {
     pub database_path: PathBuf,
     pub www_path: PathBuf,
@@ -34,10 +37,19 @@ struct TomlNetwork {
     nodes: Vec<TomlNode>,
 }
 
+#[derive(Hash, Clone)]
 pub struct Network {
     pub description: String,
     pub name: String,
     pub nodes: Vec<Node>,
+}
+
+impl Network {
+    pub fn calc_hash(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -51,11 +63,20 @@ struct TomlNode {
     rpc_password: Option<String>,
 }
 
+#[derive(Hash, Clone)]
 pub struct Node {
     pub description: String,
     pub name: String,
     pub rpc_url: String,
     pub rpc_auth: Auth,
+}
+
+impl Node {
+    pub fn calc_hash(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.hash(&mut s);
+        s.finish()
+    }
 }
 
 fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
