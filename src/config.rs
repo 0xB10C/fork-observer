@@ -32,28 +32,23 @@ pub struct Config {
 
 #[derive(Deserialize)]
 struct TomlNetwork {
-    description: String,
+    id: u32,
     name: String,
+    description: String,
     nodes: Vec<TomlNode>,
 }
 
 #[derive(Hash, Clone)]
 pub struct Network {
+    pub id: u32,
     pub description: String,
     pub name: String,
     pub nodes: Vec<Node>,
 }
 
-impl Network {
-    pub fn calc_hash(&self) -> u64 {
-        let mut s = DefaultHasher::new();
-        self.hash(&mut s);
-        s.finish()
-    }
-}
-
 #[derive(Deserialize)]
 struct TomlNode {
+    id: u8,
     description: String,
     name: String,
     rpc_host: String,
@@ -65,18 +60,11 @@ struct TomlNode {
 
 #[derive(Hash, Clone)]
 pub struct Node {
+    pub id: u8,
     pub description: String,
     pub name: String,
     pub rpc_url: String,
     pub rpc_auth: Auth,
-}
-
-impl Node {
-    pub fn calc_hash(&self) -> u64 {
-        let mut s = DefaultHasher::new();
-        self.hash(&mut s);
-        s.finish()
-    }
 }
 
 fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
@@ -112,12 +100,14 @@ pub fn load_config() -> Result<Config, ConfigError> {
             .networks
             .iter()
             .map(|network| Network {
+                id: network.id,
                 name: network.name.clone(),
                 description: network.description.clone(),
                 nodes: network
                     .nodes
                     .iter()
                     .map(|node| Node {
+                        id: node.id,
                         name: node.name.clone(),
                         description: node.description.clone(),
                         rpc_url: format!("{}:{}", node.rpc_host, node.rpc_port.to_string()),

@@ -21,8 +21,9 @@ mod config;
 mod types;
 
 use types::{
-    BlockInfo, BlockInfoJson, BlockInfoKey, DataQuery, JsonResponse, TipInfo, TipInfoJson,
-    TipInfoKey,
+    BlockInfo, BlockInfoJson, BlockInfoKey, DataJsonResponse, DataQuery, NetworkInfo,
+    NetworkInfoKey, NetworkJson, NetworksJsonResponse, NodeInfo, NodeInfoKey, NodeJson, TipInfo,
+    TipInfoJson, TipInfoKey, ValueError,
 };
 
 use config::{Network, Node};
@@ -39,36 +40,90 @@ async fn write_to_db(
     db_adds: &HashSet<(BlockInfoKey, BlockInfo)>,
     tips: &GetChainTipsResult,
     db: Db,
-    network: &Network,
-    node: &Node,
+    network_id: u32,
+    node_id: u8,
 ) {
     let mut batch = sled::Batch::default();
+
+    println!(
+        "DEBUG: write to db: db_adds={}, tips={}",
+        db_adds.len(),
+        tips.len()
+    );
+
+    // insert blocks
     for (k, v) in db_adds.iter() {
+        println!(
+            "DEBUG: inserting block for net={} at height={}",
+            k.network, k.height
+        );
         batch.insert(k.as_bytes(), v.as_bytes());
     }
 
     // remove the tip data for this node from the db
     for kv_option in db.lock().await.range(
-        TipInfoKey::new(&BlockHash::default(), network.calc_hash(), node.calc_hash()).as_bytes()..,
+        TipInfoKey::new(network_id, &BlockHash::default()).as_bytes()
+            ..TipInfoKey::new(network_id, &types::max_block_hash()).as_bytes(),
     ) {
         let (k, _) = kv_option.unwrap();
+        println!("DEBUG: removing tip");
         batch.remove(k);
     }
 
+    // insert tips
     for tip in tips.iter() {
         batch.insert(
-            TipInfoKey::new(&tip.hash, network.calc_hash(), node.calc_hash()).as_bytes(),
-            TipInfo::new(&tip).as_bytes(),
+            TipInfoKey::new(network_id, &tip.hash).as_bytes(),
+            TipInfo::new(&tip, node_id).as_bytes(),
         );
     }
 
     db.lock().await.apply_batch(batch).unwrap();
 }
 
+async fn replace_networks_and_nodes_in_db(
+    networks: Vec<Network>,
+    db: &Db,
+) -> Result<(), ValueError> {
+    let mut batch = sled::Batch::default();
+
+    // remove all networks from the db
+    for kv_option in db.lock().await.range(NetworkInfoKey::new(0).as_bytes()..) {
+        let (k, _) = kv_option.unwrap();
+        batch.remove(k);
+    }
+
+    // remove all nodes from the db
+    for kv_option in db.lock().await.range(
+        NodeInfoKey::new(u32::MIN, u8::MIN).as_bytes()
+            ..NodeInfoKey::new(u32::MAX, u8::MAX).as_bytes(),
+    ) {
+        let (k, _) = kv_option.unwrap();
+        batch.remove(k);
+    }
+
+    for network in networks.iter() {
+        batch.insert(
+            NetworkInfoKey::new(network.id).as_bytes(),
+            NetworkInfo::new(network.id, &network.name, &network.description)?.as_bytes(),
+        );
+        for node in network.nodes.iter() {
+            batch.insert(
+                NodeInfoKey::new(network.id, node.id).as_bytes(),
+                NodeInfo::new(node.id, &node.name, &node.description)?.as_bytes(),
+            );
+        }
+    }
+
+    db.lock().await.apply_batch(batch).unwrap();
+    Ok(())
+}
+
 async fn process_tips(
     tips: &GetChainTipsResult,
     known_tips: &HashSet<BlockHash>,
     rpc: Arc<Client>,
+    network_id: u32,
 ) -> HashSet<(BlockInfoKey, BlockInfo)> {
     let mut db_adds: HashSet<(BlockInfoKey, BlockInfo)> = HashSet::new();
 
@@ -88,7 +143,12 @@ async fn process_tips(
             }
 
             let header = rpc.get_block_header(&next_header).unwrap();
-            let key = BlockInfoKey::new(active_tip.height - i as u64, &header.block_hash());
+            println!("DEBUG: got block header {}", next_header);
+            let key = BlockInfoKey::new(
+                active_tip.height - i as u64,
+                &header.block_hash(),
+                network_id,
+            );
             let header_bytes = bitcoincore_rpc::bitcoin::consensus::serialize(&header);
             let value = BlockInfo {
                 height: U64::new(active_tip.height - i as u64),
@@ -112,7 +172,12 @@ async fn process_tips(
                 }
 
                 let header = rpc.get_block_header(&next_header).unwrap();
-                let key = BlockInfoKey::new(inactiv_tip.height - i as u64, &header.block_hash());
+                println!("DEBUG: got block header {}", next_header);
+                let key = BlockInfoKey::new(
+                    inactiv_tip.height - i as u64,
+                    &header.block_hash(),
+                    network_id,
+                );
                 let header_bytes = bitcoincore_rpc::bitcoin::consensus::serialize(&header);
                 let value = BlockInfo {
                     height: U64::new(inactiv_tip.height - i as u64),
@@ -151,6 +216,13 @@ async fn main() {
     };
     let db: Db = Arc::new(Mutex::new(sled_db));
 
+    if let Err(e) = replace_networks_and_nodes_in_db(config.networks.clone(), &db).await {
+        panic!(
+            "Could not update the information about networks in the db: {}",
+            e
+        )
+    }
+
     for network in config.networks.iter().cloned() {
         println!(
             "Network {} with {} nodes",
@@ -164,12 +236,23 @@ async fn main() {
             let db_write = db.clone();
             let network_cloned = network.clone();
             task::spawn(async move {
+                println!("DEBUG: Task for node {} spawned", node.name);
                 let mut known_tips: HashSet<BlockHash> = HashSet::new();
                 loop {
+                    println!("DEBUG: in loop for node {}", node.name);
                     let db_write = db_write.clone();
+                    println!("DEBUG: pre gettips {}", node.name);
                     let tips = get_tips(rpc.clone()).await;
-                    let db_adds = process_tips(&tips, &known_tips, rpc.clone()).await;
-                    write_to_db(&db_adds, &tips, db_write, &network_cloned.clone(), &node).await;
+                    println!("DEBUG: pre process_tips {}", node.name);
+                    let db_adds =
+                        process_tips(&tips, &known_tips, rpc.clone(), network_cloned.id).await;
+                    println!(
+                        "DEBUG: pre-write-to-db {}, dbadds={}",
+                        node.name,
+                        db_adds.len()
+                    );
+                    write_to_db(&db_adds, &tips, db_write, network_cloned.id, node.id).await;
+                    println!("DEBUG: post-write-to-db {}", node.name);
                     known_tips = tips.iter().map(|tip| tip.hash).collect();
                     println!(
                         "Node {} on network {} has {} tips",
@@ -197,11 +280,20 @@ async fn main() {
 
     let data_json = warp::get()
         .and(warp::path("data.json"))
-        .and(with_db(db))
+        .and(with_db(db.clone()))
         .and(warp::query::<DataQuery>())
-        .and_then(block_and_tip_info_response);
+        .and_then(data_response);
 
-    let routes = index_html.or(blocktree_js).or(style_css).or(data_json);
+    let networks_json = warp::get()
+        .and(warp::path("networks.json"))
+        .and(with_db(db.clone()))
+        .and_then(networks_response);
+
+    let routes = index_html
+        .or(blocktree_js)
+        .or(style_css)
+        .or(data_json)
+        .or(networks_json);
 
     warp::serve(routes).run(config.address).await;
 }
@@ -210,12 +302,13 @@ fn with_db(db: Db) -> impl Filter<Extract = (Db,), Error = std::convert::Infalli
     warp::any().map(move || db.clone())
 }
 
-async fn block_and_tip_info_response(
-    db: Db,
-    query: DataQuery,
-) -> Result<impl warp::Reply, Infallible> {
-    let start_key = BlockInfoKey::new(u64::MIN, &BlockHash::default());
-    let end_key = BlockInfoKey::new(u64::MAX, &BlockHash::default());
+async fn data_response(db: Db, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
+    let network: u32 = query.network;
+
+    let start_key = BlockInfoKey::new(u64::MIN, &BlockHash::default(), network);
+    let end_key = BlockInfoKey::new(u64::MAX, &types::max_block_hash(), network);
+
+    println!("DEBUG: Preparing DATA response for network {}", network);
 
     let mut block_infos = vec![];
 
@@ -229,24 +322,69 @@ async fn block_and_tip_info_response(
             LayoutVerified::new_unaligned(&*v_bytes).expect("bytes do not fit schema");
         let block_info: &BlockInfo = layout.into_ref();
         block_infos.push(BlockInfoJson::new(block_info));
+        println!("BlockInfo pushed {}", block_info.height);
     }
 
     let mut tip_infos = vec![];
 
-    for kv_option in db
-        .lock()
-        .await
-        .range(TipInfoKey::new(&BlockHash::default(), query.network, 0).as_bytes()..)
-    {
-        let (_, v_bytes) = kv_option.unwrap();
+    for kv_option in db.lock().await.range(
+        TipInfoKey::new(network, &BlockHash::default()).as_bytes()
+            ..TipInfoKey::new(network, &types::max_block_hash()).as_bytes(),
+    ) {
+        let (k_bytes, v_bytes) = kv_option.unwrap();
+        let keylayout: LayoutVerified<&[u8], TipInfoKey> =
+            LayoutVerified::new_unaligned(&*k_bytes).expect("bytes do not fit schema");
         let layout: LayoutVerified<&[u8], TipInfo> =
             LayoutVerified::new_unaligned(&*v_bytes).expect("bytes do not fit schema");
         let tip_info: &TipInfo = layout.into_ref();
+        let tip_infokey: &TipInfoKey = keylayout.into_ref();
+        println!("Network {}", tip_infokey.network);
         tip_infos.push(TipInfoJson::new(tip_info));
     }
 
-    Ok(warp::reply::json(&JsonResponse {
+    let nodes: Vec<NodeJson> = db
+        .lock()
+        .await
+        .range(
+            NodeInfoKey::new(network, u8::MIN).as_bytes()
+                ..NodeInfoKey::new(network, u8::MAX).as_bytes(),
+        )
+        .map(|kv_option| {
+            let (_, v_bytes) = kv_option.unwrap();
+            let layout: LayoutVerified<&[u8], NodeInfo> =
+                LayoutVerified::new_unaligned(&*v_bytes).expect("bytes do not fit schema");
+            let node_info: &NodeInfo = layout.into_ref();
+            NodeJson::new(node_info)
+        })
+        .collect();
+
+    Ok(warp::reply::json(&DataJsonResponse {
         tip_infos: tip_infos,
         block_infos: block_infos,
+        nodes,
+    }))
+}
+
+async fn networks_response(db: Db) -> Result<impl warp::Reply, Infallible> {
+    let start_key = NetworkInfoKey::new(u32::MIN);
+    let end_key = NetworkInfoKey::new(u32::MAX);
+
+    let mut network_infos = vec![];
+
+    for kv_option in db
+        .lock()
+        .await
+        .range(start_key.as_bytes()..end_key.as_bytes())
+    {
+        let (_, v_bytes) = kv_option.unwrap();
+        println!("v bytes len {}", v_bytes.len());
+        let layout: LayoutVerified<&[u8], NetworkInfo> =
+            LayoutVerified::new_unaligned(&*v_bytes).expect("bytes do not fit schema");
+        let network_info: &NetworkInfo = layout.into_ref();
+        network_infos.push(NetworkJson::new(network_info));
+    }
+
+    Ok(warp::reply::json(&NetworksJsonResponse {
+        networks: network_infos,
     }))
 }
