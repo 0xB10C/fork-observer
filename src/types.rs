@@ -263,15 +263,17 @@ pub struct BlockInfo {
 #[repr(C)]
 pub struct TipInfoKey {
     prefix: u8,
-    pub network: U32<BigEndian>, // TODO: pub only for debugging
+    network: U32<BigEndian>,
+    node: u8,
     hash_part: U128<BigEndian>,
 }
 
 impl TipInfoKey {
-    pub fn new(network_id: u32, block_hash: &BlockHash) -> TipInfoKey {
+    pub fn new(network: u32, node: u8, block_hash: &BlockHash) -> TipInfoKey {
         TipInfoKey {
             prefix: PREFIX_TIPINFO,
-            network: U32::new(network_id),
+            network: U32::new(network),
+            node,
             hash_part: U128::new(short_hash(&block_hash)),
         }
     }

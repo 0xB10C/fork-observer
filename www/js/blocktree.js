@@ -1,9 +1,12 @@
 const svgheight = window.innerHeight - d3.select("body").node().getBoundingClientRect().height;
 const svgwidth = d3.select("body").node().getBoundingClientRect().width;
 
-const getBlocks = new Request('data.json');
+const getNetworks = new Request('networks.json');
 
 const NODE_SIZE = 100
+
+const orientationSelect = d3.select("#orientation")
+const networkSelect = d3.select("#network")
 
 const orientations = {
   "bottom-to-top": {
@@ -29,14 +32,23 @@ const status_to_color = {
   "headers-only": "yellow",
 }
 
-function draw(data) {
+var state_selected_network_id = 0
+var state_networks = []
+var state_data = {}
 
+function draw() {
+  data = state_data
+  
   let block_infos = data.block_infos;
   let tip_infos = data.tip_infos;
 
-  hash_to_tipstatus = {};
+  hash_to_tipstatus = {}
   tip_infos.forEach(tip => {
-    hash_to_tipstatus[tip.hash] = tip.status;
+   if (tip.hash in hash_to_tipstatus) {
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+   } else {
+     hash_to_tipstatus[tip.hash] = [ { status: tip.status, node: tip.node } ]
+   }
   });
 
   block_infos.forEach(block_info => {
@@ -101,50 +113,59 @@ function draw(data) {
     .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2))
     .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1) + " blocks hidden" )
 
-  // adds each node as a group
-  var node = g
-    .selectAll(".node")
+  // adds each block as a group
+  var blocks = g
+    .selectAll(".block")
     .data(root_node.descendants())
     .enter()
     .append("g")
-    .attr("class", d => "node" + (d.children ? " node--internal" : " node--leaf"))
+    .attr("class", d => "block" + (d.children ? " block--internal" : " block--leaf"))
     .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")");
 
-  // adds the rect to the node
-  node
+  // adds a rect for each block
+  blocks
     .append("rect")
     .attr("height", 50)
     .attr("width", 50)
-    .attr("fill", d => status_to_color[d.data.data.status])
+    .attr("fill", "lightgray")
     .attr("transform", "translate(-25, -25)")
     .style("cursor", "pointer")
     .on("mouseover", (c, d, e) => {
-      d3.select("#block_info").text(JSON.stringify([d.data.data, o.x(d, htoi), o.y(d, htoi)], null, 2))
+      d3.select("#block_info").text(JSON.stringify(d.data.data, null, 2))
     })
 
-  // adds the text to the node
-  node
+  // adds the text to the blocks
+  blocks
     .append("text")
     .attr("dy", ".35em")
     .attr("y", 0)
     .style("text-anchor", "middle")
     .text(d => d.data.data.block_height);
 
-  node
+  var node_groups = blocks
     .filter(d => d.data.data.status != "in-chain")
-    .append("text")
-    .attr("y", 25)
-    .attr("x", -25)
-    .style("text-anchor", "left")
-    .attr("font-size", "1px")
-    .text(d => "status: " + d.data.data.status);
+    .append("g")
+    .selectAll("g")
+    .data(d => d.data.data.status)
+    .join("g")
+    .attr("transform", (_,i) => "translate("+ (i+1)*50 +", 0)")
+    
+  node_groups.append("circle")
+    .attr("r", 25)
+    .attr("fill", d => status_to_color[d.status])
+    
+  node_groups.append("text")
+    .style("text-anchor", "middle")
+    .attr("dy", ".35em")
+    .text(d => "Node " + d.node)
 
   let offset_x = 0;
   let offset_y = 0;
-  let active_tip = root_node.leaves().filter(d => d.data.data.status == "active")[0]
-  if (active_tip !== undefined) {
-    offset_x = o.x(active_tip, htoi);
-    offset_y = o.y(active_tip, htoi);
+  let max_height = Math.max(...block_infos.map(d => d.block_height))
+  let max_height_tip = root_node.leaves().filter(d => d.data.data.block_height == max_height)[0]
+  if (max_height_tip !== undefined) {
+    offset_x = o.x(max_height_tip, htoi);
+    offset_y = o.y(max_height_tip, htoi);
   }
   
   // enables zoom and panning
@@ -190,21 +211,50 @@ function gen_treemap(o, tips, unique_heights) {
   return d3.tree().size([tips, unique_heights]).nodeSize([NODE_SIZE, NODE_SIZE]);
 }
 
-
-async function fetch_and_draw() {
-  fetch(getBlocks)
+async function fetch_networks() {
+  await fetch(getNetworks)
     .then(response => response.json())
-    .then(data => draw(data))
-    .catch(console.error);
+    .then(networks => {
+	state_networks = networks.networks
+
+	let first_network_id = state_networks[0].id
+	networkSelect.selectAll('option')
+	  .data(state_networks)
+	  .enter()
+	    .append('option')
+	    .attr('value', d => d.id)
+	    .text(d => d.name)
+	    .property("selected", d => d.id == first_network_id)
+
+	state_selected_network_id = state_networks[0].id
+    }).catch(console.error);
 } 
 
-let orientationSelect = d3.select("#orientation")
+async function fetch_data() {
+  await fetch('data.json?network='+networkSelect.node().value)
+    .then(response => response.json())
+    .then(data => state_data = data)
+    .catch(console.error);
+}
 
-orientationSelect.on("input", function() {
+orientationSelect.on("input", async function() {
   o = orientations[this.value]
-  fetch_and_draw()
+  await draw()
+})
+
+networkSelect.on("input", async function() {
+  state_selected_network_id = networkSelect.node().value
+  await fetch_data()
+  await draw()
 })
 
 o = orientations[orientationSelect.node().value]
 
-fetch_and_draw()
+async function run() {
+  await fetch_networks()
+  await fetch_data()
+  await draw()
+}
+
+run()
+
