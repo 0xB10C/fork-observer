@@ -38,37 +38,31 @@ var state_data = {}
 
 function draw() {
   data = state_data
-  
   let block_infos = data.block_infos;
   let tip_infos = data.tip_infos;
+  let node_infos = data.nodes;
+
+  nodeid_to_node = {}
+  for (const value of node_infos) {
+    nodeid_to_node[value.id] = value
+  }
 
   hash_to_tipstatus = {}
   tip_infos.forEach(tip => {
-   if (tip.hash in hash_to_tipstatus) {
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-   } else {
-     hash_to_tipstatus[tip.hash] = [ { status: tip.status, node: tip.node } ]
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
-     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+   if (!(tip.hash in hash_to_tipstatus)) {
+     hash_to_tipstatus[tip.hash] = {}
    }
+   if (!(tip.status in hash_to_tipstatus[tip.hash])) {
+     hash_to_tipstatus[tip.hash][tip.status] = { status: tip.status, count: 0, nodes: []  }
+   }
+   hash_to_tipstatus[tip.hash][tip.status].count++
+   hash_to_tipstatus[tip.hash][tip.status].nodes.push(nodeid_to_node[tip.node])
+
   });
 
   block_infos.forEach(block_info => {
     let status = hash_to_tipstatus[block_info.hash];
-    block_info.status = status == undefined? "in-chain" : status;
+    block_info.status = status == undefined? "in-chain" : Object.values(status)
     block_info.is_tip = status != undefined
   })
 
@@ -141,7 +135,7 @@ function draw() {
     .text("hidden")
     .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
     .attr("dy", "1.3em")
-  
+
   // adds each block as a group
   var blocks = g
     .selectAll(".block")
@@ -162,8 +156,27 @@ function draw() {
     .attr("transform", "translate(-25, -25)")
     .style("cursor", "pointer")
     .on("mouseover", (c, d, e) => {
-      d3.select("#block_info").text(JSON.stringify(d.data.data, null, 2))
-    })
+      let parentElement = d3.select(c.target.parentElement)
+      // clean up
+    parentElement.selectAll(".block-description").remove()
+      let descText = parentElement.append("text").attr("class", "block-description")//.text(JSON.stringify(d.data.data, null, 2))
+      descText.append("tspan")
+        .text("block hash: " + d.data.data.hash)
+      descText.append("tspan")
+        .attr("dy", "1em")
+        .attr("x", "0")
+        .text("previous block: " + d.data.data.prev)
+      descText.append("tspan")
+        .attr("dy", "1em")
+        .attr("x", "0")
+        .text("height: " + d.data.data.block_height)
+      d.data.data.status.forEach(status => {
+          descText.append("tspan")
+            .text(status.count + "x " + status.status + ": " + status.nodes.map(n => n.name).join(", "))
+            .attr("dy", "1em")
+            .attr("x", "0")
+        })
+      })
 
   // adds the text to the blocks
   blocks
@@ -179,61 +192,21 @@ function draw() {
     .selectAll("g")
     .data(d => d.data.data.status)
     .join("g")
-    //.attr("transform", (_,i,n) => "translate("+ fmtTranslate(calcTransform(i, n.length, 50))+")")
-    .attr("class", "node")
- 
-  node_groups.x = function(d, i, n) {
-	calcTransform(i, n.length, 50)[0]
-  }
-  
-  node_groups.y = function(d, i, n) {
-	calcTransform(i, n.length, 50)[1]
-  }
-
-  function fmtTranslate(xy) {return xy[0]+","+xy[1]}
-  function calcTransform(i, n, radius) {
-	let r = radius + n * 3
-	let rad = (2 * Math.PI * (i / n)) - Math.PI
-	x = r * Math.sin(rad)
-	y = r * Math.cos(rad)
-	return [x, y]
-  }
-
-var simulation = d3.forceSimulation(node_groups)
-    .force("charge", d3.forceCollide().radius(50))
-    .on("tick", ticked);  
-
-function ticked() {
-  node_groups
-      .attr("cx", (d, n, i) => d.x(d, n , i))
-      .attr("cy", (d, n, i) => d.y(d,n,i))
-}
-
+    .attr("class", d => "node-indicator status-"+d.status)
 
   node_groups.append("circle")
-    .attr("r", 20)
-    .attr("stroke", "black")
-    .attr("stroke-width", "1px")
-    .attr("fill", "lightgray")
-  
-  node_groups.append("circle")
-    .attr("r", 6)
-    .attr("cy", -15)
-    .attr("cx", 15)
+    .attr("r", 8)
+    .attr("cy", -24)
+    .attr("cx", (d, i) => 24 - i*16)
     .attr("fill", d => status_to_color[d.status])
-    .attr("stroke", "#0009")
+    .attr("stroke", "#0005")
     .attr("stroke-width", "1px")
-    
-    
-  var node_text = node_groups.append("text")
-    .style("text-anchor", "middle")
 
-  node_text.append("tspan")
-     .text("Node")
-  node_text.append("tspan")
-     .attr("dy", "1em")
-     .attr("x", "0em")
-     .text(d => d.node)
+  node_groups.append("text")
+    .attr("dy", -20)
+    .attr("dx", (d, i) => 24 - i*16)
+    .style("text-anchor", "middle")
+    .text(d => d.count)
 
   let offset_x = 0;
   let offset_y = 0;
@@ -243,7 +216,7 @@ function ticked() {
     offset_x = o.x(max_height_tip, htoi);
     offset_y = o.y(max_height_tip, htoi);
   }
-  
+
   // enables zoom and panning
   const zoom = d3.zoom().scaleExtent([0.5, 1.5]).on( "zoom", e => g.attr("transform", e.transform) )
   svg.call(zoom)
