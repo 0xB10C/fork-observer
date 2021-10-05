@@ -256,8 +256,8 @@ async fn main() {
         .and(warp::fs::file(config.www_path.join("js/blocktree.js")));
 
     let d3_js = warp::get()
-        .and(warp::path!("js" / "d3.v6.min.js"))
-        .and(warp::fs::file(config.www_path.join("js/d3.v6.min.js")));
+        .and(warp::path!("js" / "d3.v7.min.js"))
+        .and(warp::fs::file(config.www_path.join("js/d3.v7.min.js")));
 
     let data_json = warp::get()
         .and(warp::path("data.json"))
