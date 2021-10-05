@@ -10,13 +10,45 @@ www_path = "./www"
 query_interval = 10
 
 # Webserver listen address
-address = "localhost:2323"
+address = "127.0.0.1:2323"
+
+[[networks]]
+id = 0x248281
+name = "Nikhils custom SigNet"
+description = "A custom SigNet with reorgs used for the development of the reorg-miner"
+
+    [[networks.nodes]]
+    id = 0
+    name = "Node A"
+    description = "A node with a signet-miner that is always mining blocks"
+    # rpc_cookie_file = "~/.bitcoin/.cookie"
+    rpc_host = "127.0.0.1"
+    rpc_port = 38342
+    rpc_user = "forkobserver"
+    rpc_password = ""
+    
+    [[networks.nodes]]
+    id = 1
+    name = "Node R"
+    description = "R node with a signet-miner that is always mining blocks"
+    # rpc_cookie_file = "~/.bitcoin/.cookie"
+    rpc_host = "127.0.0.1"
+    rpc_port = 38332
+    rpc_user = "forkobserver"
+    rpc_password = ""
+
+[[networks]]
+id = 0xFFFFFFFE
+name = "FFFFFFFF testnetwork"
+description = "test"
 
 
-
-# rpc_cookie_file = "~/.bitcoin/.cookie"
-rpc_host = "localhost"
-rpc_port = 8332
-rpc_user = "FIXME:"
-rpc_password = "FIXME:"
-
+    [[networks.nodes]]
+    id = 0
+    name = "Node A"
+    description = "A node with a signet-miner that is always mining blocks"
+    # rpc_cookie_file = "~/.bitcoin/.cookie"
+    rpc_host = "127.0.0.1"
+    rpc_port = 38342
+    rpc_user = "forkobserver"
+    rpc_password = ""

@@ -3,7 +3,7 @@ const svgwidth = d3.select("body").node().getBoundingClientRect().width;
 
 const getNetworks = new Request('networks.json');
 
-const NODE_SIZE = 100
+const NODE_SIZE = 125
 
 const orientationSelect = d3.select("#orientation")
 const networkSelect = d3.select("#network")
@@ -46,8 +46,23 @@ function draw() {
   tip_infos.forEach(tip => {
    if (tip.hash in hash_to_tipstatus) {
      hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
    } else {
      hash_to_tipstatus[tip.hash] = [ { status: tip.status, node: tip.node } ]
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
+     hash_to_tipstatus[tip.hash].push({ status: tip.status, node: tip.node })
    }
   });
 
@@ -105,14 +120,28 @@ function draw() {
   links.append("path")
     .attr("class", "link")
     .attr("d", o.linkDir(htoi))
+    .attr("stroke-dasharray", d => d.target.data.data.block_height - d.source.data.data.block_height == 1 ? "0" : "4 5")
 
-  links
+  var link_texts_hidden_blocks = links
     .filter(d => d.target.data.data.block_height - d.source.data.data.block_height != 1)
     .append("text")
+    .style("text-anchor", "middle")
+    .style("font-size", "12px")
     .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
     .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2))
-    .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1) + " blocks hidden" )
 
+  link_texts_hidden_blocks.append("tspan")
+    .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1))
+    .attr("dy", "-1.3em")
+  link_texts_hidden_blocks.append("tspan")
+    .text("blocks" )
+    .attr("dy", "1.1em")
+    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
+  link_texts_hidden_blocks.append("tspan")
+    .text("hidden")
+    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
+    .attr("dy", "1.3em")
+  
   // adds each block as a group
   var blocks = g
     .selectAll(".block")
@@ -127,7 +156,9 @@ function draw() {
     .append("rect")
     .attr("height", 50)
     .attr("width", 50)
-    .attr("fill", "lightgray")
+    .attr("fill", "white")
+    .attr("stroke", "black")
+    .attr("stroke-width", "1")
     .attr("transform", "translate(-25, -25)")
     .style("cursor", "pointer")
     .on("mouseover", (c, d, e) => {
@@ -148,16 +179,61 @@ function draw() {
     .selectAll("g")
     .data(d => d.data.data.status)
     .join("g")
-    .attr("transform", (_,i) => "translate("+ (i+1)*50 +", 0)")
-    
+    //.attr("transform", (_,i,n) => "translate("+ fmtTranslate(calcTransform(i, n.length, 50))+")")
+    .attr("class", "node")
+ 
+  node_groups.x = function(d, i, n) {
+	calcTransform(i, n.length, 50)[0]
+  }
+  
+  node_groups.y = function(d, i, n) {
+	calcTransform(i, n.length, 50)[1]
+  }
+
+  function fmtTranslate(xy) {return xy[0]+","+xy[1]}
+  function calcTransform(i, n, radius) {
+	let r = radius + n * 3
+	let rad = (2 * Math.PI * (i / n)) - Math.PI
+	x = r * Math.sin(rad)
+	y = r * Math.cos(rad)
+	return [x, y]
+  }
+
+var simulation = d3.forceSimulation(node_groups)
+    .force("charge", d3.forceCollide().radius(50))
+    .on("tick", ticked);  
+
+function ticked() {
+  node_groups
+      .attr("cx", (d, n, i) => d.x(d, n , i))
+      .attr("cy", (d, n, i) => d.y(d,n,i))
+}
+
+
   node_groups.append("circle")
-    .attr("r", 25)
+    .attr("r", 20)
+    .attr("stroke", "black")
+    .attr("stroke-width", "1px")
+    .attr("fill", "lightgray")
+  
+  node_groups.append("circle")
+    .attr("r", 6)
+    .attr("cy", -15)
+    .attr("cx", 15)
     .attr("fill", d => status_to_color[d.status])
+    .attr("stroke", "#0009")
+    .attr("stroke-width", "1px")
     
-  node_groups.append("text")
+    
+  var node_text = node_groups.append("text")
     .style("text-anchor", "middle")
-    .attr("dy", ".35em")
-    .text(d => "Node " + d.node)
+
+  node_text.append("tspan")
+     .text("Node")
+  node_text.append("tspan")
+     .attr("dy", "1em")
+     .attr("x", "0em")
+     .text(d => d.node)
 
   let offset_x = 0;
   let offset_y = 0;
