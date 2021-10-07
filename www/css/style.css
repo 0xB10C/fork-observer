@@ -1,9 +1,100 @@
+:root, :root.light {
+  color-scheme: light dark;
 
-.block text { font: 15px sans-serif; }
-.node text { font: 10px sans-serif; }
+  /* default light mode values */
+  --body-bg: white;
+  --text-color: black;
+  --block-to-block-link-color: black;
+  --block-description-link-color: gray;
+  --block-description-bg: #f8f9fa;
+  --node-indicatior-stroke: black;
+}
+
+/* automatic dark mode */
+/* keep the rules in sync with the manual dark mode below! */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --body-bg: #202124;
+    --text-color: white;
+    --block-to-block-link-color: white;
+    --block-description-link-color: lightgray;
+    --block-description-bg: #f8f9fa;
+    --node-indicatior-stroke: black;
+  }
+}
+
+/* manual dark mode */
+/* keep the rules in sync with the automatic dark mode above! */
+:root.dark {
+  --body-bg: #202124;
+  --text-color: white;
+  --block-to-block-link-color: white;
+  --block-description-link-color: lightgray;
+  --block-description-bg: #f8f9fa;
+  --node-indicatior-stroke: black;
+}
+
+body {
+  background: var(--body-bg);
+}
+
+h1, h2, h3, h4, h5, h6, p, label {
+  color: var(--text-color);
+}
 
 .link {
   fill: none;
-  stroke: #000;
+}
+
+path.link.link-block-block {
+  stroke: var(--block-to-block-link-color);
   stroke-width: 1px;
 }
+
+path.link.link-block-description {
+  stroke: var(--block-description-link-color);
+  stroke-width: 1px;
+}
+
+text.text-blocks-not-shown {
+ fill: var(--text-color);
+ text-anchor: middle;
+ font-size: 12px;
+}
+
+text.block-text {
+ fill: black;
+ text-anchor: middle;
+ font-size: 10px;
+}
+
+.block {
+  cursor: pointer;
+}
+
+.block-description {
+  cursor: grab;
+}
+
+.block-description-background {
+  fill: var(--block-description-bg);
+  stroke: var(--text-color);
+}
+
+.node-indicator {
+ stroke: var(--node-indicatior-stroke);
+ stroke-width: 1px;
+}
+
+.node-indicator text {
+ stroke-width: 0px;
+ font-size: 14px;
+ text-anchor: middle;
+ fill: black;
+}
+
+.tip-status-color-fill-active { fill: #79FF00 }
+.tip-status-color-fill-invalid { fill: #CC203B }
+.tip-status-color-fill-valid-fork { fill: #3CACB5 }
+.tip-status-color-fill-valid-headers { fill: #763DB6 }
+.tip-status-color-fill-headers-only { fill: #FF3D1D }

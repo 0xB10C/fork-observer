@@ -2,27 +2,36 @@
 <html>
 
 <head>
+  <meta name="color-scheme" content="dark light">
   <meta charset="utf-8">
-  <title></title>
+  <title>fork-observer</title>
   <meta name="author" content="">
   <meta name="description" content="">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-uWxY/CJNBR+1zjPWmfnSnVxwRheevXITnMqoEIeG1LJrdI0GlVs/9cVSyPYXdcSF" crossorigin="anonymous">
   <link href="css/style.css" rel="stylesheet">
 </head>
 
 <body>
-  <h1>signet reorg testing</h1>
-  <label for="network">Network:</label>
-  <select name="network" id="network"></select>
-  <label for="orientation">Orientation:</label>
-  <select name="orientation" id="orientation">
-    <option value="left-to-right" selected>left to right</option>
-    <option value="bottom-to-top">bottom to top</option>
-  </select>
-  <pre id="block_info"></pre>
-  <svg id="drawing-area"></svg>
+  <div class="container-fluid">
+    <header class="border-bottom mb-3">
+    <nav class="navbar">
+      <a class="navbar-brand" href="#">
+        <img src="/docs/4.0/assets/brand/bootstrap-solid.svg" width="30" height="30" class="d-inline-block align-top" alt="">
+        fork-observer
+      </a>
+    </nav>
+  </header>
 
+
+    <label for="network">Network:</label>
+    <select name="network" id="network"></select>
+    <label for="orientation">Orientation:</label>
+    <select name="orientation" id="orientation">
+    </select>
+    <pre id="block_info"></pre>
+    <svg id="drawing-area"></svg>
+  </div>
 </body>
 
 <script src="js/d3.v7.min.js"></script>

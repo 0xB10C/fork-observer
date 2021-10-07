@@ -28,7 +28,6 @@ const status_to_color = {
   "invalid": "fuchsia",
   "valid-fork": "cyan",
   "valid-headers": "red",
-  "in-chain": "lightgray",
   "headers-only": "yellow",
 }
 
@@ -57,7 +56,6 @@ function draw() {
    }
    hash_to_tipstatus[tip.hash][tip.status].count++
    hash_to_tipstatus[tip.hash][tip.status].nodes.push(nodeid_to_node[tip.node])
-
   });
 
   block_infos.forEach(block_info => {
@@ -100,90 +98,165 @@ function draw() {
 
   svg.selectAll("*").remove()
 
-  // append a 'group' element to 'svg' and
-  var g = svg
-      .append("g")
-      .attr("transform", "translate(0, 0)");
+  // enables zoom and panning
+  const zoom = d3.zoom().scaleExtent([0.25, 2]).on( "zoom", e => g.attr("transform", e.transform) )
+  svg.call(zoom)
 
-  // adds the links between the nodes
+  var g = svg
+    .append("g")
+
+  // links between the nodes
   var links = g
-    .selectAll(".link")
+    .selectAll(".link-block-block")
     .data(root_node.links())
     .enter()
 
+  // <path> between blocks
   links.append("path")
-    .attr("class", "link")
+    .attr("class", "link link-block-block")
     .attr("d", o.linkDir(htoi))
     .attr("stroke-dasharray", d => d.target.data.data.block_height - d.source.data.data.block_height == 1 ? "0" : "4 5")
 
+  // text for the not-shown blocks
   var link_texts_hidden_blocks = links
     .filter(d => d.target.data.data.block_height - d.source.data.data.block_height != 1)
     .append("text")
+    .attr("class", "text-blocks-not-shown")
     .style("text-anchor", "middle")
     .style("font-size", "12px")
     .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
     .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2))
-
   link_texts_hidden_blocks.append("tspan")
-    .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1))
-    .attr("dy", "-1.3em")
-  link_texts_hidden_blocks.append("tspan")
-    .text("blocks" )
-    .attr("dy", "1.1em")
-    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
+    .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1) + " blocks")
+    .attr("dy", ".3em")
   link_texts_hidden_blocks.append("tspan")
     .text("hidden")
     .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
-    .attr("dy", "1.3em")
+    .attr("dy", "1em")
 
   // adds each block as a group
   var blocks = g
-    .selectAll(".block")
+    .selectAll(".block-group")
     .data(root_node.descendants())
     .enter()
     .append("g")
     .attr("class", d => "block" + (d.children ? " block--internal" : " block--leaf"))
-    .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")");
+    .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
+    .on("click", (c, d) => onBlockClick(c, d))
 
-  // adds a rect for each block
+
+  function onBlockClick(c, d) {
+      let parentElement = d3.select(c.target.parentElement)
+
+      // The on-click listener of the block propagates to the appened description elements.
+      // To prevent adding a second description element of the block we return early if the
+      // parentElement is not the block.
+      if (parentElement.attr("class") == null || !parentElement.attr("class").startsWith("block block--")) return
+
+      if (parentElement.selectAll(".block-description").size() > 0) {
+        parentElement.selectAll(".block-description").remove()
+        parentElement.selectAll(".link-block-description").attr("d", "")
+      } else {
+
+        const description_offset = { x: 50, y: -50 }
+        const description_margin = { x: 15, y: 15 }
+        let descGroup = parentElement.append("g")
+          .attr("class", "block-description")
+          .attr("transform", "translate(" + description_offset.x + "," + description_offset.y / 2 + ")")
+          .each(d => { d.x = description_offset.x; d.y = description_offset.y })
+          .call(
+            d3.drag()
+              .on("start", dragstarted)
+              .on("drag", dragged)
+              .on("end", dragended)
+          )
+
+        function dragstarted() {d3.select(this).raise().attr("cursor", "grabbing");}
+        function dragged(event, d) {
+          d.x += event.dx;
+          d.y += event.dy;
+          var link = d3.linkHorizontal()({
+            source: [ 0, 0 ],
+            target: [ d.x - description_margin.x / 2, d.y + (descText.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k) / 2 ]
+          });
+          parentElement.selectAll(".link-block-description").attr('d', link)
+          d3.select(this).attr("transform", "translate(" + d.x + "," + d.y + ")");
+        }
+        function dragended() { d3.select(this).attr("cursor", "drag"); }
+
+        let descBackground = descGroup
+          .append("rect")
+          .attr("class", "block-description-background")
+          .attr("x", -description_margin.x / 2)
+          .attr("y", -description_margin.y / 2)
+
+        let descText = descGroup
+          .append("text")
+          .attr("dy", "1em")
+
+        // block description: height
+        descText.append("tspan")
+          .text("height: " + d.data.data.block_height)
+
+        // block description: block hash
+        descText.append("tspan")
+          .text("block hash: ")
+          .attr("dy", "1em")
+          .attr("x", "0")
+        descText.append("tspan")
+          .text(d.data.data.hash)
+          .on("click", c => document.getSelection().getRangeAt(0).selectNode(c.target))
+
+        // block description: previous hash
+        descText.append("tspan")
+          .attr("dy", "1em")
+          .attr("x", "0")
+          .text("previous block: ")
+        descText.append("tspan")
+          .text(d.data.data.prev)
+          .on("click", c => document.getSelection().getRangeAt(0).selectNode(c.target))
+
+        // block description: tip status for nodes
+        if (d.data.data.status != "in-chain") {
+          d.data.data.status.forEach(status => {
+            descText.append("tspan")
+              .text("◼ ")
+              .attr("dy", "1.2em")
+              .attr("x", "0")
+              .attr("class", "tip-status-color-fill-"+ status.status)
+
+            descText.append("tspan")
+              .text(status.count + "x " + status.status + ": " + status.nodes.map(n => n.name).join(", "))
+          })
+        }
+
+        descBackground
+          .attr("height", (descText.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k) + description_margin.y )
+          .attr("width", (descText.node().getBoundingClientRect().width / d3.zoomTransform(svg.node()).k) + description_margin.x)
+      }
+    }
+
+  blocks
+    .append('path')
+    .attr("class", "link link-block-description") // when modifying, check if there is a depedency on this class name.
+
+  // rect for each block
+  const block_size = 50
   blocks
     .append("rect")
-    .attr("height", 50)
-    .attr("width", 50)
+    .attr("height", block_size)
+    .attr("width", block_size)
+    .attr("rx", 5)
     .attr("fill", "white")
     .attr("stroke", "black")
     .attr("stroke-width", "1")
-    .attr("transform", "translate(-25, -25)")
-    .style("cursor", "pointer")
-    .on("mouseover", (c, d, e) => {
-      let parentElement = d3.select(c.target.parentElement)
-      // clean up
-    parentElement.selectAll(".block-description").remove()
-      let descText = parentElement.append("text").attr("class", "block-description")//.text(JSON.stringify(d.data.data, null, 2))
-      descText.append("tspan")
-        .text("block hash: " + d.data.data.hash)
-      descText.append("tspan")
-        .attr("dy", "1em")
-        .attr("x", "0")
-        .text("previous block: " + d.data.data.prev)
-      descText.append("tspan")
-        .attr("dy", "1em")
-        .attr("x", "0")
-        .text("height: " + d.data.data.block_height)
-      d.data.data.status.forEach(status => {
-          descText.append("tspan")
-            .text(status.count + "x " + status.status + ": " + status.nodes.map(n => n.name).join(", "))
-            .attr("dy", "1em")
-            .attr("x", "0")
-        })
-      })
+    .attr("transform", "translate("+ (-block_size)/2  +", " + (-block_size)/2 + ")")
 
-  // adds the text to the blocks
+  // text for the blocks
   blocks
     .append("text")
     .attr("dy", ".35em")
-    .attr("y", 0)
-    .style("text-anchor", "middle")
+    .attr("class", "block-text")
     .text(d => d.data.data.block_height);
 
   var node_groups = blocks
@@ -192,20 +265,25 @@ function draw() {
     .selectAll("g")
     .data(d => d.data.data.status)
     .join("g")
-    .attr("class", d => "node-indicator status-"+d.status)
+    .attr("class", d => "node-indicator")
 
-  node_groups.append("circle")
-    .attr("r", 8)
-    .attr("cy", -24)
-    .attr("cx", (d, i) => 24 - i*16)
-    .attr("fill", d => status_to_color[d.status])
-    .attr("stroke", "#0005")
-    .attr("stroke-width", "1px")
+  // node status indicator
+  const indicator_radius = 8
+  const indicator_margin = 1
+  node_groups.append("rect")
+    .attr("width", indicator_radius*2)
+    .attr("height", indicator_radius*2)
+    .attr("rx", 1)
+    .attr("r", indicator_radius)
+    .attr("y", -block_size/2 - indicator_radius)
+    .attr("x", (d, i) => (block_size/2) - i * (indicator_radius + indicator_margin) * 2 - indicator_radius)
+    .attr("class", d => "tip-status-color-fill-" + d.status)
 
   node_groups.append("text")
-    .attr("dy", -20)
-    .attr("dx", (d, i) => 24 - i*16)
-    .style("text-anchor", "middle")
+    .attr("y", -block_size/2)
+    .attr("dx", (d, i) => (block_size/2) - i * (indicator_radius + indicator_margin) * 2)
+    .attr("dy", ".35em")
+    .attr("class", "node-indicator")
     .text(d => d.count)
 
   let offset_x = 0;
@@ -217,10 +295,8 @@ function draw() {
     offset_y = o.y(max_height_tip, htoi);
   }
 
-  // enables zoom and panning
-  const zoom = d3.zoom().scaleExtent([0.5, 1.5]).on( "zoom", e => g.attr("transform", e.transform) )
-  svg.call(zoom)
-  zoom.translateTo(svg, offset_x, offset_y, [svgwidth/2,svgheight/2]); 
+  zoom.scaleBy(svg, 1.5);
+  zoom.translateTo(svg, offset_x, offset_y, [svgwidth/2,svgheight/2])
 }
 
 // recursivly collapses linear branches of blocks longer than x,
@@ -277,7 +353,7 @@ async function fetch_networks() {
 
 	state_selected_network_id = state_networks[0].id
     }).catch(console.error);
-} 
+}
 
 async function fetch_data() {
   await fetch('data.json?network='+networkSelect.node().value)
@@ -297,6 +373,29 @@ networkSelect.on("input", async function() {
   await draw()
 })
 
+
+// Set the orientation by checking the screen width and height
+{
+  const supported_orientations = [
+    { name: "left to right", value: "left-to-right" },
+    { name: "bottom to top", value: "bottom-to-top" }
+  ]
+
+  let browser_size_ratio = (window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth) / (window.innerHeight|| document.documentElement.clientHeight|| document.body.clientHeight);
+
+  var choosen_orientation = "left-to-right"
+  if (browser_size_ratio < 1) {
+    choosen_orientation = "bottom-to-top"
+  }
+
+  orientationSelect.selectAll('option')
+	  .data(supported_orientations)
+	  .enter()
+	    .append('option')
+	    .attr('value', d => d.value)
+	    .text(d => d.name)
+	    .property("selected", d => d.value == choosen_orientation)
+}
 o = orientations[orientationSelect.node().value]
 
 async function run() {
