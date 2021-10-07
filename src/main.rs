@@ -255,6 +255,10 @@ async fn main() {
         .and(warp::path!("js" / "blocktree.js"))
         .and(warp::fs::file(config.www_path.join("js/blocktree.js")));
 
+    let logo_png = warp::get()
+        .and(warp::path!("img" / "logo.png"))
+        .and(warp::fs::file(config.www_path.join("img/logo.png")));
+
     let d3_js = warp::get()
         .and(warp::path!("js" / "d3.v7.min.js"))
         .and(warp::fs::file(config.www_path.join("js/d3.v7.min.js")));
@@ -272,6 +276,7 @@ async fn main() {
 
     let routes = index_html
         .or(blocktree_js)
+        .or(logo_png)
         .or(style_css)
         .or(data_json)
         .or(d3_js)
