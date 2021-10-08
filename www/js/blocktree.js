@@ -1,4 +1,4 @@
-const svgheight = window.innerHeight - d3.select("body").node().getBoundingClientRect().height;
+const svgheight = window.innerHeight - d3.select("#drawing-area").node().getBoundingClientRect().height;
 const svgwidth = d3.select("body").node().getBoundingClientRect().width;
 
 const getNetworks = new Request('networks.json');
@@ -13,11 +13,13 @@ const orientations = {
     x: (d, _) => d.x,
     y: (d, htoi) => -htoi[d.data.data.block_height] * NODE_SIZE,
     linkDir: (htoi) => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
+    hidden_blocks_text: {offset_x: -40, offset_y: 0, anchor: "left"},
   },
   "left-to-right": {
     x: (d, htoi) => htoi[d.data.data.block_height] * NODE_SIZE,
     y: (d, _) => d.x,
     linkDir: (htoi) => d3.linkHorizontal().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
+    hidden_blocks_text: {offset_x: 0, offset_y: 15, anchor: "middle"},
   },
 };
 
@@ -93,7 +95,7 @@ function draw() {
   var svg = d3
     .select("#drawing-area")
     .attr("width", "100%")
-    .attr("height", svgheight)
+    .attr("height", "80vh")
     .style("border", "1px solid")
 
   svg.selectAll("*").remove()
@@ -122,16 +124,16 @@ function draw() {
     .filter(d => d.target.data.data.block_height - d.source.data.data.block_height != 1)
     .append("text")
     .attr("class", "text-blocks-not-shown")
-    .style("text-anchor", "middle")
+    .style("text-anchor", o.hidden_blocks_text.anchor)
     .style("font-size", "12px")
-    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
-    .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2))
+    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
+    .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y )
   link_texts_hidden_blocks.append("tspan")
     .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1) + " blocks")
     .attr("dy", ".3em")
   link_texts_hidden_blocks.append("tspan")
     .text("hidden")
-    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2))
+    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
     .attr("dy", "1em")
 
   // adds each block as a group
@@ -218,9 +220,9 @@ function draw() {
 
         // block description: tip status for nodes
         if (d.data.data.status != "in-chain") {
-          d.data.data.status.forEach(status => {
+          d.data.data.status.reverse().forEach(status => {
             descText.append("tspan")
-              .text("◼ ")
+              .text("▆ ")
               .attr("dy", "1.2em")
               .attr("x", "0")
               .attr("class", "tip-status-color-fill-"+ status.status)

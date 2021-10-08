@@ -48,7 +48,7 @@ h1, h2, h3, h4, h5, h6, p, label {
 
 path.link.link-block-block {
   stroke: var(--block-to-block-link-color);
-  stroke-width: 1px;
+  stroke-width: 2px;
 }
 
 path.link.link-block-description {
@@ -96,5 +96,5 @@ text.block-text {
 .tip-status-color-fill-active { fill: #79FF00 }
 .tip-status-color-fill-invalid { fill: #CC203B }
 .tip-status-color-fill-valid-fork { fill: #3CACB5 }
-.tip-status-color-fill-valid-headers { fill: #763DB6 }
-.tip-status-color-fill-headers-only { fill: #FF3D1D }
+.tip-status-color-fill-valid-headers { fill: #FF69B4 }
+.tip-status-color-fill-headers-only { fill: #FF8800 }
