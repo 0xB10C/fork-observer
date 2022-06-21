@@ -8,10 +8,14 @@ edition = "2018"
 [dependencies]
 
 bitcoincore-rpc = { git = "https://github.com/rust-bitcoin/rust-bitcoincore-rpc", branch = "master" }
-sled = "0.34.6"
-byteorder = "1.4.3"
-zerocopy = "0.5.0"
-tokio = { version = "1", features = ["full"] }
 warp = "0.3"
 serde = "1.0.127"
 toml = "0.5"
+
+log = { version = "0.4.17" }
+env_logger = { version = "0.9.0" }
+hex = { version = "0.4" }
+rusqlite = { version = "0.27.0", features = ["bundled"] }
+reqwest = { version = "0.11" }
+tokio = { version = "1", features = ["full"] }
+petgraph = { version = "0.6.2" }
