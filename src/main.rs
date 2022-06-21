@@ -22,13 +22,15 @@ use rusqlite::Connection;
 
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
+use petgraph::dot::{Dot, Config};
+use petgraph::visit::Dfs;
 
 use log::info;
 
 mod config;
 mod types;
 
-use types::HeaderInfo;
+use types::{DataQuery, HeaderInfo};
 
 use config::Network;
 
@@ -75,7 +77,7 @@ async fn get_new_active_tips(
         .unwrap();
 
     const STEP_SIZE: usize = 2000;
-    for query_height in (current_height + 1..active_tip.height).step_by(STEP_SIZE) {
+    for query_height in (current_height + 1..=active_tip.height).step_by(STEP_SIZE) {
         let header_hash = rpc.get_block_hash(query_height).unwrap();
         {
             let locked_tree = trees.lock().await;
@@ -111,7 +113,7 @@ async fn get_new_nonactive_tips(
         .filter(|tip| tip.status != GetChainTipsResultStatus::Active)
     {
         let mut next_header = inactive_tip.hash;
-        for i in 0..=inactive_tip.branch_length {
+        for i in 0..inactive_tip.branch_length {
             {
                 let locked_tree = trees.lock().await;
                 let tree_info = locked_tree.get(&network).unwrap();
@@ -245,6 +247,7 @@ async fn main() {
                             }
                         }
                         write_to_db(&new_headers, db_write, network_cloned.id).await;
+                        collapse_tree(&trees_clone, network_cloned.id).await;
                     }
                     interval.tick().await;
                 }
@@ -272,13 +275,19 @@ async fn main() {
         .and(warp::path!("js" / "d3.v7.min.js"))
         .and(warp::fs::file(config.www_path.join("js/d3.v7.min.js")));
 
-    /*
     let data_json = warp::get()
         .and(warp::path("data.json"))
-        .and(with_db(db.clone()))
+        .and(with_trees(trees.clone()))
         .and(warp::query::<DataQuery>())
         .and_then(data_response);
 
+    let data_json = warp::get()
+        .and(warp::path("data.json"))
+        .and(with_trees(trees.clone()))
+        .and(warp::query::<DataQuery>())
+        .and_then(data_response);
+
+    /*
     let networks_json = warp::get()
         .and(warp::path("networks.json"))
         .and(with_db(db.clone()))
@@ -289,15 +298,76 @@ async fn main() {
         .or(blocktree_js)
         .or(logo_png)
         .or(style_css)
-        //.or(data_json)
+        .or(data_json)
         //.or(networks_json)
         .or(d3_js);
 
     warp::serve(routes).run(config.address).await;
 }
 
-fn with_db(db: Db) -> impl Filter<Extract = (Db,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || db.clone())
+async fn collapse_tree(trees: &Trees, network: u32) {
+    let trees_locked = trees.lock().await;
+    let tree_info = trees_locked.get(&network).unwrap();
+    let mut collapsed_tree = tree_info.0.clone();
+
+    let mut height_occurences: BTreeMap<u64, usize> = BTreeMap::new();
+    for node in collapsed_tree.raw_nodes() {
+        let counter = height_occurences.entry(node.weight.height).or_insert(0);
+        *counter += 1;
+    }
+    let relevant_heights: Vec<u64> = height_occurences
+        .iter()
+        .filter(|(_, v)| **v > 1)
+        .map(|(k, _)| *k)
+        .collect();
+    println!("relevant_heights: {:?}", relevant_heights);
+
+    let mut a = collapsed_tree.filter_map(
+        |_, node| {
+            let height = node.height;
+            for x in -2i64..=2 {
+                if relevant_heights.contains(&((height as i64-x) as u64)) {
+                    return Some(node);
+                }
+            }
+            return None;
+        },
+        |_, edge| Some(edge),
+    );
+
+    info!(
+        "done collapsing tree: roots={}, tips={}",
+        a.externals(petgraph::Direction::Incoming).count(), // root nodes
+        a.externals(petgraph::Direction::Outgoing).count(), // tip nodes
+    );
+
+    let mut prev_header_to_connect_to: Option<NodeIndex> = None;
+    let root_indicies: Vec<NodeIndex> = a.externals(petgraph::Direction::Incoming).collect();
+    // Assumes root_indicies is sorted..
+    for root in root_indicies.iter() {
+        if let Some(prev_idx) = prev_header_to_connect_to {
+            a.add_edge(prev_idx, *root, &false);
+        }
+        let mut max_height: u64 = u64::default();
+        let mut dfs = Dfs::new(&a, *root);
+        while let Some(idx) = dfs.next(&a) {
+            let height = a[idx].height;
+            if height > max_height {
+                max_height = height;
+                prev_header_to_connect_to = Some(idx);
+            }
+        }
+    }
+
+    println!("{:?}", Dot::with_config(&a, &[Config::EdgeNoLabel]));
+
+    //let j = serde_json::to_string(&address)?;
+}
+
+fn with_trees(
+    trees: Trees,
+) -> impl Filter<Extract = (Trees,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || trees.clone())
 }
 
 // Loads header and tip information for a specified network from the DB and
@@ -378,45 +448,17 @@ async fn load_header_infos_from_db(db: Db, network: u32) -> Vec<HeaderInfo> {
     return headers;
 }
 
-/*
-async fn data_response(db: Db, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
+async fn data_response(trees: Trees, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
     let network: u32 = query.network;
+    println!("AAAAAA");
 
-    let mut tip_infos = vec![];
+    let trees_locked = trees.lock().await;
+    let tree_info = trees_locked.get(&network).unwrap();
 
-    for kv_option in db.lock().await.range(
-        TipInfoKey::new(network, u8::MIN, &BlockHash::default()).as_bytes()
-            ..TipInfoKey::new(network, u8::MAX, &types::max_block_hash()).as_bytes(),
-    ) {
-        let (_, v_bytes) = kv_option.unwrap();
-        let layout: LayoutVerified<&[u8], TipInfo> =
-            LayoutVerified::new_unaligned(&*v_bytes).expect("bytes do not fit schema");
-        let tip_info: &TipInfo = layout.into_ref();
-        tip_infos.push(TipInfoJson::new(tip_info));
-    }
-
-    let nodes: Vec<NodeJson> = db
-        .lock()
-        .await
-        .range(
-            NodeInfoKey::new(network, u8::MIN).as_bytes()
-                ..NodeInfoKey::new(network, u8::MAX).as_bytes(),
-        )
-        .map(|kv_option| {
-            let (_, v_bytes) = kv_option.unwrap();
-            let layout: LayoutVerified<&[u8], NodeInfo> =
-                LayoutVerified::new_unaligned(&*v_bytes).expect("bytes do not fit schema");
-            let node_info: &NodeInfo = layout.into_ref();
-            NodeJson::new(node_info)
-        })
-        .collect();
-
-    Ok(warp::reply::json(&DataJsonResponse {
-        tip_infos: tip_infos,
-        block_infos: block_infos,
-        nodes,
-    }))
+    Ok(warp::reply::json(&tree_info.0))
 }
+
+/*
 async fn networks_response(db: Db) -> Result<impl warp::Reply, Infallible> {
     let mut network_infos = vec![];
 
@@ -425,8 +467,6 @@ async fn networks_response(db: Db) -> Result<impl warp::Reply, Infallible> {
     }))
 }
 */
-
-
 
 async fn setup_db(db: Db) {
     db.lock()
@@ -454,7 +494,7 @@ async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) {
     );
     for info in new_headers {
         tx.execute(
-            "INSERT OR IGNORE INTO headers
+            "INSERT INTO headers
                    (height, network, hash, header)
                    values (?1, ?2, ?3, ?4)",
             &[

@@ -3,7 +3,7 @@ use bitcoincore_rpc::bitcoin::BlockHeader;
 use bitcoincore_rpc::json::{GetChainTipsResultStatus, GetChainTipsResultTip};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct HeaderInfo {
     pub height: u64,
     pub header: BlockHeader,
