@@ -152,11 +152,9 @@ async fn get_new_tips(
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
     let mut active_new_headers: Vec<HeaderInfo> =
         get_new_active_tips(tips, rest_url.clone(), trees, network, rpc.clone()).await;
-    println!("new active: {}", active_new_headers.len());
     new_headers.append(&mut active_new_headers);
     let mut nonactive_new_headers: Vec<HeaderInfo> =
         get_new_nonactive_tips(tips, rest_url, trees, network, rpc.clone()).await;
-    println!("new non-active: {}", nonactive_new_headers.len());
     new_headers.append(&mut nonactive_new_headers);
     return new_headers;
 }
@@ -200,8 +198,10 @@ async fn main() {
         {
             trees.lock().await.insert(network.id, tree_info);
         }
+        let headerinfojson = collapse_tree(&trees, network.id).await;
         {
-            cache.lock().await.insert(network.id, None);
+        let mut locked_cache = cache.lock().await;
+            locked_cache.insert(network.id, Some(headerinfojson));
         }
 
         for node in network.nodes.iter().cloned() {
@@ -257,7 +257,7 @@ async fn main() {
                         let headerinfojson = collapse_tree(&trees_clone, network_cloned.id).await;
                         {
                             let mut locked_cache = cache_clone.lock().await;
-                            let this_cache = locked_cache.insert(network_cloned.id, Some(headerinfojson));
+                            locked_cache.insert(network_cloned.id, Some(headerinfojson));
                         }
 
                     }
@@ -519,7 +519,7 @@ async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) {
     );
     for info in new_headers {
         tx.execute(
-            "INSERT INTO headers
+            "INSERT OR IGNORE INTO headers
                    (height, network, hash, header)
                    values (?1, ?2, ?3, ?4)",
             &[
