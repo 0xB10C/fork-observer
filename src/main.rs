@@ -30,10 +30,11 @@ use log::info;
 mod config;
 mod types;
 
-use types::{DataQuery, HeaderInfo};
+use types::{DataQuery, HeaderInfo, HeaderInfoJson, NetworksJsonResponse, NetworkJson, DataJsonResponse};
 
 use config::Network;
 
+type Cache = Arc<Mutex<BTreeMap<u32, Option<Vec<HeaderInfoJson>>>>>;
 type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
 type Trees = Arc<Mutex<BTreeMap<u32, TreeInfo>>>;
 type Db = Arc<Mutex<Connection>>;
@@ -183,6 +184,8 @@ async fn main() {
     let db: Db = Arc::new(Mutex::new(connection));
     let trees: Trees = Arc::new(Mutex::new(BTreeMap::new()));
 
+    let cache: Cache = Arc::new(Mutex::new(BTreeMap::new()));
+
     setup_db(db.clone()).await;
 
     for network in config.networks.iter().cloned() {
@@ -197,6 +200,9 @@ async fn main() {
         {
             trees.lock().await.insert(network.id, tree_info);
         }
+        {
+            cache.lock().await.insert(network.id, None);
+        }
 
         for node in network.nodes.iter().cloned() {
             let rpc: Rpc = Arc::new(Client::new(&node.rpc_url, node.rpc_auth.clone()).unwrap());
@@ -204,6 +210,7 @@ async fn main() {
             let mut interval = time::interval(config.query_interval);
             let db_write = db.clone();
             let trees_clone = trees.clone();
+            let cache_clone = cache.clone();
             let network_cloned = network.clone();
             task::spawn(async move {
                 loop {
@@ -247,7 +254,12 @@ async fn main() {
                             }
                         }
                         write_to_db(&new_headers, db_write, network_cloned.id).await;
-                        collapse_tree(&trees_clone, network_cloned.id).await;
+                        let headerinfojson = collapse_tree(&trees_clone, network_cloned.id).await;
+                        {
+                            let mut locked_cache = cache_clone.lock().await;
+                            let this_cache = locked_cache.insert(network_cloned.id, Some(headerinfojson));
+                        }
+
                     }
                     interval.tick().await;
                 }
@@ -277,35 +289,27 @@ async fn main() {
 
     let data_json = warp::get()
         .and(warp::path("data.json"))
-        .and(with_trees(trees.clone()))
+        .and(with_cache(cache.clone()))
         .and(warp::query::<DataQuery>())
         .and_then(data_response);
 
-    let data_json = warp::get()
-        .and(warp::path("data.json"))
-        .and(with_trees(trees.clone()))
-        .and(warp::query::<DataQuery>())
-        .and_then(data_response);
-
-    /*
     let networks_json = warp::get()
         .and(warp::path("networks.json"))
-        .and(with_db(db.clone()))
+        .and(with_networks(config.networks.clone()))
         .and_then(networks_response);
-    */
 
     let routes = index_html
         .or(blocktree_js)
         .or(logo_png)
         .or(style_css)
         .or(data_json)
-        //.or(networks_json)
+        .or(networks_json)
         .or(d3_js);
 
     warp::serve(routes).run(config.address).await;
 }
 
-async fn collapse_tree(trees: &Trees, network: u32) {
+async fn collapse_tree(trees: &Trees, network: u32) -> Vec<HeaderInfoJson> {
     let trees_locked = trees.lock().await;
     let tree_info = trees_locked.get(&network).unwrap();
     let mut collapsed_tree = tree_info.0.clone();
@@ -320,7 +324,6 @@ async fn collapse_tree(trees: &Trees, network: u32) {
         .filter(|(_, v)| **v > 1)
         .map(|(k, _)| *k)
         .collect();
-    println!("relevant_heights: {:?}", relevant_heights);
 
     let mut a = collapsed_tree.filter_map(
         |_, node| {
@@ -359,15 +362,34 @@ async fn collapse_tree(trees: &Trees, network: u32) {
         }
     }
 
-    println!("{:?}", Dot::with_config(&a, &[Config::EdgeNoLabel]));
+    let mut headers: Vec<HeaderInfoJson> = Vec::new();
+    for idx in a.node_indices() {
+        let prev_nodes = a.neighbors_directed(idx, petgraph::Direction::Incoming);
+        let mut prev_node_index: usize;
+        match prev_nodes.clone().count() {
+            0 => prev_node_index = usize::MAX,
+            1 => prev_node_index = prev_nodes.last().expect("we should have exactly one previous node").index(),
+            _ => panic!("Got multiple previous nodes. This should not happen.")
+        }
+        headers.push(
+            HeaderInfoJson::new(a[idx], idx.index(), prev_node_index)
+        );
+    };
 
     //let j = serde_json::to_string(&address)?;
+    return headers;
 }
 
-fn with_trees(
-    trees: Trees,
-) -> impl Filter<Extract = (Trees,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || trees.clone())
+fn with_cache(
+    cache: Cache,
+) -> impl Filter<Extract = (Cache,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || cache.clone())
+}
+
+fn with_networks(
+    networks: Vec<Network>,
+) -> impl Filter<Extract = (Vec<Network>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || networks.clone())
 }
 
 // Loads header and tip information for a specified network from the DB and
@@ -448,25 +470,28 @@ async fn load_header_infos_from_db(db: Db, network: u32) -> Vec<HeaderInfo> {
     return headers;
 }
 
-async fn data_response(trees: Trees, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
+async fn data_response(cache: Cache, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
     let network: u32 = query.network;
-    println!("AAAAAA");
 
-    let trees_locked = trees.lock().await;
-    let tree_info = trees_locked.get(&network).unwrap();
+    let cache_locked = cache.lock().await;
+    let header_info_json = cache_locked.get(&network).unwrap().clone();
 
-    Ok(warp::reply::json(&tree_info.0))
+    Ok(warp::reply::json(&DataJsonResponse{
+        block_infos: header_info_json.unwrap(),
+        tip_infos: vec![],
+        nodes: vec![],
+    }))
 }
 
-/*
-async fn networks_response(db: Db) -> Result<impl warp::Reply, Infallible> {
-    let mut network_infos = vec![];
+
+async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, Infallible> {
+    let network_infos: Vec<NetworkJson> = networks.iter().map(|n| NetworkJson::new(n)).collect();
 
     Ok(warp::reply::json(&NetworksJsonResponse {
         networks: network_infos,
     }))
 }
-*/
+
 
 async fn setup_db(db: Db) {
     db.lock()

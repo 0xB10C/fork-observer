@@ -4,6 +4,7 @@ const svgwidth = d3.select("body").node().getBoundingClientRect().width;
 const getNetworks = new Request('networks.json');
 
 const NODE_SIZE = 125
+const MAX_USIZE = 18446744073709551615;
 
 const orientationSelect = d3.select("#orientation")
 const networkSelect = d3.select("#network")
@@ -11,12 +12,12 @@ const networkSelect = d3.select("#network")
 const orientations = {
   "bottom-to-top": {
     x: (d, _) => d.x,
-    y: (d, htoi) => -htoi[d.data.data.block_height] * NODE_SIZE,
+    y: (d, htoi) => -htoi[d.data.data.height] * NODE_SIZE,
     linkDir: (htoi) => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
     hidden_blocks_text: {offset_x: -40, offset_y: 0, anchor: "left"},
   },
   "left-to-right": {
-    x: (d, htoi) => htoi[d.data.data.block_height] * NODE_SIZE,
+    x: (d, htoi) => htoi[d.data.data.height] * NODE_SIZE,
     y: (d, _) => d.x,
     linkDir: (htoi) => d3.linkHorizontal().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
     hidden_blocks_text: {offset_x: 0, offset_y: 15, anchor: "middle"},
@@ -66,20 +67,17 @@ function draw() {
     block_info.is_tip = status != undefined
   })
 
-  let min_height = Math.min(...block_infos.map(d => d.block_height))
   var treeData = d3
     .stratify()
-    .id(function (d) {
-      return d.hash;
-    })
+    .id(d => d.id)
     .parentId(function (d) {
       // d3js requires the first prev block hash to be null
-      return (d.block_height == min_height ? null : d.prev)
+      return (d.prev_id == MAX_USIZE ? null : d.prev_id)
     })(block_infos);
 
   collapseLinearChainsOfBlocks(treeData, 4)
 
-  let unique_heights = Array.from(new Set(treeData.descendants().map(d => parseInt(d.data.block_height)))).sort((a, b) =>  a - b );
+  let unique_heights = Array.from(new Set(treeData.descendants().map(d => parseInt(d.data.height)))).sort((a, b) =>  a - b );
   let htoi = {}; // height to array index map
   for (let index = 0; index < unique_heights.length; index++) {
     const height = unique_heights[index];
@@ -117,11 +115,11 @@ function draw() {
   links.append("path")
     .attr("class", "link link-block-block")
     .attr("d", o.linkDir(htoi))
-    .attr("stroke-dasharray", d => d.target.data.data.block_height - d.source.data.data.block_height == 1 ? "0" : "4 5")
+    .attr("stroke-dasharray", d => d.target.data.data.height - d.source.data.data.height == 1 ? "0" : "4 5")
 
   // text for the not-shown blocks
   var link_texts_hidden_blocks = links
-    .filter(d => d.target.data.data.block_height - d.source.data.data.block_height != 1)
+    .filter(d => d.target.data.data.height - d.source.data.data.height != 1)
     .append("text")
     .attr("class", "text-blocks-not-shown")
     .style("text-anchor", o.hidden_blocks_text.anchor)
@@ -129,7 +127,7 @@ function draw() {
     .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
     .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y )
   link_texts_hidden_blocks.append("tspan")
-    .text(d => (d.target.data.data.block_height - d.source.data.data.block_height -1) + " blocks")
+    .text(d => (d.target.data.data.height - d.source.data.data.height -1) + " blocks")
     .attr("dy", ".3em")
   link_texts_hidden_blocks.append("tspan")
     .text("hidden")
@@ -198,7 +196,7 @@ function draw() {
 
         // block description: height
         descText.append("tspan")
-          .text("height: " + d.data.data.block_height)
+          .text("height: " + d.data.data.height)
 
         // block description: block hash
         descText.append("tspan")
@@ -215,7 +213,7 @@ function draw() {
           .attr("x", "0")
           .text("previous block: ")
         descText.append("tspan")
-          .text(d.data.data.prev)
+          .text(d.data.data.prev_blockhash)
           .on("click", c => document.getSelection().getRangeAt(0).selectNode(c.target))
 
         // block description: tip status for nodes
@@ -259,7 +257,7 @@ function draw() {
     .append("text")
     .attr("dy", ".35em")
     .attr("class", "block-text")
-    .text(d => d.data.data.block_height);
+    .text(d => d.data.data.height);
 
   var node_groups = blocks
     .filter(d => d.data.data.status != "in-chain")
@@ -290,8 +288,8 @@ function draw() {
 
   let offset_x = 0;
   let offset_y = 0;
-  let max_height = Math.max(...block_infos.map(d => d.block_height))
-  let max_height_tip = root_node.leaves().filter(d => d.data.data.block_height == max_height)[0]
+  let max_height = Math.max(...block_infos.map(d => d.height))
+  let max_height_tip = root_node.leaves().filter(d => d.data.data.height == max_height)[0]
   if (max_height_tip !== undefined) {
     offset_x = o.x(max_height_tip, htoi);
     offset_y = o.y(max_height_tip, htoi);
@@ -308,7 +306,7 @@ function collapseLinearChainsOfBlocks(node, x) {
     for (let index = 0; index < node.children.length; index++) {
       const descendant = node.children[index];
       let nextForkOrTip = findNextForkOrTip(descendant)
-      let distance_between_blocks = nextForkOrTip.data.block_height - descendant.data.block_height
+      let distance_between_blocks = nextForkOrTip.data.height - descendant.data.height
       if (distance_between_blocks > x) {
         descendant._children = descendant.children;
         descendant.children = [nextForkOrTip.parent];
