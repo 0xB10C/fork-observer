@@ -1,6 +1,4 @@
-use bitcoincore_rpc::bitcoin::hash_types::BlockHash;
 use bitcoincore_rpc::bitcoin::BlockHeader;
-use bitcoincore_rpc::json::{GetChainTipsResultStatus, GetChainTipsResultTip};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Network;

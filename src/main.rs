@@ -1,8 +1,6 @@
 use std::cmp::max;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::collections::HashSet;
-use std::convert::TryInto;
 use std::sync::Arc;
 // TODO: remove?
 use std::convert::Infallible;
@@ -14,7 +12,7 @@ use tokio::time;
 use warp::Filter;
 
 use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::hash_types::BlockHash;
+use bitcoincore_rpc::bitcoin::BlockHash;
 use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus};
 use bitcoincore_rpc::{Client, RpcApi};
 
@@ -22,7 +20,6 @@ use rusqlite::Connection;
 
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
-use petgraph::dot::{Dot, Config};
 use petgraph::visit::Dfs;
 
 use log::info;
@@ -36,20 +33,21 @@ use config::Network;
 
 type Cache = Arc<Mutex<BTreeMap<u32, Option<Vec<HeaderInfoJson>>>>>;
 type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
-type Trees = Arc<Mutex<BTreeMap<u32, TreeInfo>>>;
+type Tree = Arc<Mutex<TreeInfo>>;
 type Db = Arc<Mutex<Connection>>;
 type Rpc = Arc<Client>;
 
 async fn get_new_active_tips(
     tips: &GetChainTipsResult,
     rest_url: String,
-    trees: &Trees,
-    network: u32,
+    tree: &Tree,
     rpc: Rpc,
+    min_fork_height: u64,
 ) -> Vec<HeaderInfo> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
     let first_fork_tip = tips
         .iter()
+        .filter(|tip| tip.height - tip.branch_length as u64 > min_fork_height)
         .min_by_key(|tip| tip.height - tip.branch_length as u64)
         .unwrap();
     let min_height = first_fork_tip.height - first_fork_tip.branch_length as u64;
@@ -57,17 +55,16 @@ async fn get_new_active_tips(
 
     let current_height: u64;
     {
-        let locked_tree = trees.lock().await;
-        let tree_info = locked_tree.get(&network).unwrap();
-        if tree_info.0.node_count() == 0 {
+        let locked_tree = tree.lock().await;
+        if locked_tree.0.node_count() == 0 {
             current_height = scan_start_height;
         } else {
-            let max_tip_idx = tree_info
+            let max_tip_idx = locked_tree
                 .0
                 .externals(petgraph::Direction::Outgoing)
-                .max_by_key(|idx| tree_info.0[*idx].height)
+                .max_by_key(|idx| locked_tree.0[*idx].height)
                 .unwrap();
-            current_height = tree_info.0[max_tip_idx].height;
+            current_height = locked_tree.0[max_tip_idx].height;
         }
     }
 
@@ -81,10 +78,9 @@ async fn get_new_active_tips(
     for query_height in (current_height + 1..=active_tip.height).step_by(STEP_SIZE) {
         let header_hash = rpc.get_block_hash(query_height).unwrap();
         {
-            let locked_tree = trees.lock().await;
-            let tree_info = locked_tree.get(&network).unwrap();
-            if tree_info.1.contains_key(&header_hash) {
-                panic!("active header already in tree");
+            let locked_tree = tree.lock().await;
+            if locked_tree.1.contains_key(&header_hash) {
+                continue;
             }
         }
         let headers = get_active_chain_headers(rest_url.clone(), STEP_SIZE, header_hash).await;
@@ -102,23 +98,22 @@ async fn get_new_active_tips(
 
 async fn get_new_nonactive_tips(
     tips: &GetChainTipsResult,
-    rest_url: String,
-    trees: &Trees,
-    network: u32,
+    tree: &Tree,
     rpc: Rpc,
+    min_fork_height: u64,
 ) -> Vec<HeaderInfo> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
 
     for inactive_tip in tips
         .iter()
+        .filter(|tip| tip.height - tip.branch_length as u64 > min_fork_height)
         .filter(|tip| tip.status != GetChainTipsResultStatus::Active)
     {
         let mut next_header = inactive_tip.hash;
         for i in 0..inactive_tip.branch_length {
             {
-                let locked_tree = trees.lock().await;
-                let tree_info = locked_tree.get(&network).unwrap();
-                if tree_info.1.contains_key(&inactive_tip.hash) {
+                let tree_locked = tree.lock().await;
+                if tree_locked.1.contains_key(&inactive_tip.hash) {
                     break;
                 }
             }
@@ -144,17 +139,17 @@ async fn get_new_nonactive_tips(
 
 async fn get_new_tips(
     tips: &GetChainTipsResult,
-    trees: &Trees,
+    tree: &Tree,
     rpc: Rpc,
     rest_url: String,
-    network: u32,
+    min_fork_height: u64,
 ) -> Vec<HeaderInfo> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
     let mut active_new_headers: Vec<HeaderInfo> =
-        get_new_active_tips(tips, rest_url.clone(), trees, network, rpc.clone()).await;
+        get_new_active_tips(tips, rest_url.clone(), tree, rpc.clone(), min_fork_height).await;
     new_headers.append(&mut active_new_headers);
     let mut nonactive_new_headers: Vec<HeaderInfo> =
-        get_new_nonactive_tips(tips, rest_url, trees, network, rpc.clone()).await;
+        get_new_nonactive_tips(tips, tree, rpc.clone(), min_fork_height).await;
     new_headers.append(&mut nonactive_new_headers);
     return new_headers;
 }
@@ -180,8 +175,6 @@ async fn main() {
         ),
     };
     let db: Db = Arc::new(Mutex::new(connection));
-    let trees: Trees = Arc::new(Mutex::new(BTreeMap::new()));
-
     let cache: Cache = Arc::new(Mutex::new(BTreeMap::new()));
 
     setup_db(db.clone()).await;
@@ -194,13 +187,11 @@ async fn main() {
             network.nodes.len()
         );
 
-        let tree_info = load_treeinfos_from_db(db.clone(), network.id).await;
+        let tree: Tree = Arc::new(Mutex::new(load_treeinfos_from_db(db.clone(), network.id).await));
+
+        let headerinfojson = collapse_tree(&tree).await;
         {
-            trees.lock().await.insert(network.id, tree_info);
-        }
-        let headerinfojson = collapse_tree(&trees, network.id).await;
-        {
-        let mut locked_cache = cache.lock().await;
+            let mut locked_cache = cache.lock().await;
             locked_cache.insert(network.id, Some(headerinfojson));
         }
 
@@ -209,57 +200,56 @@ async fn main() {
             let rest_url = node.rpc_url.clone();
             let mut interval = time::interval(config.query_interval);
             let db_write = db.clone();
-            let trees_clone = trees.clone();
+            let tree_clone = tree.clone();
             let cache_clone = cache.clone();
             let network_cloned = network.clone();
             task::spawn(async move {
                 loop {
                     let db_write = db_write.clone();
                     let tips = get_tips(rpc.clone()).await;
-                    info!(
-                        "node '{}' on network '{}' has {} tips",
-                        node.name,
-                        network_cloned.name,
-                        tips.len()
-                    );
                     let new_headers: Vec<HeaderInfo> = get_new_tips(
                         &tips,
-                        &trees_clone,
+                        &tree_clone,
                         rpc.clone(),
                         rest_url.clone(),
-                        network_cloned.id,
+                        network_cloned.min_fork_height,
                     )
                     .await;
                     if !new_headers.is_empty() {
                         {
-                            let mut trees_locked = trees_clone.lock().await;
-                            let tree_info = trees_locked.get_mut(&network_cloned.id).unwrap();
+                            let mut tree_locked = tree_clone.lock().await;
                             for h in new_headers.clone() {
-                                let idx = tree_info.0.add_node(h.clone());
-                                tree_info.1.insert(h.header.block_hash(), idx);
+                                if !tree_locked.1.contains_key(&h.header.block_hash()) {
+                                    let idx = tree_locked.0.add_node(h.clone());
+                                    tree_locked.1.insert(h.header.block_hash(), idx);
+                                }
                             }
                             for current in new_headers.clone() {
-                                let idx_current = tree_info
-                                    .1
-                                    .get(&current.header.block_hash())
-                                    .expect(
-                                    "current header should be in the map as we just inserted it",
-                                );
-                                match tree_info.1.get(&current.header.prev_blockhash) {
-                                    Some(idx_prev) => {
-                                        tree_info.0.update_edge(*idx_prev, *idx_current, false)
+                                let idx_current: NodeIndex;
+                                let idx_prev: NodeIndex;
+                                {
+                                    idx_current = *tree_locked
+                                        .1
+                                        .get(&current.header.block_hash())
+                                        .expect(
+                                        "current header should be in the map as we just inserted it or it was already present",
+                                    );
+                                    match tree_locked.1.get(&current.header.prev_blockhash) {
+                                        Some(idx) => idx_prev = *idx,
+                                        None => continue, // the tree root as no prev block, skip it
                                     }
-                                    None => continue,
-                                };
+                                }
+                                tree_locked.0.update_edge(idx_prev, idx_current, false);
                             }
                         }
+
                         write_to_db(&new_headers, db_write, network_cloned.id).await;
-                        let headerinfojson = collapse_tree(&trees_clone, network_cloned.id).await;
+
+                        let headerinfojson = collapse_tree(&tree_clone).await;
                         {
                             let mut locked_cache = cache_clone.lock().await;
                             locked_cache.insert(network_cloned.id, Some(headerinfojson));
                         }
-
                     }
                     interval.tick().await;
                 }
@@ -309,26 +299,30 @@ async fn main() {
     warp::serve(routes).run(config.address).await;
 }
 
-async fn collapse_tree(trees: &Trees, network: u32) -> Vec<HeaderInfoJson> {
-    let trees_locked = trees.lock().await;
-    let tree_info = trees_locked.get(&network).unwrap();
-    let mut collapsed_tree = tree_info.0.clone();
+async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
+    let tree_locked = tree.lock().await;
 
     let mut height_occurences: BTreeMap<u64, usize> = BTreeMap::new();
-    for node in collapsed_tree.raw_nodes() {
+    for node in tree_locked.0.raw_nodes() {
         let counter = height_occurences.entry(node.weight.height).or_insert(0);
         *counter += 1;
     }
-    let relevant_heights: Vec<u64> = height_occurences
+    let active_tip_height: u64 = height_occurences
+        .iter()
+        .map(|(k, _)| *k)
+        .max()
+        .expect("we should have at least one header in the tree here");
+    let mut relevant_heights: Vec<u64> = height_occurences
         .iter()
         .filter(|(_, v)| **v > 1)
         .map(|(k, _)| *k)
         .collect();
+    relevant_heights.push(active_tip_height);
 
-    let mut a = collapsed_tree.filter_map(
+    let mut collapsed_tree = tree_locked.0.filter_map(
         |_, node| {
             let height = node.height;
-            for x in -2i64..=2 {
+            for x in -3i64..=3 {
                 if relevant_heights.contains(&((height as i64-x) as u64)) {
                     return Some(node);
                 }
@@ -338,23 +332,17 @@ async fn collapse_tree(trees: &Trees, network: u32) -> Vec<HeaderInfoJson> {
         |_, edge| Some(edge),
     );
 
-    info!(
-        "done collapsing tree: roots={}, tips={}",
-        a.externals(petgraph::Direction::Incoming).count(), // root nodes
-        a.externals(petgraph::Direction::Outgoing).count(), // tip nodes
-    );
-
     let mut prev_header_to_connect_to: Option<NodeIndex> = None;
-    let root_indicies: Vec<NodeIndex> = a.externals(petgraph::Direction::Incoming).collect();
+    let root_indicies: Vec<NodeIndex> = collapsed_tree.externals(petgraph::Direction::Incoming).collect();
     // Assumes root_indicies is sorted..
     for root in root_indicies.iter() {
         if let Some(prev_idx) = prev_header_to_connect_to {
-            a.add_edge(prev_idx, *root, &false);
+            collapsed_tree.add_edge(prev_idx, *root, &false);
         }
         let mut max_height: u64 = u64::default();
-        let mut dfs = Dfs::new(&a, *root);
-        while let Some(idx) = dfs.next(&a) {
-            let height = a[idx].height;
+        let mut dfs = Dfs::new(&collapsed_tree, *root);
+        while let Some(idx) = dfs.next(&collapsed_tree) {
+            let height = collapsed_tree[idx].height;
             if height > max_height {
                 max_height = height;
                 prev_header_to_connect_to = Some(idx);
@@ -362,21 +350,26 @@ async fn collapse_tree(trees: &Trees, network: u32) -> Vec<HeaderInfoJson> {
         }
     }
 
+    info!(
+        "done collapsing tree: roots={}, tips={}",
+        collapsed_tree.externals(petgraph::Direction::Incoming).count(), // root nodes
+        collapsed_tree.externals(petgraph::Direction::Outgoing).count(), // tip nodes
+    );
+
     let mut headers: Vec<HeaderInfoJson> = Vec::new();
-    for idx in a.node_indices() {
-        let prev_nodes = a.neighbors_directed(idx, petgraph::Direction::Incoming);
-        let mut prev_node_index: usize;
+    for idx in collapsed_tree.node_indices() {
+        let prev_nodes = collapsed_tree.neighbors_directed(idx, petgraph::Direction::Incoming);
+        let prev_node_index: usize;
         match prev_nodes.clone().count() {
             0 => prev_node_index = usize::MAX,
             1 => prev_node_index = prev_nodes.last().expect("we should have exactly one previous node").index(),
-            _ => panic!("Got multiple previous nodes. This should not happen.")
+            _ => panic!("got multiple previous nodes. this should not happen.")
         }
         headers.push(
-            HeaderInfoJson::new(a[idx], idx.index(), prev_node_index)
+            HeaderInfoJson::new(collapsed_tree[idx], idx.index(), prev_node_index)
         );
     };
 
-    //let j = serde_json::to_string(&address)?;
     return headers;
 }
 
@@ -399,7 +392,7 @@ async fn load_treeinfos_from_db(db: Db, network: u32) -> TreeInfo {
 
     let mut tree: DiGraph<HeaderInfo, bool> = DiGraph::new();
     let mut hash_index_map: HashMap<BlockHash, NodeIndex> = HashMap::new();
-    info!("buidling header tree for network {}..", network);
+    info!("building header tree for network {}..", network);
     // add headers as nodes
     for h in header_infos.clone() {
         let idx = tree.add_node(h.clone());
@@ -553,8 +546,7 @@ async fn get_active_chain_headers(
     start: BlockHash,
 ) -> Vec<bitcoin::BlockHeader> {
     info!(
-        "loading up to {} active-chain headers starting from {}",
-        count,
+        "loading active-chain headers starting from {}",
         start.to_string()
     );
     let res = reqwest::get(format!(
@@ -566,10 +558,19 @@ async fn get_active_chain_headers(
     .await
     .unwrap();
 
-    res.bytes()
+    let headers: Vec<bitcoin::BlockHeader> = res.bytes()
         .await
         .unwrap()
         .chunks(80)
         .map(|hbytes| bitcoin::consensus::deserialize(&hbytes).unwrap())
-        .collect()
+        .collect();
+
+    info!(
+        "loaded {} active-chain headers starting from {}",
+        headers.len(),
+        start.to_string()
+    );
+
+    return headers;
+
 }
