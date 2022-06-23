@@ -1,7 +1,7 @@
 use bitcoincore_rpc::bitcoin::BlockHeader;
 use serde::{Deserialize, Serialize};
-
-use crate::config::Network;
+use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultTip, GetChainTipsResultStatus};
+use crate::config::{Network, Node};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct HeaderInfo {
@@ -69,17 +69,50 @@ impl HeaderInfoJson {
 
 #[derive(Serialize)]
 pub struct DataJsonResponse {
-    pub block_infos: Vec<HeaderInfoJson>,
-    pub tip_infos: Vec<TipInfoJson>,
+    pub header_infos: Vec<HeaderInfoJson>,
     pub nodes: Vec<NodeInfoJson>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct TipInfoJson {
-
+    pub hash: String,
+    pub status: String,
 }
 
-#[derive(Serialize)]
-pub struct NodeInfoJson {
+impl TipInfoJson {
+    pub fn new(tip: &GetChainTipsResultTip) -> Self {
+        TipInfoJson {
+            hash: tip.hash.to_string(),
+            status: tip_status_string(tip.status),
+        }
+    }
+}
 
+fn tip_status_string(status: GetChainTipsResultStatus) -> String {
+    match status {
+        GetChainTipsResultStatus::Active => String::from("active"),
+        GetChainTipsResultStatus::Invalid => String::from("invalid"),
+        GetChainTipsResultStatus::HeadersOnly => String::from("headers-only"),
+        GetChainTipsResultStatus::ValidHeaders => String::from("valid-headers"),
+        GetChainTipsResultStatus::ValidFork => String::from("valid-fork"),
+    }
+}
+
+#[derive(Serialize, Clone)]
+pub struct NodeInfoJson {
+    pub id: u8,
+    pub name: String,
+    pub description: String,
+    pub tips: Vec<TipInfoJson>,
+}
+
+impl NodeInfoJson {
+    pub fn new(node: Node, tips: &GetChainTipsResult) -> Self {
+        NodeInfoJson {
+            id: node.id,
+            name: node.name,
+            description: node.description,
+            tips: tips.iter().map(|t| TipInfoJson::new(t)).collect(),
+        }
+    }
 }

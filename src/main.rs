@@ -27,15 +27,21 @@ use log::info;
 mod config;
 mod types;
 
-use types::{DataQuery, HeaderInfo, HeaderInfoJson, NetworksJsonResponse, NetworkJson, DataJsonResponse};
+use types::{DataQuery, HeaderInfo, HeaderInfoJson, NodeInfoJson, NetworksJsonResponse, NetworkJson, DataJsonResponse};
 
 use config::Network;
 
-type Cache = Arc<Mutex<BTreeMap<u32, Option<Vec<HeaderInfoJson>>>>>;
+type NodeInfo = BTreeMap<u8, NodeInfoJson>;
+type Cache = (Vec<HeaderInfoJson>, NodeInfo);
+type Caches = Arc<Mutex<BTreeMap<u32, Cache>>>;
 type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
 type Tree = Arc<Mutex<TreeInfo>>;
 type Db = Arc<Mutex<Connection>>;
 type Rpc = Arc<Client>;
+
+// Maximum number of tips to send via a data.json response. Fewer tips mean
+// less work during collapsing.
+const MAX_TIPS: usize = 100;
 
 async fn get_new_active_tips(
     tips: &GetChainTipsResult,
@@ -175,7 +181,7 @@ async fn main() {
         ),
     };
     let db: Db = Arc::new(Mutex::new(connection));
-    let cache: Cache = Arc::new(Mutex::new(BTreeMap::new()));
+    let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
 
     setup_db(db.clone()).await;
 
@@ -191,8 +197,8 @@ async fn main() {
 
         let headerinfojson = collapse_tree(&tree).await;
         {
-            let mut locked_cache = cache.lock().await;
-            locked_cache.insert(network.id, Some(headerinfojson));
+            let mut locked_caches = caches.lock().await;
+            locked_caches.insert(network.id, (headerinfojson, BTreeMap::new()));
         }
 
         for node in network.nodes.iter().cloned() {
@@ -201,8 +207,9 @@ async fn main() {
             let mut interval = time::interval(config.query_interval);
             let db_write = db.clone();
             let tree_clone = tree.clone();
-            let cache_clone = cache.clone();
+            let caches_clone = caches.clone();
             let network_cloned = network.clone();
+            let mut has_node_info = false;
             task::spawn(async move {
                 loop {
                     let db_write = db_write.clone();
@@ -215,7 +222,7 @@ async fn main() {
                         network_cloned.min_fork_height,
                     )
                     .await;
-                    if !new_headers.is_empty() {
+                    if !new_headers.is_empty() || !has_node_info {
                         {
                             let mut tree_locked = tree_clone.lock().await;
                             for h in new_headers.clone() {
@@ -246,10 +253,15 @@ async fn main() {
                         write_to_db(&new_headers, db_write, network_cloned.id).await;
 
                         let headerinfojson = collapse_tree(&tree_clone).await;
+                        let nodeinfojson = NodeInfoJson::new(node.clone(), &tips);
                         {
-                            let mut locked_cache = cache_clone.lock().await;
-                            locked_cache.insert(network_cloned.id, Some(headerinfojson));
+                            let mut locked_cache = caches_clone.lock().await;
+                            let entry = locked_cache.get(&network_cloned.id).expect("network should already exist in cache");
+                            let mut node_infos = entry.1.clone();
+                            node_infos.insert(node.id, nodeinfojson);
+                            locked_cache.insert(network_cloned.id, (headerinfojson, node_infos));
                         }
+                        has_node_info = true;
                     }
                     interval.tick().await;
                 }
@@ -279,7 +291,7 @@ async fn main() {
 
     let data_json = warp::get()
         .and(warp::path("data.json"))
-        .and(with_cache(cache.clone()))
+        .and(with_caches(caches.clone()))
         .and(warp::query::<DataQuery>())
         .and_then(data_response);
 
@@ -318,6 +330,8 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
         .map(|(k, _)| *k)
         .collect();
     relevant_heights.push(active_tip_height);
+    relevant_heights.sort();
+    relevant_heights = relevant_heights.iter().rev().take(MAX_TIPS).cloned().collect();
 
     let mut collapsed_tree = tree_locked.0.filter_map(
         |_, node| {
@@ -373,10 +387,10 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
     return headers;
 }
 
-fn with_cache(
-    cache: Cache,
-) -> impl Filter<Extract = (Cache,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || cache.clone())
+fn with_caches(
+    caches: Caches,
+) -> impl Filter<Extract = (Caches,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || caches.clone())
 }
 
 fn with_networks(
@@ -463,16 +477,15 @@ async fn load_header_infos_from_db(db: Db, network: u32) -> Vec<HeaderInfo> {
     return headers;
 }
 
-async fn data_response(cache: Cache, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
+async fn data_response(caches: Caches, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
     let network: u32 = query.network;
 
-    let cache_locked = cache.lock().await;
-    let header_info_json = cache_locked.get(&network).unwrap().clone();
+    let caches_locked = caches.lock().await;
+    let (header_info_json, node_infos) = caches_locked.get(&network).unwrap().clone();
 
     Ok(warp::reply::json(&DataJsonResponse{
-        block_infos: header_info_json.unwrap(),
-        tip_infos: vec![],
-        nodes: vec![],
+        header_infos: header_info_json,
+        nodes: node_infos.values().cloned().collect(),
     }))
 }
 

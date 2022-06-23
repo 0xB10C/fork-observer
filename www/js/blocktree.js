@@ -40,31 +40,30 @@ var state_data = {}
 
 function draw() {
   data = state_data
-  let block_infos = data.block_infos;
-  let tip_infos = data.tip_infos;
+  let header_infos = data.header_infos;
+  let tip_infos = [];
   let node_infos = data.nodes;
 
-  nodeid_to_node = {}
-  for (const value of node_infos) {
-    nodeid_to_node[value.id] = value
-  }
+  console.log(node_infos);
 
   hash_to_tipstatus = {}
-  tip_infos.forEach(tip => {
-   if (!(tip.hash in hash_to_tipstatus)) {
-     hash_to_tipstatus[tip.hash] = {}
-   }
-   if (!(tip.status in hash_to_tipstatus[tip.hash])) {
-     hash_to_tipstatus[tip.hash][tip.status] = { status: tip.status, count: 0, nodes: []  }
-   }
-   hash_to_tipstatus[tip.hash][tip.status].count++
-   hash_to_tipstatus[tip.hash][tip.status].nodes.push(nodeid_to_node[tip.node])
+  node_infos.forEach(node => {
+    node.tips.forEach(tip => {
+      if (!(tip.hash in hash_to_tipstatus)) {
+        hash_to_tipstatus[tip.hash] = {}
+      }
+      if (!(tip.status in hash_to_tipstatus[tip.hash])) {
+        hash_to_tipstatus[tip.hash][tip.status] = { status: tip.status, count: 0, nodes: []  }
+      }
+      hash_to_tipstatus[tip.hash][tip.status].count++
+      hash_to_tipstatus[tip.hash][tip.status].nodes.push(node)
+    });
   });
 
-  block_infos.forEach(block_info => {
-    let status = hash_to_tipstatus[block_info.hash];
-    block_info.status = status == undefined? "in-chain" : Object.values(status)
-    block_info.is_tip = status != undefined
+  header_infos.forEach(header_info => {
+    let status = hash_to_tipstatus[header_info.hash];
+    header_info.status = status == undefined? "in-chain" : Object.values(status)
+    header_info.is_tip = status != undefined
   })
 
   var treeData = d3
@@ -73,7 +72,7 @@ function draw() {
     .parentId(function (d) {
       // d3js requires the first prev block hash to be null
       return (d.prev_id == MAX_USIZE ? null : d.prev_id)
-    })(block_infos);
+    })(header_infos);
 
   collapseLinearChainsOfBlocks(treeData, 4)
 
@@ -144,7 +143,6 @@ function draw() {
     .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
     .on("click", (c, d) => onBlockClick(c, d))
 
-
   function onBlockClick(c, d) {
       let parentElement = d3.select(c.target.parentElement)
 
@@ -170,6 +168,8 @@ function draw() {
               .on("drag", dragged)
               .on("end", dragended)
           )
+
+        parentElement.raise()
 
         function dragstarted() {d3.select(this).raise().attr("cursor", "grabbing");}
         function dragged(event, d) {
@@ -288,7 +288,7 @@ function draw() {
 
   let offset_x = 0;
   let offset_y = 0;
-  let max_height = Math.max(...block_infos.map(d => d.height))
+  let max_height = Math.max(...header_infos.map(d => d.height))
   let max_height_tip = root_node.leaves().filter(d => d.data.data.height == max_height)[0]
   if (max_height_tip !== undefined) {
     offset_x = o.x(max_height_tip, htoi);
