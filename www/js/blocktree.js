@@ -190,6 +190,27 @@ function draw() {
           .attr("x", -description_margin.x / 2)
           .attr("y", -description_margin.y / 2)
 
+        let descCloseGroup = descGroup.append("g")
+
+        function onBlockDescriptionCloseClick(c, d) {
+          let parentElement = d3.select(c.target.parentElement.parentElement.parentElement)
+
+          parentElement.selectAll(".block-description").remove()
+          parentElement.selectAll(".link-block-description").attr("d", "")
+        }
+
+        // node status indicator
+        const indicator_radius = 4
+        const indicator_margin = 1
+        let closeIndicator = descCloseGroup.append("rect")
+          .attr("width", indicator_radius*2)
+          .attr("height", indicator_radius*2)
+          .attr("x", (-description_margin.x/2)+1)
+          .attr("y", (-description_margin.y/2)+1)
+          .attr("fill", "red")
+          .attr("stroke", "red")
+          .on("click", (c, d) => onBlockDescriptionCloseClick(c, d));
+
         let descText = descGroup
           .append("text")
           .attr("dy", "1em")
