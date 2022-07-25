@@ -277,6 +277,12 @@ async fn main() {
         .and(warp::path!("css" / "style.css"))
         .and(warp::fs::file(config.www_path.join("css/style.css")));
 
+    let bootstrap_css = warp::get()
+        .and(warp::path!("css" / "bootstrap.min.css"))
+        .and(warp::fs::file(
+            config.www_path.join("css/bootstrap.min.css"),
+        ));
+
     let blocktree_js = warp::get()
         .and(warp::path!("js" / "blocktree.js"))
         .and(warp::fs::file(config.www_path.join("js/blocktree.js")));
@@ -304,6 +310,7 @@ async fn main() {
         .or(blocktree_js)
         .or(logo_png)
         .or(style_css)
+        .or(bootstrap_css)
         .or(data_json)
         .or(networks_json)
         .or(d3_js);
