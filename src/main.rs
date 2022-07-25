@@ -22,7 +22,7 @@ use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::Dfs;
 
-use log::{error, info};
+use log::{error, info, warn};
 
 mod config;
 mod types;
@@ -333,6 +333,10 @@ async fn main() {
 
 async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
     let tree_locked = tree.lock().await;
+    if tree_locked.0.node_count() == 0 {
+        warn!("tried to collapse an empty tree!");
+        return vec![];
+    }
 
     let mut height_occurences: BTreeMap<u64, usize> = BTreeMap::new();
     for node in tree_locked.0.raw_nodes() {
@@ -343,7 +347,8 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
         .iter()
         .map(|(k, _)| *k)
         .max()
-        .expect("we should have at least one header in the tree here");
+        .expect("we should have at least one height here as we have blocks");
+
     let mut relevant_heights: Vec<u64> = height_occurences
         .iter()
         .filter(|(_, v)| **v > 1)
