@@ -217,8 +217,14 @@ async fn main() {
             let mut has_node_info = false;
             task::spawn(async move {
                 loop {
-                    let db_write = db_write.clone();
-                    let tips = get_tips(rpc.clone()).await;
+                    interval.tick().await;
+                    let tips = match get_tips(rpc.clone()).await {
+                        Ok(tips) => tips,
+                        Err(e) => {
+                            error!("Could not fetch chaintips from node '{}' (id={}) on network '{}' (id={}): {:?}", node.name, node.id, network_cloned.name, network_cloned.id, e);
+                            continue;
+                        }
+                    };
                     let new_headers: Vec<HeaderInfo> = get_new_tips(
                         &tips,
                         &tree_clone,
@@ -227,6 +233,7 @@ async fn main() {
                         network_cloned.min_fork_height,
                     )
                     .await;
+                    let db_write = db_write.clone();
                     if !new_headers.is_empty() || !has_node_info {
                         {
                             let mut tree_locked = tree_clone.lock().await;
@@ -270,7 +277,6 @@ async fn main() {
                         }
                         has_node_info = true;
                     }
-                    interval.tick().await;
                 }
             });
         }
@@ -575,12 +581,32 @@ async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) {
     );
 }
 
-async fn get_tips(rpc: Rpc) -> GetChainTipsResult {
-    let res = task::spawn_blocking(move || {
-        return rpc.get_chain_tips().unwrap();
-    })
-    .await;
-    res.unwrap()
+#[derive(Debug)]
+enum FetchError {
+    TokioJoinError(tokio::task::JoinError),
+    BitcoinCoreRPCError(bitcoincore_rpc::Error),
+}
+
+impl From<tokio::task::JoinError> for FetchError {
+    fn from(e: tokio::task::JoinError) -> Self {
+        FetchError::TokioJoinError(e)
+    }
+}
+
+impl From<bitcoincore_rpc::Error> for FetchError {
+    fn from(e: bitcoincore_rpc::Error) -> Self {
+        FetchError::BitcoinCoreRPCError(e)
+    }
+}
+
+async fn get_tips(rpc: Rpc) -> Result<GetChainTipsResult, FetchError> {
+    match task::spawn_blocking(move || rpc.get_chain_tips()).await {
+        Ok(tips_result) => match tips_result.into() {
+            Ok(tips) => Ok(tips),
+            Err(e) => Err(e.into()),
+        },
+        Err(e) => Err(e.into()),
+    }
 }
 
 async fn get_active_chain_headers(
