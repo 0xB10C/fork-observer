@@ -157,7 +157,7 @@ function draw() {
       } else {
 
         const description_offset = { x: 50, y: -50 }
-        const description_margin = { x: 15, y: 15 }
+        const description_margin = { x: 0, y: 15 }
         let descGroup = parentElement.append("g")
           .attr("class", "block-description")
           .attr("transform", "translate(" + description_offset.x + "," + description_offset.y / 2 + ")")
@@ -177,83 +177,74 @@ function draw() {
           d.y += event.dy;
           var link = d3.linkHorizontal()({
             source: [ 0, 0 ],
-            target: [ d.x - description_margin.x / 2, d.y + (descText.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k) / 2 ]
+            target: [
+              d.x + (card.node().getBoundingClientRect().width  / d3.zoomTransform(svg.node()).k) / 2,
+              d.y + (card.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k) / 2
+            ]
           });
           parentElement.selectAll(".link-block-description").attr('d', link)
           d3.select(this).attr("transform", "translate(" + d.x + "," + d.y + ")");
         }
         function dragended() { d3.select(this).attr("cursor", "drag"); }
 
-        let descBackground = descGroup
-          .append("rect")
-          .attr("class", "block-description-background")
-          .attr("x", -description_margin.x / 2)
-          .attr("y", -description_margin.y / 2)
-
         let descCloseGroup = descGroup.append("g")
 
-        function onBlockDescriptionCloseClick(c, d) {
-          let parentElement = d3.select(c.target.parentElement.parentElement.parentElement)
+        let status_text = "";
+        // block description: tip status for nodes
+        if (d.data.data.status != "in-chain") {
+          d.data.data.status.reverse().forEach(status => {
+            status_text += `<span class="text-monospace tip-status-color-fill-${status.status}">▆ </span>`
+            status_text += `<span>${status.count}x ${status.status}: ${status.nodes.map(n => n.name).join(", ")}`
+          })
+        }
 
+        function onBlockDescriptionCloseClick(c, d) {
+          let parentElement = d3.select(c.target.parentElement.parentElement.parentElement.parentElement.parentElement.parentElement)
+          console.log(parentElement)
           parentElement.selectAll(".block-description").remove()
           parentElement.selectAll(".link-block-description").attr("d", "")
         }
 
-        // node status indicator
-        const indicator_radius = 4
-        const indicator_margin = 1
-        let closeIndicator = descCloseGroup.append("rect")
-          .attr("width", indicator_radius*2)
-          .attr("height", indicator_radius*2)
-          .attr("x", (-description_margin.x/2)+1)
-          .attr("y", (-description_margin.y/2)+1)
-          .attr("fill", "red")
-          .attr("stroke", "red")
+        let cardWrapper = descGroup.append("foreignObject")
+          .attr("height", "20")
+          .attr("width", "600")
+        let card = cardWrapper
+          .append("xhtml:div")
+            .attr("class", "card m-0 p-0")
+        let headerDiv = card.append("xhtml:div").attr("class", "card-header")
+        headerDiv.append()
+          .html(`<span>Header at height ${d.data.data.height}</span>`)
+        headerDiv.append()
+          .style("float", "right")
+          .html(`<button class="btn btn-close"></button>`)
           .on("click", (c, d) => onBlockDescriptionCloseClick(c, d));
-
-        let descText = descGroup
-          .append("text")
-          .attr("dy", "1em")
-
-        // block description: height
-        descText.append("tspan")
-          .text("height: " + d.data.data.height)
-
-        // block description: block hash
-        descText.append("tspan")
-          .text("block hash: ")
-          .attr("dy", "1em")
-          .attr("x", "0")
-        descText.append("tspan")
-          .text(d.data.data.hash)
-          .on("click", c => document.getSelection().getRangeAt(0).selectNode(c.target))
-
-        // block description: previous hash
-        descText.append("tspan")
-          .attr("dy", "1em")
-          .attr("x", "0")
-          .text("previous block: ")
-        descText.append("tspan")
-          .text(d.data.data.prev_blockhash)
-          .on("click", c => document.getSelection().getRangeAt(0).selectNode(c.target))
-
-        // block description: tip status for nodes
-        if (d.data.data.status != "in-chain") {
-          d.data.data.status.reverse().forEach(status => {
-            descText.append("tspan")
-              .text("▆ ")
-              .attr("dy", "1.2em")
-              .attr("x", "0")
-              .attr("class", "tip-status-color-fill-"+ status.status)
-
-            descText.append("tspan")
-              .text(status.count + "x " + status.status + ": " + status.nodes.map(n => n.name).join(", "))
-          })
-        }
-
-        descBackground
-          .attr("height", (descText.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k) + description_margin.y )
-          .attr("width", (descText.node().getBoundingClientRect().width / d3.zoomTransform(svg.node()).k) + description_margin.x)
+        card.append()
+          .html(`
+              <div class="card-body">
+                <div class="container">
+                  <div class="row small">
+                    <div class="col small ">
+                      <div class="row"><div class="col-2">hash</div><div class="col-10 font-monospace small">${d.data.data.hash}</div></div>
+                      <div class="row"><div class="col-2">previous</div><div class="col-10 font-monospace small">${d.data.data.prev_blockhash}</div></div>
+                      <div class="row"><div class="col-2">merkleroot</div><div class="col-10 font-monospace small">${d.data.data.merkle_root}</div></div>
+                      <div class="row">
+                        <div class="col-2">timestamp</div><div class="col-4">${d.data.data.time}</div>
+                        <div class="col-2">version</div><div class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</div>
+                      </div>
+                      <div class="row">
+                        <div class="col-2">nonce</div><div class="col-4 font-monospace">0x${d.data.data.nonce.toString(16)}</div>
+                        <div class="col-2">bits</div><div class="col-4 font-monospace">0x${d.data.data.bits.toString(16)}</div>
+                      </div>
+                      <div class="row"><div class="col">${status_text}</div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+          `)
+        console.log(cardWrapper.attr("height"))
+        cardWrapper.attr("height", card.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k )
+        cardWrapper.attr("width", card.node().getBoundingClientRect().width / d3.zoomTransform(svg.node()).k )
+        console.log(cardWrapper.attr("height"))
       }
     }
 

@@ -93,8 +93,8 @@ text.block-text {
  fill: black;
 }
 
-.tip-status-color-fill-active { fill: #79FF00 }
-.tip-status-color-fill-invalid { fill: #CC203B }
-.tip-status-color-fill-valid-fork { fill: #3CACB5 }
-.tip-status-color-fill-valid-headers { fill: #FF69B4 }
-.tip-status-color-fill-headers-only { fill: #FF8800 }
+.tip-status-color-fill-active { fill: #79FF00; color: #79FF00 }
+.tip-status-color-fill-invalid { fill: #CC203B; color: #CC203B }
+.tip-status-color-fill-valid-fork { fill: #3CACB5; color: #3CACB5 }
+.tip-status-color-fill-valid-headers { fill: #FF69B4; color: #FF69B4 }
+.tip-status-color-fill-headers-only { fill: #FF8800; color: #FF8800 }
