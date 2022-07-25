@@ -22,12 +22,15 @@ use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::Dfs;
 
-use log::info;
+use log::{error, info};
 
 mod config;
 mod types;
 
-use types::{DataQuery, HeaderInfo, HeaderInfoJson, NodeInfoJson, NetworksJsonResponse, NetworkJson, DataJsonResponse};
+use types::{
+    DataJsonResponse, DataQuery, HeaderInfo, HeaderInfoJson, NetworkJson, NetworksJsonResponse,
+    NodeInfoJson,
+};
 
 use config::Network;
 
@@ -193,7 +196,9 @@ async fn main() {
             network.nodes.len()
         );
 
-        let tree: Tree = Arc::new(Mutex::new(load_treeinfos_from_db(db.clone(), network.id).await));
+        let tree: Tree = Arc::new(Mutex::new(
+            load_treeinfos_from_db(db.clone(), network.id).await,
+        ));
 
         let headerinfojson = collapse_tree(&tree).await;
         {
@@ -256,7 +261,9 @@ async fn main() {
                         let nodeinfojson = NodeInfoJson::new(node.clone(), &tips);
                         {
                             let mut locked_cache = caches_clone.lock().await;
-                            let entry = locked_cache.get(&network_cloned.id).expect("network should already exist in cache");
+                            let entry = locked_cache
+                                .get(&network_cloned.id)
+                                .expect("network should already exist in cache");
                             let mut node_infos = entry.1.clone();
                             node_infos.insert(node.id, nodeinfojson);
                             locked_cache.insert(network_cloned.id, (headerinfojson, node_infos));
@@ -338,13 +345,18 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
         .collect();
     relevant_heights.push(active_tip_height);
     relevant_heights.sort();
-    relevant_heights = relevant_heights.iter().rev().take(MAX_TIPS).cloned().collect();
+    relevant_heights = relevant_heights
+        .iter()
+        .rev()
+        .take(MAX_TIPS)
+        .cloned()
+        .collect();
 
     let mut collapsed_tree = tree_locked.0.filter_map(
         |_, node| {
             let height = node.height;
             for x in -3i64..=3 {
-                if relevant_heights.contains(&((height as i64-x) as u64)) {
+                if relevant_heights.contains(&((height as i64 - x) as u64)) {
                     return Some(node);
                 }
             }
@@ -354,7 +366,9 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
     );
 
     let mut prev_header_to_connect_to: Option<NodeIndex> = None;
-    let root_indicies: Vec<NodeIndex> = collapsed_tree.externals(petgraph::Direction::Incoming).collect();
+    let root_indicies: Vec<NodeIndex> = collapsed_tree
+        .externals(petgraph::Direction::Incoming)
+        .collect();
     // Assumes root_indicies is sorted..
     for root in root_indicies.iter() {
         if let Some(prev_idx) = prev_header_to_connect_to {
@@ -373,8 +387,12 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
 
     info!(
         "done collapsing tree: roots={}, tips={}",
-        collapsed_tree.externals(petgraph::Direction::Incoming).count(), // root nodes
-        collapsed_tree.externals(petgraph::Direction::Outgoing).count(), // tip nodes
+        collapsed_tree
+            .externals(petgraph::Direction::Incoming)
+            .count(), // root nodes
+        collapsed_tree
+            .externals(petgraph::Direction::Outgoing)
+            .count(), // tip nodes
     );
 
     let mut headers: Vec<HeaderInfoJson> = Vec::new();
@@ -383,13 +401,20 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
         let prev_node_index: usize;
         match prev_nodes.clone().count() {
             0 => prev_node_index = usize::MAX,
-            1 => prev_node_index = prev_nodes.last().expect("we should have exactly one previous node").index(),
-            _ => panic!("got multiple previous nodes. this should not happen.")
+            1 => {
+                prev_node_index = prev_nodes
+                    .last()
+                    .expect("we should have exactly one previous node")
+                    .index()
+            }
+            _ => panic!("got multiple previous nodes. this should not happen."),
         }
-        headers.push(
-            HeaderInfoJson::new(collapsed_tree[idx], idx.index(), prev_node_index)
-        );
-    };
+        headers.push(HeaderInfoJson::new(
+            collapsed_tree[idx],
+            idx.index(),
+            prev_node_index,
+        ));
+    }
 
     return headers;
 }
@@ -490,12 +515,11 @@ async fn data_response(caches: Caches, query: DataQuery) -> Result<impl warp::Re
     let caches_locked = caches.lock().await;
     let (header_info_json, node_infos) = caches_locked.get(&network).unwrap().clone();
 
-    Ok(warp::reply::json(&DataJsonResponse{
+    Ok(warp::reply::json(&DataJsonResponse {
         header_infos: header_info_json,
         nodes: node_infos.values().cloned().collect(),
     }))
 }
-
 
 async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, Infallible> {
     let network_infos: Vec<NetworkJson> = networks.iter().map(|n| NetworkJson::new(n)).collect();
@@ -504,7 +528,6 @@ async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, I
         networks: network_infos,
     }))
 }
-
 
 async fn setup_db(db: Db) {
     db.lock()
@@ -578,7 +601,8 @@ async fn get_active_chain_headers(
     .await
     .unwrap();
 
-    let headers: Vec<bitcoin::BlockHeader> = res.bytes()
+    let headers: Vec<bitcoin::BlockHeader> = res
+        .bytes()
         .await
         .unwrap()
         .chunks(80)
@@ -592,5 +616,4 @@ async fn get_active_chain_headers(
     );
 
     return headers;
-
 }

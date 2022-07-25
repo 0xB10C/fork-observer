@@ -1,7 +1,7 @@
-use bitcoincore_rpc::bitcoin::BlockHeader;
-use serde::{Deserialize, Serialize};
-use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultTip, GetChainTipsResultStatus};
 use crate::config::{Network, Node};
+use bitcoincore_rpc::bitcoin::BlockHeader;
+use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus, GetChainTipsResultTip};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct HeaderInfo {
