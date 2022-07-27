@@ -46,7 +46,7 @@ type Rpc = Arc<Client>;
 // less work during collapsing.
 const MAX_TIPS: usize = 100;
 
-async fn get_new_active_tips(
+async fn get_new_active_headers(
     tips: &GetChainTipsResult,
     rest_url: String,
     tree: &Tree,
@@ -54,11 +54,17 @@ async fn get_new_active_tips(
     min_fork_height: u64,
 ) -> Vec<HeaderInfo> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
-    let first_fork_tip = tips
+    let first_fork_tip = match tips
         .iter()
         .filter(|tip| tip.height - tip.branch_length as u64 > min_fork_height)
         .min_by_key(|tip| tip.height - tip.branch_length as u64)
-        .unwrap();
+    {
+        Some(tip) => tip,
+        None => {
+            warn!("No tip qualifies as first_fork_tip. Is min_fork_height={} reasonable for this network?", min_fork_height);
+            return new_headers;
+        }
+    };
     let min_height = first_fork_tip.height - first_fork_tip.branch_length as u64;
     let scan_start_height = max(min_height as u64 - 5, 0);
 
@@ -105,7 +111,7 @@ async fn get_new_active_tips(
     return new_headers;
 }
 
-async fn get_new_nonactive_tips(
+async fn get_new_nonactive_headers(
     tips: &GetChainTipsResult,
     tree: &Tree,
     rpc: Rpc,
@@ -119,7 +125,7 @@ async fn get_new_nonactive_tips(
         .filter(|tip| tip.status != GetChainTipsResultStatus::Active)
     {
         let mut next_header = inactive_tip.hash;
-        for i in 0..inactive_tip.branch_length {
+        for i in 0..=inactive_tip.branch_length {
             {
                 let tree_locked = tree.lock().await;
                 if tree_locked.1.contains_key(&inactive_tip.hash) {
@@ -146,7 +152,7 @@ async fn get_new_nonactive_tips(
     return new_headers;
 }
 
-async fn get_new_tips(
+async fn get_new_headers(
     tips: &GetChainTipsResult,
     tree: &Tree,
     rpc: Rpc,
@@ -155,10 +161,10 @@ async fn get_new_tips(
 ) -> Vec<HeaderInfo> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
     let mut active_new_headers: Vec<HeaderInfo> =
-        get_new_active_tips(tips, rest_url.clone(), tree, rpc.clone(), min_fork_height).await;
+        get_new_active_headers(tips, rest_url.clone(), tree, rpc.clone(), min_fork_height).await;
     new_headers.append(&mut active_new_headers);
     let mut nonactive_new_headers: Vec<HeaderInfo> =
-        get_new_nonactive_tips(tips, tree, rpc.clone(), min_fork_height).await;
+        get_new_nonactive_headers(tips, tree, rpc.clone(), min_fork_height).await;
     new_headers.append(&mut nonactive_new_headers);
     return new_headers;
 }
@@ -225,7 +231,7 @@ async fn main() {
                             continue;
                         }
                     };
-                    let new_headers: Vec<HeaderInfo> = get_new_tips(
+                    let new_headers: Vec<HeaderInfo> = get_new_headers(
                         &tips,
                         &tree_clone,
                         rpc.clone(),
@@ -237,12 +243,14 @@ async fn main() {
                     if !new_headers.is_empty() || !has_node_info {
                         {
                             let mut tree_locked = tree_clone.lock().await;
+                            // insert headers to tree
                             for h in new_headers.clone() {
                                 if !tree_locked.1.contains_key(&h.header.block_hash()) {
                                     let idx = tree_locked.0.add_node(h.clone());
                                     tree_locked.1.insert(h.header.block_hash(), idx);
                                 }
                             }
+                            // connect nodes with edges
                             for current in new_headers.clone() {
                                 let idx_current: NodeIndex;
                                 let idx_prev: NodeIndex;
@@ -255,7 +263,9 @@ async fn main() {
                                     );
                                     match tree_locked.1.get(&current.header.prev_blockhash) {
                                         Some(idx) => idx_prev = *idx,
-                                        None => continue, // the tree root as no prev block, skip it
+                                        None => {
+                                            continue; // the tree's root has no previous block, skip it
+                                        }
                                     }
                                 }
                                 tree_locked.0.update_edge(idx_prev, idx_current, false);
@@ -363,10 +373,11 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
         .cloned()
         .collect();
 
+    // filter out unrelevant (no forks) heights
     let mut collapsed_tree = tree_locked.0.filter_map(
         |_, node| {
             let height = node.height;
-            for x in -3i64..=3 {
+            for x in -2i64..=2 {
                 if relevant_heights.contains(&((height as i64 - x) as u64)) {
                     return Some(node);
                 }
@@ -376,11 +387,17 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
         |_, edge| Some(edge),
     );
 
-    let mut prev_header_to_connect_to: Option<NodeIndex> = None;
-    let root_indicies: Vec<NodeIndex> = collapsed_tree
+    // in the new collapsed_tree, connect headers that previously a
+    // linear chain of headers between them.
+    let mut root_indicies: Vec<NodeIndex> = collapsed_tree
         .externals(petgraph::Direction::Incoming)
         .collect();
-    // Assumes root_indicies is sorted..
+    // We need this to be sorted by height if we use
+    // prev_header_to_connect_to to connect to the last header
+    // we saw. We can't assume it's sorted when we add data from
+    // mulitple nodes on the same network to the tree.
+    root_indicies.sort_by_key(|idx| collapsed_tree[*idx].height);
+    let mut prev_header_to_connect_to: Option<NodeIndex> = None;
     for root in root_indicies.iter() {
         if let Some(prev_idx) = prev_header_to_connect_to {
             collapsed_tree.add_edge(prev_idx, *root, &false);
@@ -470,12 +487,19 @@ async fn load_treeinfos_from_db(db: Db, network: u32) -> TreeInfo {
         ".. added relationships between headers from network {}",
         network
     );
+    let root_nodes = tree.externals(petgraph::Direction::Incoming).count();
     info!(
         "done building header tree for network {}: roots={}, tips={}",
         network,
-        tree.externals(petgraph::Direction::Incoming).count(), // root nodes
+        root_nodes,                                            // root nodes
         tree.externals(petgraph::Direction::Outgoing).count(), // tip nodes
     );
+    if root_nodes > 1 {
+        warn!(
+            "header-tree for network {} has more than one ({}) root!",
+            network, root_nodes
+        );
+    }
     return (tree, hash_index_map);
 }
 
