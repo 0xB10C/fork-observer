@@ -275,7 +275,12 @@ async fn main() {
                         write_to_db(&new_headers, db_write, network_cloned.id).await;
 
                         let headerinfojson = collapse_tree(&tree_clone).await;
-                        let nodeinfojson = NodeInfoJson::new(node.clone(), &tips);
+
+                        // only put tips that we also have headers for in the cache
+                        let min_height = headerinfojson.iter().min_by_key(|h| h.height).expect("we should have atleast on header in here").height;
+                        let relevant_tips = tips.iter().filter(|t| t.height >= min_height).cloned().collect();
+
+                        let nodeinfojson = NodeInfoJson::new(node.clone(), &relevant_tips);
                         {
                             let mut locked_cache = caches_clone.lock().await;
                             let entry = locked_cache
