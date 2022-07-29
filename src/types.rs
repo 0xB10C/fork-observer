@@ -77,6 +77,7 @@ pub struct DataJsonResponse {
 pub struct TipInfoJson {
     pub hash: String,
     pub status: String,
+    pub height: u64,
 }
 
 impl TipInfoJson {
@@ -84,6 +85,7 @@ impl TipInfoJson {
         TipInfoJson {
             hash: tip.hash.to_string(),
             status: tip_status_string(tip.status),
+            height: tip.height,
         }
     }
 }
