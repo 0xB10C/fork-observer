@@ -377,7 +377,7 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
     let mut collapsed_tree = tree_locked.0.filter_map(
         |_, node| {
             let height = node.height;
-            for x in -2i64..=2 {
+            for x in -2i64..=1 {
                 if relevant_heights.contains(&((height as i64 - x) as u64)) {
                     return Some(node);
                 }

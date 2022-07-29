@@ -66,6 +66,9 @@ function draw() {
     header_info.is_tip = status != undefined
   })
 
+  let unique_heights = Array.from(new Set(header_infos.map(d => d.height)));
+  unique_heights.sort()
+
   var treeData = d3
     .stratify()
     .id(d => d.id)
@@ -76,7 +79,6 @@ function draw() {
 
   collapseLinearChainsOfBlocks(treeData, 4)
 
-  let unique_heights = Array.from(new Set(treeData.descendants().map(d => parseInt(d.data.height)))).sort((a, b) =>  a - b );
   let htoi = {}; // height to array index map
   for (let index = 0; index < unique_heights.length; index++) {
     const height = unique_heights[index];
