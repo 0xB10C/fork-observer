@@ -42,10 +42,6 @@ type Tree = Arc<Mutex<TreeInfo>>;
 type Db = Arc<Mutex<Connection>>;
 type Rpc = Arc<Client>;
 
-// Maximum number of tips to send via a data.json response. Fewer tips mean
-// less work during collapsing.
-const MAX_TIPS: usize = 100;
-
 async fn get_new_active_headers(
     tips: &GetChainTipsResult,
     rest_url: String,
@@ -206,7 +202,7 @@ async fn main() {
             load_treeinfos_from_db(db.clone(), network.id).await,
         ));
 
-        let headerinfojson = collapse_tree(&tree).await;
+        let headerinfojson = collapse_tree(&tree, network.max_forks).await;
         {
             let mut locked_caches = caches.lock().await;
             locked_caches.insert(network.id, (headerinfojson, BTreeMap::new()));
@@ -274,7 +270,7 @@ async fn main() {
 
                         write_to_db(&new_headers, db_write, network_cloned.id).await;
 
-                        let headerinfojson = collapse_tree(&tree_clone).await;
+                        let headerinfojson = collapse_tree(&tree_clone, network_cloned.max_forks).await;
 
                         // only put tips that we also have headers for in the cache
                         let min_height = headerinfojson.iter().min_by_key(|h| h.height).expect("we should have atleast on header in here").height;
@@ -346,7 +342,7 @@ async fn main() {
     warp::serve(routes).run(config.address).await;
 }
 
-async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
+async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
     let tree_locked = tree.lock().await;
     if tree_locked.0.node_count() == 0 {
         warn!("tried to collapse an empty tree!");
@@ -374,7 +370,7 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
     relevant_heights = relevant_heights
         .iter()
         .rev()
-        .take(MAX_TIPS)
+        .take(max_forks as usize)
         .cloned()
         .collect();
 
@@ -402,6 +398,7 @@ async fn collapse_tree(tree: &Tree) -> Vec<HeaderInfoJson> {
     // we saw. We can't assume it's sorted when we add data from
     // mulitple nodes on the same network to the tree.
     root_indicies.sort_by_key(|idx| collapsed_tree[*idx].height);
+
     let mut prev_header_to_connect_to: Option<NodeIndex> = None;
     for root in root_indicies.iter() {
         if let Some(prev_idx) = prev_header_to_connect_to {

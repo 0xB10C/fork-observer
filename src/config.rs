@@ -35,6 +35,7 @@ struct TomlNetwork {
     name: String,
     description: String,
     min_fork_height: u64,
+    max_forks: u64,
     nodes: Vec<TomlNode>,
 }
 
@@ -44,6 +45,7 @@ pub struct Network {
     pub description: String,
     pub name: String,
     pub min_fork_height: u64,
+    pub max_forks: u64,
     pub nodes: Vec<Node>,
 }
 
@@ -105,6 +107,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
                 name: network.name.clone(),
                 description: network.description.clone(),
                 min_fork_height: network.min_fork_height,
+                max_forks: network.max_forks,
                 nodes: network
                     .nodes
                     .iter()
