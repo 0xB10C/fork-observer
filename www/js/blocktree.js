@@ -44,8 +44,6 @@ function draw() {
   let tip_infos = [];
   let node_infos = data.nodes;
 
-  console.log(node_infos);
-
   hash_to_tipstatus = {}
   node_infos.forEach(node => {
     node.tips.forEach(tip => {
@@ -202,7 +200,6 @@ function draw() {
 
         function onBlockDescriptionCloseClick(c, d) {
           let parentElement = d3.select(c.target.parentElement.parentElement.parentElement.parentElement.parentElement.parentElement)
-          console.log(parentElement)
           parentElement.selectAll(".block-description").remove()
           parentElement.selectAll(".link-block-description").attr("d", "")
         }
@@ -243,10 +240,8 @@ function draw() {
                 </div>
               </div>
           `)
-        console.log(cardWrapper.attr("height"))
         cardWrapper.attr("height", card.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k )
         cardWrapper.attr("width", card.node().getBoundingClientRect().width / d3.zoomTransform(svg.node()).k )
-        console.log(cardWrapper.attr("height"))
       }
     }
 
