@@ -380,10 +380,11 @@ async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
         .iter()
         .rev()
         .take(max_forks as usize)
+        .rev()
         .cloned()
         .collect();
 
-    // filter out unrelevant (no forks) heights
+    // filter out unrelevant (no forks) heights from the header tree
     let mut collapsed_tree = tree_locked.0.filter_map(
         |_, node| {
             let height = node.height;

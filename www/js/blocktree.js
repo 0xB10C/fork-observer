@@ -67,7 +67,7 @@ function draw() {
   })
 
   let unique_heights = Array.from(new Set(header_infos.map(d => d.height)));
-  unique_heights.sort()
+  unique_heights.sort((a, b) => (a - b))
 
   var treeData = d3
     .stratify()
