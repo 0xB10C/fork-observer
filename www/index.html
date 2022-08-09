@@ -13,22 +13,33 @@
 </head>
 
 <body>
-  <div class="container-fluid">
+  <div class="container-fluid" style="display: flex; flex-direction: column; min-height: 100vh;">
     <header class="border-bottom mb-3">
-    <nav class="navbar">
-      <a class="navbar-brand" href="/">
-        <img src="/img/logo.png" width="32" height="32" class="d-inline-block align-top" alt="">
-        fork-observer
-      </a>
-    </nav>
-  </header>
-    <label for="network">Network:</label>
-    <select name="network" id="network"></select>
-    <label for="orientation">Orientation:</label>
-    <select name="orientation" id="orientation">
-    </select>
-    <pre id="block_info"></pre>
-    <svg id="drawing-area"></svg>
+      <nav class="navbar">
+        <a class="navbar-brand" href="/">
+          <img src="/img/logo.png" width="32" height="32" class="d-inline-block align-top" alt="">
+          fork-observer
+        </a>
+        <select name="network" id="network"></select>
+      </nav>
+    </header>
+    <main style="flex: 1;">
+      <div style="display: flex; flex-direction: column;">
+        <p>
+          Network and node info
+        </p>
+        <svg style="flex:1; flex-basis: 75vh; height:75vh;" id="drawing-area"></svg>
+        <div>
+          <select name="orientation" id="orientation"></select>
+        </div>
+      </div>
+    </main>
+    <footer>
+      lorem ipsum
+      lorem ipsum
+      lorem ipsum
+      lorem ipsum
+    </footer>
   </div>
 </body>
 

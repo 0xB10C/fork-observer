@@ -1,9 +1,6 @@
-const svgheight = window.innerHeight - d3.select("#drawing-area").node().getBoundingClientRect().height;
-const svgwidth = d3.select("body").node().getBoundingClientRect().width;
-
 const getNetworks = new Request('networks.json');
 
-const NODE_SIZE = 125
+const NODE_SIZE = 100
 const MAX_USIZE = 18446744073709551615;
 
 const orientationSelect = d3.select("#orientation")
@@ -14,7 +11,7 @@ const orientations = {
     x: (d, _) => d.x,
     y: (d, htoi) => -htoi[d.data.data.height] * NODE_SIZE,
     linkDir: (htoi) => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
-    hidden_blocks_text: {offset_x: -40, offset_y: 0, anchor: "left"},
+    hidden_blocks_text: {offset_x: -45, offset_y: 0, anchor: "left"},
   },
   "left-to-right": {
     x: (d, htoi) => htoi[d.data.data.height] * NODE_SIZE,
@@ -91,14 +88,12 @@ function draw() {
 
   var svg = d3
     .select("#drawing-area")
-    .attr("width", "100%")
-    .attr("height", "80vh")
     .style("border", "1px solid")
 
   svg.selectAll("*").remove()
 
   // enables zoom and panning
-  const zoom = d3.zoom().scaleExtent([0.25, 2]).on( "zoom", e => g.attr("transform", e.transform) )
+  const zoom = d3.zoom().scaleExtent([0.15, 2]).on( "zoom", e => g.attr("transform", e.transform) )
   svg.call(zoom)
 
   var g = svg
@@ -144,9 +139,9 @@ function draw() {
     .on("click", (c, d) => onBlockClick(c, d))
 
   function onBlockClick(c, d) {
-      let parentElement = d3.select(c.target.parentElement)
+    let parentElement = d3.select(c.target.parentElement)
 
-      // The on-click listener of the block propagates to the appened description elements.
+    // The on-click listener of the block propagates to the appened description elements.
       // To prevent adding a second description element of the block we return early if the
       // parentElement is not the block.
       if (parentElement.attr("class") == null || !parentElement.attr("class").startsWith("block block--")) return
@@ -304,8 +299,9 @@ function draw() {
     offset_y = o.y(max_height_tip, htoi);
   }
 
-  zoom.scaleBy(svg, 1.5);
-  zoom.translateTo(svg, offset_x, offset_y, [svgwidth/2,svgheight/2])
+  zoom.scaleBy(svg, 1.2);
+  let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
+  zoom.translateTo(svg, offset_x, offset_y, [(svgSize.width - svgSize.x)/2, (svgSize.height - svgSize.y)/2])
 }
 
 // recursivly collapses linear branches of blocks longer than x,
