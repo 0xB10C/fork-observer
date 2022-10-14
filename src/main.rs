@@ -334,36 +334,6 @@ async fn main() {
         .and(warp::path::end())
         .and(warp::fs::file(config.www_path.join("index.html")));
 
-    /*
-
-
-    let style_css = warp::get()
-        .and(warp::path!("css" / "style.css"))
-        .and(warp::fs::file(config.www_path.join("css/style.css")));
-
-    let bootstrap_css = warp::get()
-        .and(warp::path!("css" / "bootstrap.min.css"))
-        .and(warp::fs::file(
-            config.www_path.join("css/bootstrap.min.css"),
-        ));
-
-    let blocktree_js = warp::get()
-        .and(warp::path!("js" / "blocktree.js"))
-        .and(warp::fs::file(config.www_path.join("js/blocktree.js")));
-
-    let logo_png = warp::get()
-        .and(warp::path!("img" / "logo.png"))
-        .and(warp::fs::file(config.www_path.join("img/logo.png")));
-    let node_svg = warp::get()
-        .and(warp::path!("img" / "node.svg"))
-        .and(warp::fs::file(config.www_path.join("img/node.svg")));
-
-    let d3_js = warp::get()
-        .and(warp::path!("js" / "d3.v7.min.js"))
-        .and(warp::fs::file(config.www_path.join("js/d3.v7.min.js")));
-
-    */
-
     let info_json = warp::get()
         .and(warp::path!("api" / "info.json"))
         .and(with_footer(config.footer_html.clone()))
@@ -397,15 +367,6 @@ async fn main() {
         .or(networks_json)
         .or(change_sse);
 
-    /*
-        index_html
-        .or(blocktree_js)
-        .or(logo_png)
-        .or(node_svg)
-        .or(style_css)
-        .or(bootstrap_css)
-        .or(d3_js);
-*/
     warp::serve(routes).run(config.address).await;
 }
 
