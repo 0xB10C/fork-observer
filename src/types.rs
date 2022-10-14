@@ -68,6 +68,11 @@ impl HeaderInfoJson {
 }
 
 #[derive(Serialize)]
+pub struct InfoJsonResponse {
+    pub footer: String,
+}
+
+#[derive(Serialize)]
 pub struct DataJsonResponse {
     pub header_infos: Vec<HeaderInfoJson>,
     pub nodes: Vec<NodeInfoJson>,
@@ -106,15 +111,26 @@ pub struct NodeInfoJson {
     pub name: String,
     pub description: String,
     pub tips: Vec<TipInfoJson>,
+    /// UTC timestamp when the tip information of the node was last changed.
+    pub last_changed_timestamp: u64,
+    /// The node subversion as advertised by the node on the network.
+    pub version: String,
 }
 
 impl NodeInfoJson {
-    pub fn new(node: Node, tips: &GetChainTipsResult) -> Self {
+    pub fn new(node: Node, tips: &GetChainTipsResult, version: String, last_changed_timestamp: u64) -> Self {
         NodeInfoJson {
             id: node.id,
             name: node.name,
             description: node.description,
             tips: tips.iter().map(|t| TipInfoJson::new(t)).collect(),
+            last_changed_timestamp,
+            version,
         }
     }
+}
+
+#[derive(Serialize, Clone)]
+pub struct DataChanged {
+    pub network_id: u32,
 }

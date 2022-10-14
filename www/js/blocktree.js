@@ -1,10 +1,17 @@
-const getNetworks = new Request('networks.json');
+const getNetworks = new Request('api/networks.json');
+const getInfo = new Request('api/info.json');
+const changeSSE = new EventSource('api/changes');
 
 const NODE_SIZE = 100
 const MAX_USIZE = 18446744073709551615;
+const PAGE_NAME = "fork-observer"
 
 const orientationSelect = d3.select("#orientation")
 const networkSelect = d3.select("#network")
+const nodeInfoRow = d3.select("#node_infos")
+const networkInfoDescription = d3.select("#network_info_description")
+const networkInfoName = d3.select("#network_info_name")
+const footerCustom = d3.select("#footer-custom")
 
 const orientations = {
   "bottom-to-top": {
@@ -341,27 +348,76 @@ function gen_treemap(o, tips, unique_heights) {
   return d3.tree().size([tips, unique_heights]).nodeSize([NODE_SIZE, NODE_SIZE]);
 }
 
+async function draw_nodes() {
+  nodeInfoRow.html(null);
+  nodeInfoRow.selectAll('.node-info')
+    .data(state_data.nodes)
+    .enter()
+    .append()
+    .html(d => `
+      <div class="col card node-info m-2" style="width: 16rem; min-height: 14rem;">
+        <div class="card-body">
+          <h5 class="card-title py-0 my-0">
+            <img src="static/img/node.svg" height=48 alt="...">
+            ${d.name}
+          </h5>
+          <div style="max-height: 4rem; overflow: auto;">
+            <span class="card-text" style="max-height: 2rem;">${d.description}</span>
+          </div>
+        </div>
+        <div class="px-2">
+          <span class="small muted"> version: ${d.version}
+        </div>
+        <div class="px-2">
+          <span class="small muted"> tip data changed: ${new Date(d.last_changed_timestamp * 1000).toLocaleTimeString()}
+        </div>
+        <div class="px-2" style="background-color: hsl(${parseInt(d.tips.filter(tip => tip.status == "active")[0].height * 90, 10) % 360}, 50%, 75%)">
+          <span class="small muted"> height: ${d.tips.filter(tip => tip.status == "active")[0].height}
+        </div>
+        <div class="px-2" style="background-color: hsl(${parseInt(d.tips.filter(tip => tip.status == "active")[0].hash.substring(58), 16) % 360}, 50%, 75%)">
+          <details>
+            <summary style="list-style: none;">
+              <span class="small muted">
+                tip: ${d.tips.filter(tip => tip.status == "active")[0].hash.substring(0, 10)}..${d.tips.filter(tip => tip.status == "active")[0].hash.substring(54, 64)}
+              </span>
+            </summary>
+            <span class="small muted">
+              active tip hash: ${d.tips.filter(tip => tip.status == "active")[0].hash}
+            </span>
+          </details>
+        </div>
+      </div>
+    `)
+}
+
 async function fetch_networks() {
   await fetch(getNetworks)
     .then(response => response.json())
     .then(networks => {
-	state_networks = networks.networks
+      state_networks = networks.networks
+      let first_network_id = state_networks[0].id
+      networkSelect.selectAll('option')
+        .data(state_networks)
+        .enter()
+          .append('option')
+          .attr('value', d => d.id)
+          .text(d => d.name)
+          .property("selected", d => d.id == first_network_id)
+      state_selected_network_id = state_networks[0].id
+      update_network()
+    }).catch(console.error);
+}
 
-	let first_network_id = state_networks[0].id
-	networkSelect.selectAll('option')
-	  .data(state_networks)
-	  .enter()
-	    .append('option')
-	    .attr('value', d => d.id)
-	    .text(d => d.name)
-	    .property("selected", d => d.id == first_network_id)
-
-	state_selected_network_id = state_networks[0].id
+async function fetch_info() {
+  await fetch(getInfo)
+    .then(response => response.json())
+    .then(info => {
+      footerCustom.html(info.footer)
     }).catch(console.error);
 }
 
 async function fetch_data() {
-  await fetch('data.json?network='+networkSelect.node().value)
+  await fetch('api/data.json?network='+networkSelect.node().value)
     .then(response => response.json())
     .then(data => state_data = data)
     .catch(console.error);
@@ -374,8 +430,8 @@ orientationSelect.on("input", async function() {
 
 networkSelect.on("input", async function() {
   state_selected_network_id = networkSelect.node().value
-  await fetch_data()
-  await draw()
+  update_network()
+  await update()
 })
 
 
@@ -403,10 +459,30 @@ networkSelect.on("input", async function() {
 }
 o = orientations[orientationSelect.node().value]
 
+changeSSE.addEventListener("tip_changed", (e) => {
+  let data = JSON.parse(e.data)
+  if(data.network_id == state_selected_network_id) {
+    update()
+  }
+})
+
+function update_network() {
+  let current_network = state_networks.filter(net => net.id == state_selected_network_id)[0]
+  document.title = PAGE_NAME + " - " + current_network.name;
+  networkInfoName.text(current_network.name)
+  networkInfoDescription.text(current_network.description)
+}
+
+async function update() {
+  await fetch_data()
+  await draw_nodes()
+  await draw()
+}
+
 async function run() {
   await fetch_networks()
-  await fetch_data()
-  await draw()
+  await fetch_info()
+  await update()
 }
 
 run()

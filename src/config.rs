@@ -18,6 +18,7 @@ struct TomlConfig {
     www_path: String,
     query_interval: u64,
     networks: Vec<TomlNetwork>,
+    footer_html: String,
 }
 
 #[derive(Clone)]
@@ -27,6 +28,7 @@ pub struct Config {
     pub query_interval: Duration,
     pub address: SocketAddr,
     pub networks: Vec<Network>,
+    pub footer_html: String,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +101,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
         www_path: PathBuf::from(toml_config.www_path),
         query_interval: Duration::from_secs(toml_config.query_interval),
         address: SocketAddr::from_str(&toml_config.address)?,
+        footer_html: toml_config.footer_html.clone(),
         networks: toml_config
             .networks
             .iter()

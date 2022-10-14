@@ -2,14 +2,17 @@ use std::cmp::max;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 // TODO: remove?
 use std::convert::Infallible;
 
-use tokio::sync::Mutex;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio::sync::{Mutex, broadcast};
 use tokio::task;
 use tokio::time;
 
-use warp::Filter;
+use warp::{sse::Event, Filter};
+use futures_util::StreamExt;
 
 use bitcoincore_rpc::bitcoin;
 use bitcoincore_rpc::bitcoin::BlockHash;
@@ -29,7 +32,7 @@ mod types;
 
 use types::{
     DataJsonResponse, DataQuery, HeaderInfo, HeaderInfoJson, NetworkJson, NetworksJsonResponse,
-    NodeInfoJson,
+    NodeInfoJson, DataChanged, InfoJsonResponse,
 };
 
 use config::Network;
@@ -190,6 +193,9 @@ async fn main() {
 
     setup_db(db.clone()).await;
 
+    // A channel to notify about tip changes via ServerSentEvents to clients.
+    let (tipchanges_tx, _) = broadcast::channel(16);
+
     for network in config.networks.iter().cloned() {
         info!(
             "network '{}' (id={}) has {} nodes",
@@ -216,10 +222,21 @@ async fn main() {
             let tree_clone = tree.clone();
             let caches_clone = caches.clone();
             let network_cloned = network.clone();
+            let tipchanges_tx_cloned = tipchanges_tx.clone();
             let mut has_node_info = false;
+            let mut version_info: String = String::default();
             task::spawn(async move {
                 loop {
                     interval.tick().await;
+                    if version_info == String::default() {
+                        version_info = match get_version_info(rpc.clone()).await {
+                            Ok(version) => version,
+                            Err(e) => {
+                                error!("Could not fetch getnetworkinfo from node '{}' (id={}) on network '{}' (id={}): {:?}", node.name, node.id, network_cloned.name, network_cloned.id, e);
+                                continue;
+                            }
+                        };
+                    };
                     let tips = match get_tips(rpc.clone()).await {
                         Ok(tips) => tips,
                         Err(e) => {
@@ -285,16 +302,24 @@ async fn main() {
                             .cloned()
                             .collect();
 
-                        let nodeinfojson = NodeInfoJson::new(node.clone(), &relevant_tips);
+                        let last_change_timestamp = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                            Ok(n) => n.as_secs(),
+                            Err(_) => {
+                                warn!("SystemTime is before UNIX_EPOCH time. Node last_change_timestamp set to 0.");
+                                0u64
+                            },
+                        };
+                        let nodeinfojson = NodeInfoJson::new(node.clone(), &relevant_tips, version_info.clone(), last_change_timestamp);
                         {
                             let mut locked_cache = caches_clone.lock().await;
-                            let entry = locked_cache
+                            let network = locked_cache
                                 .get(&network_cloned.id)
                                 .expect("network should already exist in cache");
-                            let mut node_infos = entry.1.clone();
+                            let mut node_infos = network.1.clone();
                             node_infos.insert(node.id, nodeinfojson);
                             locked_cache.insert(network_cloned.id, (headerinfojson, node_infos));
                         }
+                        tipchanges_tx_cloned.clone().send(network_cloned.id);
                         has_node_info = true;
                     }
                 }
@@ -302,9 +327,15 @@ async fn main() {
         }
     }
 
+    let www_dir = warp::get()
+        .and(warp::path("static"))
+        .and(warp::fs::dir(config.www_path.clone()));
     let index_html = warp::get()
         .and(warp::path::end())
         .and(warp::fs::file(config.www_path.join("index.html")));
+
+    /*
+
 
     let style_css = warp::get()
         .and(warp::path!("css" / "style.css"))
@@ -323,31 +354,58 @@ async fn main() {
     let logo_png = warp::get()
         .and(warp::path!("img" / "logo.png"))
         .and(warp::fs::file(config.www_path.join("img/logo.png")));
+    let node_svg = warp::get()
+        .and(warp::path!("img" / "node.svg"))
+        .and(warp::fs::file(config.www_path.join("img/node.svg")));
 
     let d3_js = warp::get()
         .and(warp::path!("js" / "d3.v7.min.js"))
         .and(warp::fs::file(config.www_path.join("js/d3.v7.min.js")));
 
+    */
+
+    let info_json = warp::get()
+        .and(warp::path!("api" / "info.json"))
+        .and(with_footer(config.footer_html.clone()))
+        .and_then(info_response);
+
     let data_json = warp::get()
-        .and(warp::path("data.json"))
+        .and(warp::path!("api" / "data.json"))
         .and(with_caches(caches.clone()))
         .and(warp::query::<DataQuery>())
         .and_then(data_response);
 
     let networks_json = warp::get()
-        .and(warp::path("networks.json"))
+        .and(warp::path!("api" / "networks.json"))
         .and(with_networks(config.networks.clone()))
         .and_then(networks_response);
 
-    let routes = index_html
+    let change_sse = warp::path!("api" / "changes").and(warp::get()).map(move || {
+        let tipchanges_rx = tipchanges_tx.clone().subscribe();
+        let broadcast_stream = BroadcastStream::new(tipchanges_rx);
+        let event_stream = broadcast_stream.map(move |d| {
+            data_changed_sse(d.unwrap())
+        });
+        let stream = warp::sse::keep_alive().stream(event_stream);
+        warp::sse::reply(stream)
+    });
+
+    let routes = www_dir
+        .or(index_html)
+        .or(data_json)
+        .or(info_json)
+        .or(networks_json)
+        .or(change_sse);
+
+    /*
+        index_html
         .or(blocktree_js)
         .or(logo_png)
+        .or(node_svg)
         .or(style_css)
         .or(bootstrap_css)
-        .or(data_json)
-        .or(networks_json)
         .or(d3_js);
-
+*/
     warp::serve(routes).run(config.address).await;
 }
 
@@ -459,6 +517,16 @@ async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
     return headers;
 }
 
+fn data_changed_sse(network_id: u32) -> Result<Event, Infallible> {
+    Ok(warp::sse::Event::default().event("tip_changed").json_data(DataChanged {network_id}).unwrap())
+}
+
+fn with_footer(
+    footer: String,
+) -> impl Filter<Extract = (String,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || footer.clone())
+}
+
 fn with_caches(
     caches: Caches,
 ) -> impl Filter<Extract = (Caches,), Error = std::convert::Infallible> + Clone {
@@ -556,6 +624,12 @@ async fn load_header_infos_from_db(db: Db, network: u32) -> Vec<HeaderInfo> {
     return headers;
 }
 
+async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
+    Ok(warp::reply::json(&InfoJsonResponse {
+        footer: footer,
+    }))
+}
+
 async fn data_response(caches: Caches, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
     let network: u32 = query.network;
 
@@ -644,6 +718,16 @@ async fn get_tips(rpc: Rpc) -> Result<GetChainTipsResult, FetchError> {
     match task::spawn_blocking(move || rpc.get_chain_tips()).await {
         Ok(tips_result) => match tips_result.into() {
             Ok(tips) => Ok(tips),
+            Err(e) => Err(e.into()),
+        },
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn get_version_info(rpc: Rpc) -> Result<String, FetchError> {
+    match task::spawn_blocking(move || rpc.get_network_info()).await {
+        Ok(result) => match result.into() {
+            Ok(result) => Ok(result.subversion),
             Err(e) => Err(e.into()),
         },
         Err(e) => Err(e.into()),

@@ -12,6 +12,20 @@ query_interval = 10
 # Webserver listen address
 address = "127.0.0.1:2323"
 
+# Custom footer for the site.
+footer = """
+    <div class="my-2">
+      <div>
+        <span class="text-muted">This site is hosted by</span>
+        <br>
+        <!-- uncomment this -->
+        <!-- span>YOUR NAME / PSEUDONYM</span-->
+        <!--remove this-->
+        <span class="badge bg-danger">FIXME: PLACEHOLDER in config.toml</span>
+      </div>
+    </div>
+  """
+
 [[networks]]
 id = 0x248281
 name = "Nikhils custom SigNet"
@@ -26,7 +40,7 @@ description = "A custom SigNet with reorgs used for the development of the reorg
     rpc_port = 38342
     rpc_user = "forkobserver"
     rpc_password = ""
-    
+
     [[networks.nodes]]
     id = 1
     name = "Node R"

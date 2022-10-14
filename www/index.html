@@ -8,8 +8,8 @@
   <meta name="author" content="">
   <meta name="description" content="">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="css/bootstrap.min.css" rel="stylesheet" integrity="sha384-0evHe/X+R7YkIZDRvuzKMRqM+OrBnVFBL6DOitfPri4tjfHxaWutUpFmBp4vmVor">
-  <link href="css/style.css" rel="stylesheet">
+  <link href="static/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-0evHe/X+R7YkIZDRvuzKMRqM+OrBnVFBL6DOitfPri4tjfHxaWutUpFmBp4vmVor">
+  <link href="static/css/style.css" rel="stylesheet">
 </head>
 
 <body>
@@ -17,7 +17,7 @@
     <header class="border-bottom mb-3">
       <nav class="navbar">
         <a class="navbar-brand" href="/">
-          <img src="/img/logo.png" width="32" height="32" class="d-inline-block align-top" alt="">
+          <img src="static/img/logo.png" width="32" height="32" class="d-inline-block align-top" alt="">
           fork-observer
         </a>
         <select name="network" id="network"></select>
@@ -26,23 +26,42 @@
     <main style="flex: 1;">
       <div style="display: flex; flex-direction: column;">
         <p>
-          Network and node info
+        <h3>Network: <span id="network_info_name"></span></h3>
+          <span id="network_info_description"></span>
         </p>
-        <svg style="flex:1; flex-basis: 75vh; height:75vh;" id="drawing-area"></svg>
+        <svg style="flex:1; flex-basis: 75vh; height:75vh;" class="border" id="drawing-area"></svg>
         <div>
           <select name="orientation" id="orientation"></select>
         </div>
+        <p>
+          <h3>Nodes</h3>
+          <div class="container-fluid px-0">
+            <div class="row row-cols-auto" id="node_infos"></div>
+          </div>
+        </p>
       </div>
     </main>
-    <footer>
-      lorem ipsum
-      lorem ipsum
-      lorem ipsum
-      lorem ipsum
+    <hr>
+    <footer class="container-xl px-xl-3 mt-3">
+      <div class="row bg-white text-center">
+        <div class="col-lg-6 p-3">
+          <span class="my-auto">
+            <a target="_blank" rel="noopener" href="https://github.com/0xb10c/fork-observer" class="text-dark text-decoration-none">
+              <img src="static/img/GitHub-Mark-64px.png" class="mx-1" width=32 height=32 alt="GitHub logo">
+              <span class="text-decoration-underline">fork-observer</span>
+            </a>
+            <br>
+            <span class="text-muted">Issues, Feature Ideas, and Self-Hosting Instructions</span>
+          </span>
+        </div>
+        <div class="col-lg-6 p-3">
+          <span class="my-auto" id="footer-custom"></span>
+        </div>
+      </div>
     </footer>
   </div>
 </body>
 
-<script src="js/d3.v7.min.js"></script>
-<script src="js/blocktree.js"></script>
+<script src="static/js/d3.v7.min.js"></script>
+<script src="static/js/blocktree.js"></script>
 </html>
