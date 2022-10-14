@@ -743,19 +743,16 @@ async fn get_active_chain_headers(
         "loading active-chain headers starting from {}",
         start.to_string()
     );
-    let res = reqwest::get(format!(
+
+    let res = minreq::get(format!(
         "http://{}/rest/headers/{}/{}.bin",
         rest_url,
         count,
         start.to_string()
-    ))
-    .await
-    .unwrap();
+    )).with_timeout(8).send().unwrap();
 
     let headers: Vec<bitcoin::BlockHeader> = res
-        .bytes()
-        .await
-        .unwrap()
+        .as_bytes()
         .chunks(80)
         .map(|hbytes| bitcoin::consensus::deserialize(&hbytes).unwrap())
         .collect();
