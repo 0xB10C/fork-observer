@@ -25,7 +25,7 @@ use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::Dfs;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 mod config;
 mod types;
@@ -700,7 +700,7 @@ async fn get_active_chain_headers(
     count: usize,
     start: BlockHash,
 ) -> Vec<bitcoin::BlockHeader> {
-    info!(
+    debug!(
         "loading active-chain headers starting from {}",
         start.to_string()
     );
@@ -712,13 +712,18 @@ async fn get_active_chain_headers(
         start.to_string()
     )).with_timeout(8).send().unwrap();
 
+    if res.status_code != 200 {
+        error!("Could not load headers via Bitcoin Core REST interface: status={} {}, body={:?}", res.status_code, res.reason_phrase, res.as_str());
+        return vec![];
+    }
+
     let headers: Vec<bitcoin::BlockHeader> = res
         .as_bytes()
         .chunks(80)
         .map(|hbytes| bitcoin::consensus::deserialize(&hbytes).unwrap())
         .collect();
 
-    info!(
+    debug!(
         "loaded {} active-chain headers starting from {}",
         headers.len(),
         start.to_string()
