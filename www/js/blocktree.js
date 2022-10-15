@@ -68,9 +68,6 @@ function draw() {
     header_info.is_tip = status != undefined
   })
 
-  let unique_heights = Array.from(new Set(header_infos.map(d => d.height)));
-  unique_heights.sort((a, b) => (a - b))
-
   var treeData = d3
     .stratify()
     .id(d => d.id)
@@ -79,13 +76,29 @@ function draw() {
       return (d.prev_id == MAX_USIZE ? null : d.prev_id)
     })(header_infos);
 
-  collapseLinearChainsOfBlocks(treeData, 4)
+  collapseLinearChainsOfBlocks(treeData, 3)
+
+  let interesting_heights = []
+  treeData.descendants().forEach(d => {
+    interesting_heights.push(d.data.height)
+    // This adds extra spacing in a collapsed chain.
+    interesting_heights.push(d.data.height + 1)
+  })
+
+  let unique_heights = Array.from(new Set(interesting_heights));
+  unique_heights.sort((a, b) => (a - b))
 
   let htoi = {}; // height to array index map
-  for (let index = 0; index < unique_heights.length; index++) {
-    const height = unique_heights[index];
+  let last_height = 0;
+  let index = 0;
+  unique_heights.forEach( height => {
+    if (last_height + 1 > height) {
+      index +=1;
+    }
     htoi[height] = index;
-  }
+    index += 1;
+    last_height = height;
+  });
 
   let treemap = gen_treemap(o, tip_infos.length, unique_heights);
 
@@ -312,19 +325,17 @@ function draw() {
 }
 
 // recursivly collapses linear branches of blocks longer than x,
-// starting from node until all tips are reached.
+// starting from the root until all tips are reached.
 function collapseLinearChainsOfBlocks(node, x) {
-  if (node.children != undefined) {
-    for (let index = 0; index < node.children.length; index++) {
-      const descendant = node.children[index];
-      let nextForkOrTip = findNextForkOrTip(descendant)
-      let distance_between_blocks = nextForkOrTip.data.height - descendant.data.height
-      if (distance_between_blocks > x) {
-        descendant._children = descendant.children;
-        descendant.children = [nextForkOrTip.parent];
+  if (node.children) {
+    node.children.forEach(child => {
+      let nextForkOrTip = findNextForkOrTip(child)
+      let distance_between_nodes = nextForkOrTip.depth - child.depth
+      if (distance_between_nodes > x) {
+        child.children[0].children = [nextForkOrTip.parent];
       }
       collapseLinearChainsOfBlocks(nextForkOrTip, x)
-    }
+    })
   }
 }
 
