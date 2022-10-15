@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
+use std::fmt;
 // TODO: remove?
 use std::convert::Infallible;
 
@@ -51,7 +52,7 @@ async fn get_new_active_headers(
     tree: &Tree,
     rpc: Rpc,
     min_fork_height: u64,
-) -> Vec<HeaderInfo> {
+) -> Result<Vec<HeaderInfo>, FetchError> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
     let first_fork_tip = match tips
         .iter()
@@ -61,7 +62,7 @@ async fn get_new_active_headers(
         Some(tip) => tip,
         None => {
             warn!("No tip qualifies as first_fork_tip. Is min_fork_height={} reasonable for this network?", min_fork_height);
-            return new_headers;
+            return Ok(new_headers);
         }
     };
     let min_height = first_fork_tip.height - first_fork_tip.branch_length as u64;
@@ -97,7 +98,7 @@ async fn get_new_active_headers(
                 continue;
             }
         }
-        let headers = get_active_chain_headers(rest_url.clone(), STEP_SIZE, header_hash).await;
+        let headers = get_active_chain_headers(rest_url.clone(), STEP_SIZE, header_hash).await?;
         for height_header_pair in (query_height..(query_height + headers.len() as u64)).zip(headers)
         {
             new_headers.push(HeaderInfo {
@@ -107,7 +108,7 @@ async fn get_new_active_headers(
         }
     }
 
-    return new_headers;
+    Ok(new_headers)
 }
 
 async fn get_new_nonactive_headers(
@@ -115,7 +116,7 @@ async fn get_new_nonactive_headers(
     tree: &Tree,
     rpc: Rpc,
     min_fork_height: u64,
-) -> Vec<HeaderInfo> {
+) -> Result<Vec<HeaderInfo>, FetchError> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
 
     for inactive_tip in tips
@@ -133,12 +134,13 @@ async fn get_new_nonactive_headers(
             }
 
             let height = inactive_tip.height - i as u64;
-            info!(
+            debug!(
                 "loading non-active-chain header: hash={}, height={}",
                 next_header.to_string(),
                 height
             );
-            let header = rpc.get_block_header(&next_header).unwrap();
+
+            let header = rpc.get_block_header(&next_header)?;
 
             new_headers.push(HeaderInfo {
                 height: height,
@@ -148,7 +150,7 @@ async fn get_new_nonactive_headers(
         }
     }
 
-    return new_headers;
+    Ok(new_headers)
 }
 
 async fn get_new_headers(
@@ -157,15 +159,15 @@ async fn get_new_headers(
     rpc: Rpc,
     rest_url: String,
     min_fork_height: u64,
-) -> Vec<HeaderInfo> {
+) -> Result<Vec<HeaderInfo>, FetchError> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
     let mut active_new_headers: Vec<HeaderInfo> =
-        get_new_active_headers(tips, rest_url.clone(), tree, rpc.clone(), min_fork_height).await;
+        get_new_active_headers(tips, rest_url.clone(), tree, rpc.clone(), min_fork_height).await?;
     new_headers.append(&mut active_new_headers);
     let mut nonactive_new_headers: Vec<HeaderInfo> =
-        get_new_nonactive_headers(tips, tree, rpc.clone(), min_fork_height).await;
+        get_new_nonactive_headers(tips, tree, rpc.clone(), min_fork_height).await?;
     new_headers.append(&mut nonactive_new_headers);
-    return new_headers;
+    Ok(new_headers)
 }
 
 #[tokio::main]
@@ -244,14 +246,21 @@ async fn main() {
                             continue;
                         }
                     };
-                    let new_headers: Vec<HeaderInfo> = get_new_headers(
+
+                    let new_headers: Vec<HeaderInfo> = match get_new_headers(
                         &tips,
                         &tree_clone,
                         rpc.clone(),
                         rest_url.clone(),
                         network_cloned.min_fork_height,
-                    )
-                    .await;
+                    ).await {
+                        Ok(headers) => headers,
+                        Err(e) => {
+                            error!("Could not fetch headers from node '{}' (id={}) on network '{}' (id={}): {}", node.name, node.id, network_cloned.name, network_cloned.id, e);
+                            continue;
+                        }
+                    };
+
                     let db_write = db_write.clone();
                     if !new_headers.is_empty() || !has_node_info {
                         {
@@ -659,19 +668,38 @@ async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) {
 
 #[derive(Debug)]
 enum FetchError {
-    TokioJoinError(tokio::task::JoinError),
-    BitcoinCoreRPCError(bitcoincore_rpc::Error),
+    TokioJoin(tokio::task::JoinError),
+    BitcoinCoreRPC(bitcoincore_rpc::Error),
+    BitcoinCoreREST(String),
+    MinReq(minreq::Error),
+}
+
+impl fmt::Display for FetchError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            FetchError::TokioJoin(e) => write!(f, "TokioJoin Error: {:?}", e),
+            FetchError::BitcoinCoreRPC(e) => write!(f, "Bitcoin Core RPC Error: {}", e),
+            FetchError::BitcoinCoreREST(e) => write!(f, "Bitcoin Core REST Error: {}", e),
+            FetchError::MinReq(e) => write!(f, "MinReq HTTP GET request error: {:?}", e),
+        }
+    }
+}
+
+impl From<minreq::Error> for FetchError {
+    fn from(e: minreq::Error) -> Self {
+        FetchError::MinReq(e)
+    }
 }
 
 impl From<tokio::task::JoinError> for FetchError {
     fn from(e: tokio::task::JoinError) -> Self {
-        FetchError::TokioJoinError(e)
+        FetchError::TokioJoin(e)
     }
 }
 
 impl From<bitcoincore_rpc::Error> for FetchError {
     fn from(e: bitcoincore_rpc::Error) -> Self {
-        FetchError::BitcoinCoreRPCError(e)
+        FetchError::BitcoinCoreRPC(e)
     }
 }
 
@@ -699,29 +727,44 @@ async fn get_active_chain_headers(
     rest_url: String,
     count: usize,
     start: BlockHash,
-) -> Vec<bitcoin::BlockHeader> {
+) -> Result<Vec<bitcoin::BlockHeader>, FetchError> {
     debug!(
         "loading active-chain headers starting from {}",
         start.to_string()
     );
 
-    let res = minreq::get(format!(
+    let url = format!(
         "http://{}/rest/headers/{}/{}.bin",
         rest_url,
         count,
         start.to_string()
-    )).with_timeout(8).send().unwrap();
+    );
+
+    let res = minreq::get(url.clone())
+        .with_timeout(8)
+        .send()?;
 
     if res.status_code != 200 {
-        error!("Could not load headers via Bitcoin Core REST interface: status={} {}, body={:?}", res.status_code, res.reason_phrase, res.as_str());
-        return vec![];
+        return Err(FetchError::BitcoinCoreREST(
+            format!("could not load headers from REST URL ({}): {} {}: {:?}",
+                url,
+                res.status_code,
+                res.reason_phrase,
+                res.as_str(),
+            )
+        ));
     }
 
-    let headers: Vec<bitcoin::BlockHeader> = res
+    let header_results: Result<Vec<bitcoin::BlockHeader>, bitcoincore_rpc::bitcoin::consensus::encode::Error> = res
         .as_bytes()
         .chunks(80)
-        .map(|hbytes| bitcoin::consensus::deserialize(&hbytes).unwrap())
+        .map(|hbytes| bitcoin::consensus::deserialize::<bitcoin::BlockHeader>(&hbytes))
         .collect();
+
+    let headers = match header_results {
+        Ok(headers) => headers,
+        Err(e) => return Err(FetchError::BitcoinCoreREST(format!("could not deserialize REST header response: {}", e))),
+    };
 
     debug!(
         "loaded {} active-chain headers starting from {}",
@@ -729,5 +772,5 @@ async fn get_active_chain_headers(
         start.to_string()
     );
 
-    return headers;
+    Ok(headers)
 }
