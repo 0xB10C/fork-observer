@@ -21,6 +21,10 @@
     --block-description-bg: #f8f9fa;
     --node-indicatior-stroke: black;
   }
+  svg.invert, img.invert {
+    -webkit-filter: invert(100%); /* safari 6.0 - 9.0 */
+    filter: invert(100%);
+  }
 }
 
 /* manual dark mode */
@@ -32,14 +36,26 @@
   --block-description-link-color: lightgray;
   --block-description-bg: #f8f9fa;
   --node-indicatior-stroke: black;
+  svg.invert, img.invert {
+    -webkit-filter: invert(100%); /* safari 6.0 - 9.0 */
+    filter: invert(100%);
+  }
 }
 
-body {
+body, .card {
   background: var(--body-bg);
 }
 
-h1, h2, h3, h4, h5, h6, p, label {
+h1, h2, h3, h4, h5, h6, p, label, span, hr {
   color: var(--text-color);
+}
+
+.border {
+  border-color: var(--text-color);
+}
+
+.text-color-dark {
+  color: black;
 }
 
 .link {

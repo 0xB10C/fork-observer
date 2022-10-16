@@ -366,33 +366,33 @@ async function draw_nodes() {
     .enter()
     .append()
     .html(d => `
-      <div class="col card node-info m-2" style="width: 16rem; min-height: 14rem;">
-        <div class="card-body">
+      <div class="col border rounded node-info m-2" style="width: 16rem; min-height: 14rem;">
+        <div class="m-3">
           <h5 class="card-title py-0 my-0">
-            <img src="static/img/node.svg" height=48 alt="...">
+            <img class="invert" src="static/img/node.svg" height=48 alt="Node symbol">
             ${d.name}
           </h5>
           <div style="max-height: 4rem; overflow: auto;">
-            <span class="card-text" style="max-height: 2rem;">${d.description}</span>
+            <span style="max-height: 2rem;">${d.description}</span>
           </div>
         </div>
         <div class="px-2">
-          <span class="small muted"> version: ${d.version}
+          <span class="small"> version: ${d.version}
         </div>
         <div class="px-2">
-          <span class="small muted"> tip data changed: ${new Date(d.last_changed_timestamp * 1000).toLocaleTimeString()}
+          <span class="small"> tip data changed: ${new Date(d.last_changed_timestamp * 1000).toLocaleTimeString()}
         </div>
         <div class="px-2" style="background-color: hsl(${parseInt(d.tips.filter(tip => tip.status == "active")[0].height * 90, 10) % 360}, 50%, 75%)">
-          <span class="small muted"> height: ${d.tips.filter(tip => tip.status == "active")[0].height}
+          <span class="small text-color-dark"> height: ${d.tips.filter(tip => tip.status == "active")[0].height}
         </div>
         <div class="px-2" style="background-color: hsl(${parseInt(d.tips.filter(tip => tip.status == "active")[0].hash.substring(58), 16) % 360}, 50%, 75%)">
           <details>
             <summary style="list-style: none;">
-              <span class="small muted">
+              <span class="small text-color-dark">
                 tip: ${d.tips.filter(tip => tip.status == "active")[0].hash.substring(0, 10)}..${d.tips.filter(tip => tip.status == "active")[0].hash.substring(54, 64)}
               </span>
             </summary>
-            <span class="small muted">
+            <span class="small text-color-dark">
               active tip hash: ${d.tips.filter(tip => tip.status == "active")[0].hash}
             </span>
           </details>
