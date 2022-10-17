@@ -227,9 +227,9 @@ async fn main() {
             let tipchanges_tx_cloned = tipchanges_tx.clone();
             let mut has_node_info = false;
             let mut version_info: String = String::default();
+            let mut last_tips: GetChainTipsResult = vec![];
             task::spawn(async move {
                 loop {
-                    interval.tick().await;
                     if version_info == String::default() {
                         version_info = match get_version_info(rpc.clone()).await {
                             Ok(version) => version,
@@ -261,40 +261,43 @@ async fn main() {
                         }
                     };
 
-                    let db_write = db_write.clone();
-                    if !new_headers.is_empty() || !has_node_info {
-                        {
-                            let mut tree_locked = tree_clone.lock().await;
-                            // insert headers to tree
-                            for h in new_headers.clone() {
-                                if !tree_locked.1.contains_key(&h.header.block_hash()) {
-                                    let idx = tree_locked.0.add_node(h.clone());
-                                    tree_locked.1.insert(h.header.block_hash(), idx);
-                                }
-                            }
-                            // connect nodes with edges
-                            for current in new_headers.clone() {
-                                let idx_current: NodeIndex;
-                                let idx_prev: NodeIndex;
-                                {
-                                    idx_current = *tree_locked
-                                        .1
-                                        .get(&current.header.block_hash())
-                                        .expect(
-                                        "current header should be in the map as we just inserted it or it was already present",
-                                    );
-                                    match tree_locked.1.get(&current.header.prev_blockhash) {
-                                        Some(idx) => idx_prev = *idx,
-                                        None => {
-                                            continue; // the tree's root has no previous block, skip it
-                                        }
+                    if last_tips != tips {
+                        last_tips = tips.clone();
+                        let db_write = db_write.clone();
+                        if !new_headers.is_empty() || !has_node_info {
+                            {
+                                let mut tree_locked = tree_clone.lock().await;
+                                // insert headers to tree
+                                for h in new_headers.clone() {
+                                    if !tree_locked.1.contains_key(&h.header.block_hash()) {
+                                        let idx = tree_locked.0.add_node(h.clone());
+                                        tree_locked.1.insert(h.header.block_hash(), idx);
                                     }
                                 }
-                                tree_locked.0.update_edge(idx_prev, idx_current, false);
+                                // connect nodes with edges
+                                for current in new_headers.clone() {
+                                    let idx_current: NodeIndex;
+                                    let idx_prev: NodeIndex;
+                                    {
+                                        idx_current = *tree_locked
+                                            .1
+                                            .get(&current.header.block_hash())
+                                            .expect(
+                                            "current header should be in the map as we just inserted it or it was already present",
+                                        );
+                                        match tree_locked.1.get(&current.header.prev_blockhash) {
+                                            Some(idx) => idx_prev = *idx,
+                                            None => {
+                                                continue; // the tree's root has no previous block, skip it
+                                            }
+                                        }
+                                    }
+                                    tree_locked.0.update_edge(idx_prev, idx_current, false);
+                                }
                             }
-                        }
 
-                        write_to_db(&new_headers, db_write, network_cloned.id).await;
+                            write_to_db(&new_headers, db_write, network_cloned.id).await;
+                        }
 
                         let headerinfojson =
                             collapse_tree(&tree_clone, network_cloned.max_forks).await;
@@ -331,6 +334,7 @@ async fn main() {
                         tipchanges_tx_cloned.clone().send(network_cloned.id);
                         has_node_info = true;
                     }
+                interval.tick().await;
                 }
             });
         }
