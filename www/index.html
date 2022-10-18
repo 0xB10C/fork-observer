@@ -26,23 +26,23 @@
     <main style="flex: 1;">
       <div style="display: flex; flex-direction: column;">
         <p>
-        <h3>Network: <span id="network_info_name"></span></h3>
+          <h3>Network: <span id="network_info_name"></span></h3>
           <span id="network_info_description"></span>
+          <p>
+            <h4>Nodes</h3>
+            <div class="container-fluid px-0">
+              <div class="row row-cols-auto" id="node_infos"></div>
+            </div>
+          </p>
         </p>
-        <svg style="flex:1; flex-basis: 75vh; height:75vh;" class="border" id="drawing-area"></svg>
         <div>
-          <select name="orientation" id="orientation"></select>
+          <label>Orientation <select name="orientation" id="orientation"></select></label>
         </div>
-        <p>
-          <h3>Nodes</h3>
-          <div class="container-fluid px-0">
-            <div class="row row-cols-auto" id="node_infos"></div>
-          </div>
-        </p>
+        <svg style="flex:1; flex-basis: 75vh; height:75vh;" class="border" id="drawing-area"></svg>
       </div>
     </main>
     <hr>
-    <footer class="container-xl px-xl-3 mt-3">
+    <footer class="container-xxl px-xl-3 mt-3">
       <div class="row text-center">
         <div class="col-lg-6 p-3">
           <span class="my-auto">

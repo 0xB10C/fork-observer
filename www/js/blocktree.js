@@ -213,6 +213,7 @@ function draw() {
           })
         }
 
+
         function onBlockDescriptionCloseClick(c, d) {
           let parentElement = d3.select(c.target.parentElement.parentElement.parentElement.parentElement.parentElement.parentElement)
           parentElement.selectAll(".block-description").remove()
@@ -224,33 +225,32 @@ function draw() {
           .attr("width", "600")
         let card = cardWrapper
           .append("xhtml:div")
-            .attr("class", "card m-0 p-0")
-        let headerDiv = card.append("xhtml:div").attr("class", "card-header")
+            .attr("class", "card m-0 p-0 border")
+        let headerDiv = card.append("xhtml:div").attr("class", "card-header border")
         headerDiv.append()
           .html(`<span>Header at height ${d.data.data.height}</span>`)
         headerDiv.append()
           .style("float", "right")
           .html(`<button class="btn btn-close"></button>`)
           .on("click", (c, d) => onBlockDescriptionCloseClick(c, d));
-        card.append()
+        card.append("div")
+          .attr("class", "card-body")
           .html(`
-              <div class="card-body">
-                <div class="container">
-                  <div class="row small">
-                    <div class="col small ">
-                      <div class="row"><div class="col-2">hash</div><div class="col-10 font-monospace small">${d.data.data.hash}</div></div>
-                      <div class="row"><div class="col-2">previous</div><div class="col-10 font-monospace small">${d.data.data.prev_blockhash}</div></div>
-                      <div class="row"><div class="col-2">merkleroot</div><div class="col-10 font-monospace small">${d.data.data.merkle_root}</div></div>
-                      <div class="row">
-                        <div class="col-2">timestamp</div><div class="col-4">${d.data.data.time}</div>
-                        <div class="col-2">version</div><div class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</div>
-                      </div>
-                      <div class="row">
-                        <div class="col-2">nonce</div><div class="col-4 font-monospace">0x${d.data.data.nonce.toString(16)}</div>
-                        <div class="col-2">bits</div><div class="col-4 font-monospace">0x${d.data.data.bits.toString(16)}</div>
-                      </div>
-                      <div class="row"><div class="col">${status_text}</div></div>
+              <div class="container">
+                <div class="row small">
+                  <div class="col small">
+                    <div class="row"><span class="col-2">hash</span><span class="col-10 font-monospace small">${d.data.data.hash}</span></div>
+                    <div class="row"><span class="col-2">previous</span><span class="col-10 font-monospace small">${d.data.data.prev_blockhash}</span></div>
+                    <div class="row"><span class="col-2">merkleroot</span><span class="col-10 font-monospace small">${d.data.data.merkle_root}</span></div>
+                    <div class="row">
+                      <span class="col-2">timestamp</span><span class="col-4">${d.data.data.time}</span>
+                      <span class="col-2">version</span><span class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</span>
                     </div>
+                    <div class="row">
+                      <span class="col-2">nonce</span><span class="col-4 font-monospace">0x${d.data.data.nonce.toString(16)}</span>
+                      <span class="col-2">bits</span><span class="col-4 font-monospace">0x${d.data.data.bits.toString(16)}</span>
+                    </div>
+                    <div class="row"><span class="col">${status_text}</span></div>
                   </div>
                 </div>
               </div>
@@ -319,9 +319,9 @@ function draw() {
     offset_y = o.y(max_height_tip, htoi);
   }
 
-  zoom.scaleBy(svg, 1.2);
+  zoom.scaleBy(svg, 1);
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
-  zoom.translateTo(svg, offset_x, offset_y, [(svgSize.width - svgSize.x)/2, (svgSize.height - svgSize.y)/2])
+  zoom.translateTo(svg, offset_x, offset_y, [(svgSize.width)/2, (svgSize.height)/2])
 }
 
 // recursivly collapses linear branches of blocks longer than x,
@@ -364,9 +364,10 @@ async function draw_nodes() {
   nodeInfoRow.selectAll('.node-info')
     .data(state_data.nodes)
     .enter()
-    .append()
-    .html(d => `
-      <div class="col border rounded node-info m-2" style="width: 16rem; min-height: 14rem;">
+    .append("div")
+      .attr("class", "col-12 col-sm-6 col-lg-4 col-xl-3")
+      .html(d => `
+      <div class="col border rounded node-info m-2" style="min-height: 12rem;">
         <div class="m-3">
           <h5 class="card-title py-0 my-0">
             <img class="invert" src="static/img/node.svg" height=48 alt="Node symbol">
