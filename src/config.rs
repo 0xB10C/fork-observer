@@ -61,6 +61,7 @@ struct TomlNode {
     rpc_cookie_file: Option<PathBuf>,
     rpc_user: Option<String>,
     rpc_password: Option<String>,
+    use_rest: bool,
 }
 
 #[derive(Hash, Clone)]
@@ -70,6 +71,7 @@ pub struct Node {
     pub name: String,
     pub rpc_url: String,
     pub rpc_auth: Auth,
+    pub use_rest: bool,
 }
 
 fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
@@ -120,6 +122,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
                         description: node.description.clone(),
                         rpc_url: format!("{}:{}", node.rpc_host, node.rpc_port.to_string()),
                         rpc_auth: parse_rpc_auth(node).unwrap(),
+                        use_rest: node.use_rest,
                     })
                     .collect(),
             })
