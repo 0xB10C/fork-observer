@@ -38,6 +38,8 @@ use types::{
 
 use config::Network;
 
+const VERSION_UNKNOWN: &str = "unknown";
+
 type NodeInfo = BTreeMap<u8, NodeInfoJson>;
 type Cache = (Vec<HeaderInfoJson>, NodeInfo);
 type Caches = Arc<Mutex<BTreeMap<u32, Cache>>>;
@@ -231,10 +233,15 @@ async fn main() {
             task::spawn(async move {
                 loop {
                     if version_info == String::default() {
+                        // The Bitcoin Core version is requested via the getnetworkinfo RPC. This
+                        // RPC exposes sensitive information to the caller, so it might not be
+                        // allowed on the whitelist. We set the version to VERSION_UNKNOWN if we
+                        // can't request it.
                         version_info = match get_version_info(rpc.clone()).await {
                             Ok(version) => version,
                             Err(e) => {
                                 error!("Could not fetch getnetworkinfo from node '{}' (id={}) on network '{}' (id={}): {:?}", node.name, node.id, network_cloned.name, network_cloned.id, e);
+                                version_info = VERSION_UNKNOWN.to_string();
                                 continue;
                             }
                         };
