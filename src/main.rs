@@ -53,6 +53,7 @@ async fn get_new_active_headers(
     rest_url: String,
     tree: &Tree,
     rpc: Rpc,
+    use_rest: bool,
     min_fork_height: u64,
 ) -> Result<Vec<HeaderInfo>, FetchError> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
@@ -91,23 +92,40 @@ async fn get_new_active_headers(
         .last()
         .unwrap();
 
-    const STEP_SIZE: usize = 2000;
-    for query_height in (current_height + 1..=active_tip.height).step_by(STEP_SIZE) {
-        let header_hash = rpc.get_block_hash(query_height).unwrap();
-        {
-            let locked_tree = tree.lock().await;
-            if locked_tree.1.contains_key(&header_hash) {
-                continue;
+        if use_rest {
+            let mut headers: Vec<bitcoin::BlockHeader>;
+            const STEP_SIZE: u64 = 2000;
+            for query_height in (current_height + 1..=active_tip.height).step_by(STEP_SIZE as usize) {
+                let header_hash = rpc.get_block_hash(query_height)?;
+                {
+                    let locked_tree = tree.lock().await;
+                    if locked_tree.1.contains_key(&header_hash) {
+                        continue;
+                    }
+                }
+                headers = get_active_chain_headers_rest(rest_url.clone(), STEP_SIZE, header_hash).await?;
+                for height_header_pair in (query_height..(query_height + headers.len() as u64)).zip(headers){
+                    new_headers.push(HeaderInfo {
+                        height: height_header_pair.0,
+                        header: height_header_pair.1,
+                    });
+                }
             }
-        }
-        let headers = get_active_chain_headers(rest_url.clone(), STEP_SIZE, header_hash).await?;
-        for height_header_pair in (query_height..(query_height + headers.len() as u64)).zip(headers)
-        {
-            new_headers.push(HeaderInfo {
-                height: height_header_pair.0,
-                header: height_header_pair.1,
-            });
-        }
+        } else {
+            for height in current_height + 1..=active_tip.height {
+                let header_hash = rpc.get_block_hash(height)?;
+                {
+                    let locked_tree = tree.lock().await;
+                    if locked_tree.1.contains_key(&header_hash) {
+                        continue;
+                    }
+                }
+                let header = rpc.get_block_header(&header_hash)?;
+                new_headers.push(HeaderInfo {
+                    height: height,
+                    header: header,
+                });
+            }
     }
 
     Ok(new_headers)
@@ -160,11 +178,12 @@ async fn get_new_headers(
     tree: &Tree,
     rpc: Rpc,
     rest_url: String,
+    use_rest: bool,
     min_fork_height: u64,
 ) -> Result<Vec<HeaderInfo>, FetchError> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
     let mut active_new_headers: Vec<HeaderInfo> =
-        get_new_active_headers(tips, rest_url.clone(), tree, rpc.clone(), min_fork_height).await?;
+        get_new_active_headers(tips, rest_url.clone(), tree, rpc.clone(), use_rest, min_fork_height).await?;
     new_headers.append(&mut active_new_headers);
     let mut nonactive_new_headers: Vec<HeaderInfo> =
         get_new_nonactive_headers(tips, tree, rpc.clone(), min_fork_height).await?;
@@ -259,6 +278,7 @@ async fn main() {
                         &tree_clone,
                         rpc.clone(),
                         rest_url.clone(),
+                        node.use_rest,
                         network_cloned.min_fork_height,
                     ).await {
                         Ok(headers) => headers,
@@ -734,9 +754,9 @@ async fn get_version_info(rpc: Rpc) -> Result<String, FetchError> {
     }
 }
 
-async fn get_active_chain_headers(
+async fn get_active_chain_headers_rest(
     rest_url: String,
-    count: usize,
+    count: u64,
     start: BlockHash,
 ) -> Result<Vec<bitcoin::BlockHeader>, FetchError> {
     debug!(
