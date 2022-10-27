@@ -6,8 +6,8 @@ use std::time::Duration;
 use std::{env, fs};
 
 use bitcoincore_rpc::Auth;
-use serde::Deserialize;
 use log::info;
+use serde::Deserialize;
 
 use crate::error::ConfigError;
 
@@ -76,7 +76,6 @@ pub struct Node {
     pub rpc_auth: Auth,
     pub use_rest: bool,
 }
-
 
 fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
     if node_config.rpc_cookie_file.is_some() {

@@ -2,38 +2,34 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use tokio_stream::wrappers::BroadcastStream;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{broadcast, Mutex};
 use tokio::task;
 use tokio::time;
+use tokio_stream::wrappers::BroadcastStream;
 
-use warp::Filter;
 use futures_util::StreamExt;
+use warp::Filter;
 
 use bitcoincore_rpc::json::GetChainTipsResult;
 use bitcoincore_rpc::Client;
 
 use rusqlite::Connection;
 
-
 use petgraph::graph::NodeIndex;
 
 use log::{error, info, warn};
 
 mod api;
-mod db;
 mod config;
+mod db;
 mod error;
 mod headertree;
-mod types;
 mod rpc;
+mod types;
 
-use types::{
-    DataQuery, HeaderInfo, NodeInfoJson, Caches, Tree,
-    Db, Rpc,
-};
+use types::{Caches, DataQuery, Db, HeaderInfo, NodeInfoJson, Rpc, Tree};
 
-use crate::error::{MainError, DbError, FetchError};
+use crate::error::{DbError, FetchError, MainError};
 
 const VERSION_UNKNOWN: &str = "unknown";
 
@@ -47,11 +43,14 @@ async fn main() -> Result<(), MainError> {
         Ok(db) => {
             info!("Opened database: {:?}", config.database_path);
             db
-        },
+        }
         Err(e) => {
-            error!("Could not open the database {:?}: {}", config.database_path, e);
-            return Err(DbError::from(e).into())
-        },
+            error!(
+                "Could not open the database {:?}: {}",
+                config.database_path, e
+            );
+            return Err(DbError::from(e).into());
+        }
     };
 
     let db: Db = Arc::new(Mutex::new(connection));
@@ -60,9 +59,12 @@ async fn main() -> Result<(), MainError> {
     match db::setup_db(db.clone()).await {
         Ok(_) => info!("Database setup successful"),
         Err(e) => {
-            error!("Could not setup the database {:?}: {}", config.database_path, e);
+            error!(
+                "Could not setup the database {:?}: {}",
+                config.database_path, e
+            );
             return Err(DbError::from(e).into());
-        },
+        }
     };
 
     // A channel to notify about tip changes via ServerSentEvents to clients.
@@ -80,10 +82,13 @@ async fn main() -> Result<(), MainError> {
             match db::load_treeinfos(db.clone(), network.id).await {
                 Ok(tree) => tree,
                 Err(e) => {
-                    error!("Could not load tree_infos (headers) from the database {:?}: {}", config.database_path, e);
+                    error!(
+                        "Could not load tree_infos (headers) from the database {:?}: {}",
+                        config.database_path, e
+                    );
                     return Err(DbError::from(e).into());
-                },
-            }
+                }
+            },
         ));
 
         let headerinfojson = headertree::collapse_tree(&tree, network.max_forks).await;
@@ -96,9 +101,12 @@ async fn main() -> Result<(), MainError> {
             let client = match Client::new(&node.rpc_url, node.rpc_auth.clone()) {
                 Ok(c) => c,
                 Err(e) => {
-                    error!("Could not create a RPC client for node '{}' on network '{}': {:?}", node.name, network.name, e);
+                    error!(
+                        "Could not create a RPC client for node '{}' on network '{}': {:?}",
+                        node.name, network.name, e
+                    );
                     return Err(FetchError::from(e).into());
-                },
+                }
             };
             let rpc: Rpc = Arc::new(client);
             let rest_url = node.rpc_url.clone();
@@ -147,7 +155,9 @@ async fn main() -> Result<(), MainError> {
                         rest_url.clone(),
                         node.use_rest,
                         network_cloned.min_fork_height,
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(headers) => headers,
                         Err(e) => {
                             error!("Could not fetch headers from node '{}' (id={}) on network '{}' (id={}): {}", node.name, node.id, network_cloned.name, network_cloned.id, e);
@@ -215,14 +225,21 @@ async fn main() -> Result<(), MainError> {
                             .cloned()
                             .collect();
 
-                        let last_change_timestamp = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                        let last_change_timestamp = match SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                        {
                             Ok(n) => n.as_secs(),
                             Err(_) => {
                                 warn!("SystemTime is before UNIX_EPOCH time. Node last_change_timestamp set to 0.");
                                 0u64
-                            },
+                            }
                         };
-                        let nodeinfojson = NodeInfoJson::new(node.clone(), &relevant_tips, version_info.clone(), last_change_timestamp);
+                        let nodeinfojson = NodeInfoJson::new(
+                            node.clone(),
+                            &relevant_tips,
+                            version_info.clone(),
+                            last_change_timestamp,
+                        );
                         {
                             let mut locked_cache = caches_clone.lock().await;
                             let network = locked_cache
@@ -235,7 +252,10 @@ async fn main() -> Result<(), MainError> {
                         if !new_headers.is_empty() {
                             match tipchanges_tx_cloned.clone().send(network_cloned.id) {
                                 Ok(_) => (),
-                                Err(e) => warn!("Could not send tip_changed update into the channel: {}", e),
+                                Err(e) => warn!(
+                                    "Could not send tip_changed update into the channel: {}",
+                                    e
+                                ),
                             };
                         }
                         has_node_info = true;
@@ -268,21 +288,21 @@ async fn main() -> Result<(), MainError> {
         .and(api::with_networks(config.networks.clone()))
         .and_then(api::networks_response);
 
-    let change_sse = warp::path!("api" / "changes").and(warp::get()).map(move || {
-        let tipchanges_rx = tipchanges_tx.clone().subscribe();
-        let broadcast_stream = BroadcastStream::new(tipchanges_rx);
-        let event_stream = broadcast_stream.map(move |d| {
-            match d {
+    let change_sse = warp::path!("api" / "changes")
+        .and(warp::get())
+        .map(move || {
+            let tipchanges_rx = tipchanges_tx.clone().subscribe();
+            let broadcast_stream = BroadcastStream::new(tipchanges_rx);
+            let event_stream = broadcast_stream.map(move |d| match d {
                 Ok(d) => api::data_changed_sse(d),
                 Err(e) => {
                     error!("Could not SSE notify about tip changed event: {}", e);
                     api::data_changed_sse(u32::MAX)
-                },
-            }
+                }
+            });
+            let stream = warp::sse::keep_alive().stream(event_stream);
+            warp::sse::reply(stream)
         });
-        let stream = warp::sse::keep_alive().stream(event_stream);
-        warp::sse::reply(stream)
-    });
 
     let routes = www_dir
         .or(index_html)

@@ -1,5 +1,5 @@
 use std::fmt;
-use std::net::{AddrParseError};
+use std::net::AddrParseError;
 use std::{error, io};
 
 use bitcoincore_rpc::bitcoin;
@@ -20,7 +20,7 @@ impl fmt::Display for FetchError {
             FetchError::BitcoinCoreRPC(e) => write!(f, "Bitcoin Core RPC Error: {}", e),
             FetchError::BitcoinCoreREST(e) => write!(f, "Bitcoin Core REST Error: {}", e),
             FetchError::MinReq(e) => write!(f, "MinReq HTTP GET request error: {:?}", e),
-            FetchError::DataError(e) => write!(f, "Invalid data response error {}", e)
+            FetchError::DataError(e) => write!(f, "Invalid data response error {}", e),
         }
     }
 }
@@ -100,7 +100,6 @@ impl From<bitcoin::consensus::encode::Error> for DbError {
     }
 }
 
-
 #[derive(Debug)]
 pub enum ConfigError {
     CookieFileDoesNotExist,
@@ -155,13 +154,11 @@ impl From<AddrParseError> for ConfigError {
     }
 }
 
-
-
 #[derive(Debug)]
 pub enum MainError {
     Db(DbError),
     Fetch(FetchError),
-    Config(ConfigError)
+    Config(ConfigError),
 }
 
 impl fmt::Display for MainError {
@@ -184,7 +181,6 @@ impl error::Error for MainError {
     }
 }
 
-
 impl From<DbError> for MainError {
     fn from(e: DbError) -> Self {
         MainError::Db(e)
@@ -202,4 +198,3 @@ impl From<ConfigError> for MainError {
         MainError::Config(e)
     }
 }
-

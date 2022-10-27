@@ -8,8 +8,8 @@ use bitcoincore_rpc::bitcoin::BlockHash;
 
 use log::{info, warn};
 
-use crate::types::{HeaderInfo, Db, TreeInfo};
 use crate::error::DbError;
+use crate::types::{Db, HeaderInfo, TreeInfo};
 
 const SELECT_STMT_HEADER_HEIGHT: &str = "
 SELECT
@@ -34,13 +34,15 @@ CREATE TABLE IF NOT EXISTS headers (
 ";
 
 pub async fn setup_db(db: Db) -> Result<(), DbError> {
-    db.lock()
-        .await
-        .execute(CREATE_STMT_TABLE_HEADERS, [])?;
+    db.lock().await.execute(CREATE_STMT_TABLE_HEADERS, [])?;
     Ok(())
 }
 
-pub async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) -> Result<(), DbError> {
+pub async fn write_to_db(
+    new_headers: &Vec<HeaderInfo>,
+    db: Db,
+    network: u32,
+) -> Result<(), DbError> {
     let mut db_locked = db.lock().await;
     let tx = db_locked.transaction()?;
     info!(
