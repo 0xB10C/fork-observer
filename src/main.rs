@@ -65,7 +65,7 @@ async fn main() -> Result<(), MainError> {
                 "Could not setup the database {:?}: {}",
                 config.database_path, e
             );
-            return Err(DbError::from(e).into());
+            return Err(e.into());
         }
     };
 
@@ -88,7 +88,7 @@ async fn main() -> Result<(), MainError> {
                         "Could not load tree_infos (headers) from the database {:?}: {}",
                         config.database_path, e
                     );
-                    return Err(DbError::from(e).into());
+                    return Err(e.into());
                 }
             },
         ));
