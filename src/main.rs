@@ -33,20 +33,12 @@ mod types;
 
 use types::{
     DataJsonResponse, DataQuery, HeaderInfo, HeaderInfoJson, NetworkJson, NetworksJsonResponse,
-    NodeInfoJson, DataChanged, InfoJsonResponse,
+    NodeInfoJson, DataChanged, InfoJsonResponse, Caches, TreeInfo, Tree, Db, Rpc,
 };
 
 use config::Network;
 
 const VERSION_UNKNOWN: &str = "unknown";
-
-type NodeInfo = BTreeMap<u8, NodeInfoJson>;
-type Cache = (Vec<HeaderInfoJson>, NodeInfo);
-type Caches = Arc<Mutex<BTreeMap<u32, Cache>>>;
-type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
-type Tree = Arc<Mutex<TreeInfo>>;
-type Db = Arc<Mutex<Connection>>;
-type Rpc = Arc<Client>;
 
 async fn get_new_active_headers(
     tips: &GetChainTipsResult,
