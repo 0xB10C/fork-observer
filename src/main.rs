@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 // TODO: remove?
@@ -13,14 +12,12 @@ use tokio::time;
 use warp::Filter;
 use futures_util::StreamExt;
 
-use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::BlockHash;
 use bitcoincore_rpc::json::GetChainTipsResult;
 use bitcoincore_rpc::Client;
 
 use rusqlite::Connection;
 
-use petgraph::graph::DiGraph;
+
 use petgraph::graph::NodeIndex;
 use petgraph::visit::Dfs;
 
@@ -34,7 +31,7 @@ mod types;
 mod rpc;
 
 use types::{
-    DataQuery, HeaderInfo, HeaderInfoJson, NodeInfoJson, Caches, TreeInfo, Tree,
+    DataQuery, HeaderInfo, HeaderInfoJson, NodeInfoJson, Caches, Tree,
     Db, Rpc,
 };
 
@@ -78,7 +75,7 @@ async fn main() {
         );
 
         let tree: Tree = Arc::new(Mutex::new(
-            load_treeinfos_from_db(db.clone(), network.id).await,
+            db::load_treeinfos(db.clone(), network.id).await,
         ));
 
         let headerinfojson = collapse_tree(&tree, network.max_forks).await;
@@ -364,91 +361,6 @@ async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
             prev_node_index,
         ));
     }
-
-    return headers;
-}
-
-// Loads header and tip information for a specified network from the DB and
-// builds a header-tree from it.
-async fn load_treeinfos_from_db(db: Db, network: u32) -> TreeInfo {
-    let header_infos = load_header_infos_from_db(db, network).await;
-
-    let mut tree: DiGraph<HeaderInfo, bool> = DiGraph::new();
-    let mut hash_index_map: HashMap<BlockHash, NodeIndex> = HashMap::new();
-    info!("building header tree for network {}..", network);
-    // add headers as nodes
-    for h in header_infos.clone() {
-        let idx = tree.add_node(h.clone());
-        hash_index_map.insert(h.header.block_hash(), idx);
-    }
-    info!(".. added headers from network {}", network);
-    // add prev-current block relationships as edges
-    for current in header_infos {
-        let idx_current = hash_index_map
-            .get(&current.header.block_hash())
-            .expect("current header should be in the map as we just inserted it");
-        match hash_index_map.get(&current.header.prev_blockhash) {
-            Some(idx_prev) => tree.update_edge(*idx_prev, *idx_current, false),
-            None => continue,
-        };
-    }
-    info!(
-        ".. added relationships between headers from network {}",
-        network
-    );
-    let root_nodes = tree.externals(petgraph::Direction::Incoming).count();
-    info!(
-        "done building header tree for network {}: roots={}, tips={}",
-        network,
-        root_nodes,                                            // root nodes
-        tree.externals(petgraph::Direction::Outgoing).count(), // tip nodes
-    );
-    if root_nodes > 1 {
-        warn!(
-            "header-tree for network {} has more than one ({}) root!",
-            network, root_nodes
-        );
-    }
-    return (tree, hash_index_map);
-}
-
-async fn load_header_infos_from_db(db: Db, network: u32) -> Vec<HeaderInfo> {
-    info!("loading headers for network {} from database..", network);
-    let db_locked = db.lock().await;
-
-    let mut stmt = db_locked
-        .prepare(
-            "SELECT
-            height, header
-        FROM
-            headers
-        WHERE
-            network = ?1
-        ORDER BY
-            height
-            ASC
-        ",
-        )
-        .unwrap();
-    let headers: Vec<HeaderInfo> = stmt
-        .query_map([network.to_string()], |row| {
-            let header_hex: String = row.get(1).unwrap();
-            let header_bytes = hex::decode(&header_hex).unwrap();
-            let header = bitcoin::consensus::deserialize(&header_bytes).unwrap();
-
-            Ok(HeaderInfo {
-                height: row.get(0).unwrap(),
-                header: header,
-            })
-        })
-        .unwrap()
-        .map(|h| h.unwrap())
-        .collect();
-    info!(
-        "done loading headers for network {}: headers={}",
-        network,
-        headers.len()
-    );
 
     return headers;
 }
