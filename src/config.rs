@@ -91,7 +91,7 @@ fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
     ) {
         return Ok(Auth::UserPass(user, password));
     }
-    return Err(ConfigError::NoRpcAuth);
+    Err(ConfigError::NoRpcAuth)
 }
 
 pub fn load_config() -> Result<Config, ConfigError> {
@@ -129,12 +129,12 @@ pub fn load_config() -> Result<Config, ConfigError> {
         return Err(ConfigError::NoNetworks);
     }
 
-    return Ok(Config {
+    Ok(Config {
         database_path: PathBuf::from(toml_config.database_path),
         www_path: PathBuf::from(toml_config.www_path),
         query_interval: Duration::from_secs(toml_config.query_interval),
         address: SocketAddr::from_str(&toml_config.address)?,
         footer_html: toml_config.footer_html.clone(),
         networks,
-    });
+    })
 }
