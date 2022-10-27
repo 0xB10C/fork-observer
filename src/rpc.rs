@@ -2,16 +2,16 @@ use std::cmp::max;
 
 use crate::error::FetchError;
 
-use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus};
 use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::{BlockHash};
+use bitcoincore_rpc::bitcoin::BlockHash;
+use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus};
 use bitcoincore_rpc::RpcApi;
 
 use log::{debug, warn};
 
 use tokio::task;
 
-use crate::types::{Tree, HeaderInfo, Rpc,};
+use crate::types::{HeaderInfo, Rpc, Tree};
 
 async fn get_new_nonactive_headers(
     tips: &GetChainTipsResult,
@@ -64,15 +64,21 @@ pub async fn get_new_headers(
     min_fork_height: u64,
 ) -> Result<Vec<HeaderInfo>, FetchError> {
     let mut new_headers: Vec<HeaderInfo> = Vec::new();
-    let mut active_new_headers: Vec<HeaderInfo> =
-        get_new_active_headers(tips, rest_url.clone(), tree, rpc.clone(), use_rest, min_fork_height).await?;
+    let mut active_new_headers: Vec<HeaderInfo> = get_new_active_headers(
+        tips,
+        rest_url.clone(),
+        tree,
+        rpc.clone(),
+        use_rest,
+        min_fork_height,
+    )
+    .await?;
     new_headers.append(&mut active_new_headers);
     let mut nonactive_new_headers: Vec<HeaderInfo> =
         get_new_nonactive_headers(tips, tree, rpc.clone(), min_fork_height).await?;
     new_headers.append(&mut nonactive_new_headers);
     Ok(new_headers)
 }
-
 
 async fn get_new_active_headers(
     tips: &GetChainTipsResult,
@@ -115,50 +121,57 @@ async fn get_new_active_headers(
     let active_tip = match tips
         .iter()
         .filter(|tip| tip.status == GetChainTipsResultStatus::Active)
-        .last() {
-            Some(active_tip) => active_tip,
-            None => return Err(FetchError::DataError(String::from("No 'active' chain tip returned"))),
-        };
+        .last()
+    {
+        Some(active_tip) => active_tip,
+        None => {
+            return Err(FetchError::DataError(String::from(
+                "No 'active' chain tip returned",
+            )))
+        }
+    };
 
-        if use_rest {
-            let mut headers: Vec<bitcoin::BlockHeader>;
-            const STEP_SIZE: u64 = 2000;
-            for query_height in (current_height + 1..=active_tip.height).step_by(STEP_SIZE as usize) {
-                let header_hash = rpc.get_block_hash(query_height)?;
-                {
-                    let locked_tree = tree.lock().await;
-                    if locked_tree.1.contains_key(&header_hash) {
-                        continue;
-                    }
-                }
-                headers = get_active_chain_headers_rest(rest_url.clone(), STEP_SIZE, header_hash).await?;
-                for height_header_pair in (query_height..(query_height + headers.len() as u64)).zip(headers){
-                    new_headers.push(HeaderInfo {
-                        height: height_header_pair.0,
-                        header: height_header_pair.1,
-                    });
+    if use_rest {
+        let mut headers: Vec<bitcoin::BlockHeader>;
+        const STEP_SIZE: u64 = 2000;
+        for query_height in (current_height + 1..=active_tip.height).step_by(STEP_SIZE as usize) {
+            let header_hash = rpc.get_block_hash(query_height)?;
+            {
+                let locked_tree = tree.lock().await;
+                if locked_tree.1.contains_key(&header_hash) {
+                    continue;
                 }
             }
-        } else {
-            for height in current_height + 1..=active_tip.height {
-                let header_hash = rpc.get_block_hash(height)?;
-                {
-                    let locked_tree = tree.lock().await;
-                    if locked_tree.1.contains_key(&header_hash) {
-                        continue;
-                    }
-                }
-                let header = rpc.get_block_header(&header_hash)?;
+            headers =
+                get_active_chain_headers_rest(rest_url.clone(), STEP_SIZE, header_hash).await?;
+            for height_header_pair in
+                (query_height..(query_height + headers.len() as u64)).zip(headers)
+            {
                 new_headers.push(HeaderInfo {
-                    height: height,
-                    header: header,
+                    height: height_header_pair.0,
+                    header: height_header_pair.1,
                 });
             }
+        }
+    } else {
+        for height in current_height + 1..=active_tip.height {
+            let header_hash = rpc.get_block_hash(height)?;
+            {
+                let locked_tree = tree.lock().await;
+                if locked_tree.1.contains_key(&header_hash) {
+                    continue;
+                }
+            }
+            let header = rpc.get_block_header(&header_hash)?;
+            new_headers.push(HeaderInfo {
+                height: height,
+                header: header,
+            });
+        }
     }
 
     Ok(new_headers)
 }
-
 
 pub async fn get_tips(rpc: Rpc) -> Result<GetChainTipsResult, FetchError> {
     match task::spawn_blocking(move || rpc.get_chain_tips()).await {
@@ -197,22 +210,22 @@ async fn get_active_chain_headers_rest(
         start.to_string()
     );
 
-    let res = minreq::get(url.clone())
-        .with_timeout(8)
-        .send()?;
+    let res = minreq::get(url.clone()).with_timeout(8).send()?;
 
     if res.status_code != 200 {
-        return Err(FetchError::BitcoinCoreREST(
-            format!("could not load headers from REST URL ({}): {} {}: {:?}",
-                url,
-                res.status_code,
-                res.reason_phrase,
-                res.as_str(),
-            )
-        ));
+        return Err(FetchError::BitcoinCoreREST(format!(
+            "could not load headers from REST URL ({}): {} {}: {:?}",
+            url,
+            res.status_code,
+            res.reason_phrase,
+            res.as_str(),
+        )));
     }
 
-    let header_results: Result<Vec<bitcoin::BlockHeader>, bitcoincore_rpc::bitcoin::consensus::encode::Error> = res
+    let header_results: Result<
+        Vec<bitcoin::BlockHeader>,
+        bitcoincore_rpc::bitcoin::consensus::encode::Error,
+    > = res
         .as_bytes()
         .chunks(80)
         .map(|hbytes| bitcoin::consensus::deserialize::<bitcoin::BlockHeader>(&hbytes))
@@ -220,7 +233,12 @@ async fn get_active_chain_headers_rest(
 
     let headers = match header_results {
         Ok(headers) => headers,
-        Err(e) => return Err(FetchError::BitcoinCoreREST(format!("could not deserialize REST header response: {}", e))),
+        Err(e) => {
+            return Err(FetchError::BitcoinCoreREST(format!(
+                "could not deserialize REST header response: {}",
+                e
+            )))
+        }
     };
 
     debug!(

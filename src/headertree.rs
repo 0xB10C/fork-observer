@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use petgraph::visit::Dfs;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::Dfs;
 
 use crate::types::{HeaderInfoJson, Tree};
 
-use log::{warn, info};
+use log::{info, warn};
 
 pub async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
     let tree_locked = tree.lock().await;

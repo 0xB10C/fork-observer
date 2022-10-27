@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use crate::config::{Network, Node};
 
-use bitcoincore_rpc::bitcoin::{BlockHeader, BlockHash};
+use bitcoincore_rpc::bitcoin::{BlockHash, BlockHeader};
 use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus, GetChainTipsResultTip};
-use bitcoincore_rpc::{Client};
+use bitcoincore_rpc::Client;
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,7 @@ use petgraph::graph::NodeIndex;
 
 use rusqlite::Connection;
 
-use tokio::sync::{Mutex};
+use tokio::sync::Mutex;
 
 pub type NodeInfo = BTreeMap<u8, NodeInfoJson>;
 pub type Cache = (Vec<HeaderInfoJson>, NodeInfo);
@@ -139,7 +139,12 @@ pub struct NodeInfoJson {
 }
 
 impl NodeInfoJson {
-    pub fn new(node: Node, tips: &GetChainTipsResult, version: String, last_changed_timestamp: u64) -> Self {
+    pub fn new(
+        node: Node,
+        tips: &GetChainTipsResult,
+        version: String,
+        last_changed_timestamp: u64,
+    ) -> Self {
         NodeInfoJson {
             id: node.id,
             name: node.name,
