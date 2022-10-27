@@ -1,7 +1,28 @@
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+
 use crate::config::{Network, Node};
-use bitcoincore_rpc::bitcoin::BlockHeader;
+
+use bitcoincore_rpc::bitcoin::{BlockHeader, BlockHash};
 use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus, GetChainTipsResultTip};
+use bitcoincore_rpc::{Client};
+
 use serde::{Deserialize, Serialize};
+
+use petgraph::graph::DiGraph;
+use petgraph::graph::NodeIndex;
+
+use rusqlite::Connection;
+
+use tokio::sync::{Mutex};
+
+pub type NodeInfo = BTreeMap<u8, NodeInfoJson>;
+pub type Cache = (Vec<HeaderInfoJson>, NodeInfo);
+pub type Caches = Arc<Mutex<BTreeMap<u32, Cache>>>;
+pub type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
+pub type Tree = Arc<Mutex<TreeInfo>>;
+pub type Db = Arc<Mutex<Connection>>;
+pub type Rpc = Arc<Client>;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct HeaderInfo {
