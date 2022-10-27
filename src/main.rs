@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-use std::fmt;
 // TODO: remove?
 use std::convert::Infallible;
 
@@ -30,12 +29,15 @@ use log::{debug, error, info, warn};
 
 mod db;
 mod config;
+mod error;
 mod types;
 
 use types::{
     DataJsonResponse, DataQuery, HeaderInfo, HeaderInfoJson, NetworkJson, NetworksJsonResponse,
     NodeInfoJson, DataChanged, InfoJsonResponse, Caches, TreeInfo, Tree, Db, Rpc,
 };
+
+use error::FetchError;
 
 use config::Network;
 
@@ -642,43 +644,6 @@ async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, I
     Ok(warp::reply::json(&NetworksJsonResponse {
         networks: network_infos,
     }))
-}
-
-#[derive(Debug)]
-enum FetchError {
-    TokioJoin(tokio::task::JoinError),
-    BitcoinCoreRPC(bitcoincore_rpc::Error),
-    BitcoinCoreREST(String),
-    MinReq(minreq::Error),
-}
-
-impl fmt::Display for FetchError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            FetchError::TokioJoin(e) => write!(f, "TokioJoin Error: {:?}", e),
-            FetchError::BitcoinCoreRPC(e) => write!(f, "Bitcoin Core RPC Error: {}", e),
-            FetchError::BitcoinCoreREST(e) => write!(f, "Bitcoin Core REST Error: {}", e),
-            FetchError::MinReq(e) => write!(f, "MinReq HTTP GET request error: {:?}", e),
-        }
-    }
-}
-
-impl From<minreq::Error> for FetchError {
-    fn from(e: minreq::Error) -> Self {
-        FetchError::MinReq(e)
-    }
-}
-
-impl From<tokio::task::JoinError> for FetchError {
-    fn from(e: tokio::task::JoinError) -> Self {
-        FetchError::TokioJoin(e)
-    }
-}
-
-impl From<bitcoincore_rpc::Error> for FetchError {
-    fn from(e: bitcoincore_rpc::Error) -> Self {
-        FetchError::BitcoinCoreRPC(e)
-    }
 }
 
 async fn get_tips(rpc: Rpc) -> Result<GetChainTipsResult, FetchError> {
