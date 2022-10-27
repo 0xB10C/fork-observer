@@ -169,7 +169,7 @@ async fn get_new_active_headers(
 
 pub async fn get_tips(rpc: Rpc) -> Result<GetChainTipsResult, FetchError> {
     match task::spawn_blocking(move || rpc.get_chain_tips()).await {
-        Ok(tips_result) => match tips_result.into() {
+        Ok(tips_result) => match tips_result {
             Ok(tips) => Ok(tips),
             Err(e) => Err(e.into()),
         },
@@ -179,7 +179,7 @@ pub async fn get_tips(rpc: Rpc) -> Result<GetChainTipsResult, FetchError> {
 
 pub async fn get_version_info(rpc: Rpc) -> Result<String, FetchError> {
     match task::spawn_blocking(move || rpc.get_network_info()).await {
-        Ok(result) => match result.into() {
+        Ok(result) => match result {
             Ok(result) => Ok(result.subversion),
             Err(e) => Err(e.into()),
         },
