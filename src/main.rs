@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "strict", deny(warnings))]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
