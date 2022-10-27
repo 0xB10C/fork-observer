@@ -107,16 +107,18 @@ async fn get_new_active_headers(
                 .0
                 .externals(petgraph::Direction::Outgoing)
                 .max_by_key(|idx| locked_tree.0[*idx].height)
-                .unwrap();
+                .expect("we have at least one node in the tree so we should also have a max height node in the tree");
             current_height = locked_tree.0[max_tip_idx].height;
         }
     }
 
-    let active_tip = tips
+    let active_tip = match tips
         .iter()
         .filter(|tip| tip.status == GetChainTipsResultStatus::Active)
-        .last()
-        .unwrap();
+        .last() {
+            Some(active_tip) => active_tip,
+            None => return Err(FetchError::DataError(String::from("No 'active' chain tip returned"))),
+        };
 
         if use_rest {
             let mut headers: Vec<bitcoin::BlockHeader>;

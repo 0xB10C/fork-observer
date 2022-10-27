@@ -1,0 +1,7 @@
+Rust:
+- RSS feed?
+
+Web:
+- OG Image
+- Stop auto-reload
+- Save Screenshot

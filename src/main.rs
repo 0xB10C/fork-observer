@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-use std::process::ExitCode;
 
 use tokio_stream::wrappers::BroadcastStream;
 use tokio::sync::{Mutex, broadcast};
@@ -34,35 +33,37 @@ use types::{
     Db, Rpc,
 };
 
-const VERSION_UNKNOWN: &str = "unknown";
-const EXIT_ERR_CONFIG: u8 = 78;
+use crate::error::{MainError, DbError, FetchError};
 
-fn exit_err(err: &str, code: u8) -> ExitCode {
-    error!("exiting: {}", err);
-    ExitCode::from(code)
-}
+const VERSION_UNKNOWN: &str = "unknown";
 
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn main() -> Result<(), MainError> {
     env_logger::init();
 
-    let config: config::Config = match config::load_config() {
-        Ok(config) => config,
-        Err(e) => return exit_err(&format!("Could not load the configuration: {}", e), EXIT_ERR_CONFIG),
-    };
-
-    if config.networks.is_empty() {
-       exit_err("No networks and nodes defined in the configuration.", EXIT_ERR_CONFIG);
-    }
+    let config: config::Config = config::load_config()?;
 
     let connection = match Connection::open(config.database_path.clone()) {
-        Ok(db) => db,
-        Err(e) => return exit_err(&format!("Could not open the database {:?}: {}", config.database_path, e), EXIT_ERR_CONFIG),
+        Ok(db) => {
+            info!("Opened database: {:?}", config.database_path);
+            db
+        },
+        Err(e) => {
+            error!("Could not open the database {:?}: {}", config.database_path, e);
+            return Err(DbError::from(e).into())
+        },
     };
+
     let db: Db = Arc::new(Mutex::new(connection));
     let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
 
-    db::setup_db(db.clone()).await;
+    match db::setup_db(db.clone()).await {
+        Ok(_) => info!("Database setup successful"),
+        Err(e) => {
+            error!("Could not setup the database {:?}: {}", config.database_path, e);
+            return Err(DbError::from(e).into());
+        },
+    };
 
     // A channel to notify about tip changes via ServerSentEvents to clients.
     let (tipchanges_tx, _) = broadcast::channel(16);
@@ -76,7 +77,13 @@ async fn main() -> ExitCode {
         );
 
         let tree: Tree = Arc::new(Mutex::new(
-            db::load_treeinfos(db.clone(), network.id).await,
+            match db::load_treeinfos(db.clone(), network.id).await {
+                Ok(tree) => tree,
+                Err(e) => {
+                    error!("Could not load tree_infos (headers) from the database {:?}: {}", config.database_path, e);
+                    return Err(DbError::from(e).into());
+                },
+            }
         ));
 
         let headerinfojson = headertree::collapse_tree(&tree, network.max_forks).await;
@@ -86,7 +93,14 @@ async fn main() -> ExitCode {
         }
 
         for node in network.nodes.iter().cloned() {
-            let rpc: Rpc = Arc::new(Client::new(&node.rpc_url, node.rpc_auth.clone()).unwrap());
+            let client = match Client::new(&node.rpc_url, node.rpc_auth.clone()) {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Could not create a RPC client for node '{}' on network '{}': {:?}", node.name, network.name, e);
+                    return Err(FetchError::from(e).into());
+                },
+            };
+            let rpc: Rpc = Arc::new(client);
             let rest_url = node.rpc_url.clone();
             let mut interval = time::interval(config.query_interval);
             let db_write = db.clone();
@@ -99,6 +113,11 @@ async fn main() -> ExitCode {
             let mut last_tips: GetChainTipsResult = vec![];
             task::spawn(async move {
                 loop {
+                    // We specifically wait at the beginning of the loop, as we
+                    // are using 'continue' on errors. If we would wait at the end,
+                    // we might skip the waiting.
+                    interval.tick().await;
+
                     if version_info == String::default() {
                         // The Bitcoin Core version is requested via the getnetworkinfo RPC. This
                         // RPC exposes sensitive information to the caller, so it might not be
@@ -171,7 +190,13 @@ async fn main() -> ExitCode {
                                 }
                             }
 
-                            db::write_to_db(&new_headers, db_write, network_cloned.id).await;
+                            match db::write_to_db(&new_headers, db_write, network_cloned.id).await {
+                                Ok(_) => info!("Written {} new heders to database for network '{}' by node '{}'", new_headers.len(), network_cloned.name, node.name),
+                                Err(e) => {
+                                    error!("Could not write new headers for network '{}' by node '{}' to database: {}", network_cloned.name, node.name, e);
+                                    return MainError::Db(e);
+                                },
+                            }
                         }
 
                         let headerinfojson =
@@ -206,10 +231,12 @@ async fn main() -> ExitCode {
                             node_infos.insert(node.id, nodeinfojson);
                             locked_cache.insert(network_cloned.id, (headerinfojson, node_infos));
                         }
-                        tipchanges_tx_cloned.clone().send(network_cloned.id);
+                        match tipchanges_tx_cloned.clone().send(network_cloned.id) {
+                            Ok(_) => (),
+                            Err(e) => error!("Could not send tip_changed update into the channel: {}", e),
+                        };
                         has_node_info = true;
                     }
-                interval.tick().await;
                 }
             });
         }
@@ -242,7 +269,13 @@ async fn main() -> ExitCode {
         let tipchanges_rx = tipchanges_tx.clone().subscribe();
         let broadcast_stream = BroadcastStream::new(tipchanges_rx);
         let event_stream = broadcast_stream.map(move |d| {
-            api::data_changed_sse(d.unwrap())
+            match d {
+                Ok(d) => api::data_changed_sse(d),
+                Err(e) => {
+                    error!("Could not SSE notify about tip changed event: {}", e);
+                    api::data_changed_sse(u32::MAX)
+                },
+            }
         });
         let stream = warp::sse::keep_alive().stream(event_stream);
         warp::sse::reply(stream)
@@ -256,6 +289,5 @@ async fn main() -> ExitCode {
         .or(change_sse);
 
     warp::serve(routes).run(config.address).await;
-
-    return ExitCode::SUCCESS;
+    Ok(())
 }

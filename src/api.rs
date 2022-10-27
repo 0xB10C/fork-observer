@@ -18,12 +18,20 @@ pub async fn data_response(caches: Caches, query: DataQuery) -> Result<impl warp
     let network: u32 = query.network;
 
     let caches_locked = caches.lock().await;
-    let (header_info_json, node_infos) = caches_locked.get(&network).unwrap().clone();
-
-    Ok(warp::reply::json(&DataJsonResponse {
-        header_infos: header_info_json,
-        nodes: node_infos.values().cloned().collect(),
-    }))
+    match caches_locked.get(&network) {
+        Some((header_info_json, node_infos)) => {
+            Ok(warp::reply::json(&DataJsonResponse {
+                header_infos: header_info_json.clone(),
+                nodes: node_infos.values().cloned().collect(),
+            }))
+        },
+        None => {
+            Ok(warp::reply::json(&DataJsonResponse {
+                header_infos: vec![],
+                nodes: vec![],
+            }))
+        }
+    }
 }
 
 pub async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, Infallible> {
@@ -34,24 +42,26 @@ pub async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Repl
     }))
 }
 
-pub fn data_changed_sse(network_id: u32) -> Result<Event, Infallible> {
-    Ok(warp::sse::Event::default().event("tip_changed").json_data(DataChanged {network_id}).unwrap())
+pub fn data_changed_sse(network_id: u32) -> Result<Event, bitcoincore_rpc::jsonrpc::serde_json::Error> {
+    warp::sse::Event::default()
+        .event("tip_changed")
+        .json_data(DataChanged {network_id})
 }
 
 pub fn with_footer(
     footer: String,
-) -> impl Filter<Extract = (String,), Error = std::convert::Infallible> + Clone {
+) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
     warp::any().map(move || footer.clone())
 }
 
 pub fn with_caches(
     caches: Caches,
-) -> impl Filter<Extract = (Caches,), Error = std::convert::Infallible> + Clone {
+) -> impl Filter<Extract = (Caches,), Error = Infallible> + Clone {
     warp::any().map(move || caches.clone())
 }
 
 pub fn with_networks(
     networks: Vec<Network>,
-) -> impl Filter<Extract = (Vec<Network>,), Error = std::convert::Infallible> + Clone {
+) -> impl Filter<Extract = (Vec<Network>,), Error = Infallible> + Clone {
     warp::any().map(move || networks.clone())
 }
