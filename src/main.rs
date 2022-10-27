@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-// TODO: remove?
-
+use std::process::ExitCode;
 
 use tokio_stream::wrappers::BroadcastStream;
 use tokio::sync::{Mutex, broadcast};
@@ -36,27 +35,29 @@ use types::{
 };
 
 const VERSION_UNKNOWN: &str = "unknown";
+const EXIT_ERR_CONFIG: u8 = 78;
 
+fn exit_err(err: &str, code: u8) -> ExitCode {
+    error!("exiting: {}", err);
+    ExitCode::from(code)
+}
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     env_logger::init();
 
     let config: config::Config = match config::load_config() {
         Ok(config) => config,
-        Err(e) => panic!("Could not load the configuration: {}", e),
+        Err(e) => return exit_err(&format!("Could not load the configuration: {}", e), EXIT_ERR_CONFIG),
     };
 
     if config.networks.is_empty() {
-        panic!("No networks and nodes defined in the configuration.");
+       exit_err("No networks and nodes defined in the configuration.", EXIT_ERR_CONFIG);
     }
 
     let connection = match Connection::open(config.database_path.clone()) {
         Ok(db) => db,
-        Err(e) => panic!(
-            "Could not open the database {:?}: {}",
-            config.database_path, e
-        ),
+        Err(e) => return exit_err(&format!("Could not open the database {:?}: {}", config.database_path, e), EXIT_ERR_CONFIG),
     };
     let db: Db = Arc::new(Mutex::new(connection));
     let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
@@ -255,4 +256,6 @@ async fn main() {
         .or(change_sse);
 
     warp::serve(routes).run(config.address).await;
+
+    return ExitCode::SUCCESS;
 }
