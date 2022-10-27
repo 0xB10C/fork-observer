@@ -197,13 +197,7 @@ async fn get_active_chain_headers_rest(
         start.to_string()
     );
 
-    let url = format!(
-        "http://{}/rest/headers/{}/{}.bin",
-        rest_url,
-        count,
-        start.to_string()
-    );
-
+    let url = format!("http://{}/rest/headers/{}/{}.bin", rest_url, count, start);
     let res = minreq::get(url.clone()).with_timeout(8).send()?;
 
     if res.status_code != 200 {

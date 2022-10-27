@@ -109,7 +109,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
                 id: toml_node.id,
                 name: toml_node.name.clone(),
                 description: toml_node.description.clone(),
-                rpc_url: format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port.to_string()),
+                rpc_url: format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
                 rpc_auth: parse_rpc_auth(toml_node)?,
                 use_rest: toml_node.use_rest,
             })
