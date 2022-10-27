@@ -216,7 +216,7 @@ async fn get_active_chain_headers_rest(
     > = res
         .as_bytes()
         .chunks(80)
-        .map(|hbytes| bitcoin::consensus::deserialize::<bitcoin::BlockHeader>(hbytes))
+        .map(bitcoin::consensus::deserialize::<bitcoin::BlockHeader>)
         .collect();
 
     let headers = match header_results {
