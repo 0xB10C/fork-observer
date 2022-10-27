@@ -121,7 +121,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
             description: toml_network.description.clone(),
             min_fork_height: toml_network.min_fork_height,
             max_forks: toml_network.max_forks,
-            nodes: nodes,
+            nodes,
         });
     }
 
@@ -135,6 +135,6 @@ pub fn load_config() -> Result<Config, ConfigError> {
         query_interval: Duration::from_secs(toml_config.query_interval),
         address: SocketAddr::from_str(&toml_config.address)?,
         footer_html: toml_config.footer_html.clone(),
-        networks: networks,
+        networks,
     });
 }

@@ -74,8 +74,8 @@ pub struct HeaderInfoJson {
 impl HeaderInfoJson {
     pub fn new(hi: &HeaderInfo, id: usize, prev_id: usize) -> Self {
         HeaderInfoJson {
-            id: id,
-            prev_id: prev_id,
+            id,
+            prev_id,
             height: hi.height,
             hash: hi.header.block_hash().to_string(),
             version: hi.header.version as u32,

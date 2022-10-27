@@ -9,7 +9,7 @@ use crate::types::{
 };
 
 pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
-    Ok(warp::reply::json(&InfoJsonResponse { footer: footer }))
+    Ok(warp::reply::json(&InfoJsonResponse { footer }))
 }
 
 pub async fn data_response(
