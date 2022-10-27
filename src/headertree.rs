@@ -49,7 +49,7 @@ pub async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
                     return Some(node);
                 }
             }
-            return None;
+            None
         },
         |_, edge| Some(edge),
     );
@@ -112,5 +112,5 @@ pub async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
         ));
     }
 
-    return headers;
+    headers
 }
