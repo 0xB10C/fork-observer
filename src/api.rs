@@ -32,7 +32,7 @@ pub async fn data_response(
 }
 
 pub async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, Infallible> {
-    let network_infos: Vec<NetworkJson> = networks.iter().map(|n| NetworkJson::new(n)).collect();
+    let network_infos: Vec<NetworkJson> = networks.iter().map(NetworkJson::new).collect();
 
     Ok(warp::reply::json(&NetworksJsonResponse {
         networks: network_infos,
