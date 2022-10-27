@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 // TODO: remove?
-use std::convert::Infallible;
+
 
 use tokio_stream::wrappers::BroadcastStream;
 use tokio::sync::{Mutex, broadcast};
 use tokio::task;
 use tokio::time;
 
-use warp::{sse::Event, Filter};
+use warp::Filter;
 use futures_util::StreamExt;
 
 use bitcoincore_rpc::bitcoin;
@@ -26,6 +26,7 @@ use petgraph::visit::Dfs;
 
 use log::{error, info, warn};
 
+mod api;
 mod db;
 mod config;
 mod error;
@@ -33,11 +34,9 @@ mod types;
 mod rpc;
 
 use types::{
-    DataJsonResponse, DataQuery, HeaderInfo, HeaderInfoJson, NetworkJson, NetworksJsonResponse,
-    NodeInfoJson, DataChanged, InfoJsonResponse, Caches, TreeInfo, Tree, Db, Rpc,
+    DataQuery, HeaderInfo, HeaderInfoJson, NodeInfoJson, Caches, TreeInfo, Tree,
+    Db, Rpc,
 };
-
-use config::Network;
 
 const VERSION_UNKNOWN: &str = "unknown";
 
@@ -227,25 +226,25 @@ async fn main() {
 
     let info_json = warp::get()
         .and(warp::path!("api" / "info.json"))
-        .and(with_footer(config.footer_html.clone()))
-        .and_then(info_response);
+        .and(api::with_footer(config.footer_html.clone()))
+        .and_then(api::info_response);
 
     let data_json = warp::get()
         .and(warp::path!("api" / "data.json"))
-        .and(with_caches(caches.clone()))
+        .and(api::with_caches(caches.clone()))
         .and(warp::query::<DataQuery>())
-        .and_then(data_response);
+        .and_then(api::data_response);
 
     let networks_json = warp::get()
         .and(warp::path!("api" / "networks.json"))
-        .and(with_networks(config.networks.clone()))
-        .and_then(networks_response);
+        .and(api::with_networks(config.networks.clone()))
+        .and_then(api::networks_response);
 
     let change_sse = warp::path!("api" / "changes").and(warp::get()).map(move || {
         let tipchanges_rx = tipchanges_tx.clone().subscribe();
         let broadcast_stream = BroadcastStream::new(tipchanges_rx);
         let event_stream = broadcast_stream.map(move |d| {
-            data_changed_sse(d.unwrap())
+            api::data_changed_sse(d.unwrap())
         });
         let stream = warp::sse::keep_alive().stream(event_stream);
         warp::sse::reply(stream)
@@ -369,28 +368,6 @@ async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
     return headers;
 }
 
-fn data_changed_sse(network_id: u32) -> Result<Event, Infallible> {
-    Ok(warp::sse::Event::default().event("tip_changed").json_data(DataChanged {network_id}).unwrap())
-}
-
-fn with_footer(
-    footer: String,
-) -> impl Filter<Extract = (String,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || footer.clone())
-}
-
-fn with_caches(
-    caches: Caches,
-) -> impl Filter<Extract = (Caches,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || caches.clone())
-}
-
-fn with_networks(
-    networks: Vec<Network>,
-) -> impl Filter<Extract = (Vec<Network>,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || networks.clone())
-}
-
 // Loads header and tip information for a specified network from the DB and
 // builds a header-tree from it.
 async fn load_treeinfos_from_db(db: Db, network: u32) -> TreeInfo {
@@ -474,30 +451,4 @@ async fn load_header_infos_from_db(db: Db, network: u32) -> Vec<HeaderInfo> {
     );
 
     return headers;
-}
-
-async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
-    Ok(warp::reply::json(&InfoJsonResponse {
-        footer: footer,
-    }))
-}
-
-async fn data_response(caches: Caches, query: DataQuery) -> Result<impl warp::Reply, Infallible> {
-    let network: u32 = query.network;
-
-    let caches_locked = caches.lock().await;
-    let (header_info_json, node_infos) = caches_locked.get(&network).unwrap().clone();
-
-    Ok(warp::reply::json(&DataJsonResponse {
-        header_infos: header_info_json,
-        nodes: node_infos.values().cloned().collect(),
-    }))
-}
-
-async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, Infallible> {
-    let network_infos: Vec<NetworkJson> = networks.iter().map(|n| NetworkJson::new(n)).collect();
-
-    Ok(warp::reply::json(&NetworksJsonResponse {
-        networks: network_infos,
-    }))
 }
