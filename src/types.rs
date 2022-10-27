@@ -149,7 +149,7 @@ impl NodeInfoJson {
             id: node.id,
             name: node.name,
             description: node.description,
-            tips: tips.iter().map(|t| TipInfoJson::new(t)).collect(),
+            tips: tips.iter().map(TipInfoJson::new).collect(),
             last_changed_timestamp,
             version,
         }
