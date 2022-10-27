@@ -1,13 +1,15 @@
 use std::hash::Hash;
-use std::net::{AddrParseError, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
-use std::{env, error, fmt, fs, io};
+use std::{env, fs};
 
 use bitcoincore_rpc::Auth;
 use serde::Deserialize;
 use log::info;
+
+use crate::error::ConfigError;
 
 const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
@@ -124,6 +126,10 @@ pub fn load_config() -> Result<Config, ConfigError> {
         });
     }
 
+    if networks.is_empty() {
+        return Err(ConfigError::NoNetworks);
+    }
+
     return Ok(Config {
         database_path: PathBuf::from(toml_config.database_path),
         www_path: PathBuf::from(toml_config.www_path),
@@ -132,55 +138,4 @@ pub fn load_config() -> Result<Config, ConfigError> {
         footer_html: toml_config.footer_html.clone(),
         networks: networks,
     });
-}
-
-#[derive(Debug)]
-pub enum ConfigError {
-    CookieFileDoesNotExist,
-    NoRpcAuth,
-    TomlError(toml::de::Error),
-    ReadError(io::Error),
-    AddrError(AddrParseError),
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ConfigError::CookieFileDoesNotExist => write!(f, "the .cookie file path set via rpc_cookie_file does not exist"),
-            ConfigError::NoRpcAuth => write!(f, "please specify a Bitcoin Core RPC .cookie file (option: 'rpc_cookie_file') or a rpc_user and rpc_password"),
-            ConfigError::TomlError(e) => write!(f, "the TOML in the configuration file could not be parsed: {}", e),
-            ConfigError::ReadError(e) => write!(f, "the configuration file could not be read: {}", e),
-            ConfigError::AddrError(e) => write!(f, "the address could not be parsed: {}", e),
-        }
-    }
-}
-
-impl error::Error for ConfigError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match *self {
-            ConfigError::NoRpcAuth => None,
-            ConfigError::CookieFileDoesNotExist => None,
-            ConfigError::TomlError(ref e) => Some(e),
-            ConfigError::ReadError(ref e) => Some(e),
-            ConfigError::AddrError(ref e) => Some(e),
-        }
-    }
-}
-
-impl From<io::Error> for ConfigError {
-    fn from(err: io::Error) -> ConfigError {
-        ConfigError::ReadError(err)
-    }
-}
-
-impl From<toml::de::Error> for ConfigError {
-    fn from(err: toml::de::Error) -> ConfigError {
-        ConfigError::TomlError(err)
-    }
-}
-
-impl From<AddrParseError> for ConfigError {
-    fn from(err: AddrParseError) -> ConfigError {
-        ConfigError::AddrError(err)
-    }
 }

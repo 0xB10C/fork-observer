@@ -8,27 +8,41 @@ use bitcoincore_rpc::bitcoin::BlockHash;
 
 use log::{info, warn};
 
-use crate::types::{HeaderInfo, Db, TreeInfo, };
+use crate::types::{HeaderInfo, Db, TreeInfo};
+use crate::error::DbError;
 
-pub async fn setup_db(db: Db) {
+const SELECT_STMT_HEADER_HEIGHT: &str = "
+SELECT
+    height, header
+FROM
+    headers
+WHERE
+    network = ?1
+ORDER BY
+    height
+    ASC
+";
+
+const CREATE_STMT_TABLE_HEADERS: &str = "
+CREATE TABLE IF NOT EXISTS headers (
+    height     INT,
+    network    INT,
+    hash       BLOB,
+    header     BLOB,
+    PRIMARY KEY (network, hash, header)
+)
+";
+
+pub async fn setup_db(db: Db) -> Result<(), DbError> {
     db.lock()
         .await
-        .execute(
-            "CREATE TABLE IF NOT EXISTS headers (
-             height     INT,
-             network    INT,
-             hash       BLOB,
-             header     BLOB,
-             PRIMARY KEY (network, hash, header)
-        )",
-            [],
-        )
-        .unwrap();
+        .execute(CREATE_STMT_TABLE_HEADERS, [])?;
+    Ok(())
 }
 
-pub async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) {
+pub async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) -> Result<(), DbError> {
     let mut db_locked = db.lock().await;
-    let tx = db_locked.transaction().unwrap();
+    let tx = db_locked.transaction()?;
     info!(
         "inserting {} headers from network {} into the database..",
         new_headers.len(),
@@ -45,21 +59,21 @@ pub async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) {
                 &info.header.block_hash().to_string(),
                 &bitcoin::consensus::encode::serialize_hex(&info.header),
             ],
-        )
-        .unwrap();
+        )?;
     }
-    tx.commit().unwrap();
+    tx.commit()?;
     info!(
         "done inserting {} headers from network {} into the database",
         new_headers.len(),
         network
     );
+    Ok(())
 }
 
 // Loads header and tip information for a specified network from the DB and
 // builds a header-tree from it.
-pub async fn load_treeinfos(db: Db, network: u32) -> TreeInfo {
-    let header_infos = load_header_infos(db, network).await;
+pub async fn load_treeinfos(db: Db, network: u32) -> Result<TreeInfo, DbError> {
+    let header_infos = load_header_infos(db, network).await?;
 
     let mut tree: DiGraph<HeaderInfo, bool> = DiGraph::new();
     let mut hash_index_map: HashMap<BlockHash, NodeIndex> = HashMap::new();
@@ -97,46 +111,33 @@ pub async fn load_treeinfos(db: Db, network: u32) -> TreeInfo {
             network, root_nodes
         );
     }
-    return (tree, hash_index_map);
+    Ok((tree, hash_index_map))
 }
 
-async fn load_header_infos(db: Db, network: u32) -> Vec<HeaderInfo> {
+async fn load_header_infos(db: Db, network: u32) -> Result<Vec<HeaderInfo>, DbError> {
     info!("loading headers for network {} from database..", network);
     let db_locked = db.lock().await;
 
-    let mut stmt = db_locked
-        .prepare(
-            "SELECT
-            height, header
-        FROM
-            headers
-        WHERE
-            network = ?1
-        ORDER BY
-            height
-            ASC
-        ",
-        )
-        .unwrap();
-    let headers: Vec<HeaderInfo> = stmt
-        .query_map([network.to_string()], |row| {
-            let header_hex: String = row.get(1).unwrap();
-            let header_bytes = hex::decode(&header_hex).unwrap();
-            let header = bitcoin::consensus::deserialize(&header_bytes).unwrap();
+    let mut stmt = db_locked.prepare(SELECT_STMT_HEADER_HEIGHT)?;
 
-            Ok(HeaderInfo {
-                height: row.get(0).unwrap(),
-                header: header,
-            })
-        })
-        .unwrap()
-        .map(|h| h.unwrap())
-        .collect();
+    let mut headers: Vec<HeaderInfo> = vec![];
+
+    let mut rows = stmt.query([network.to_string()])?;
+    while let Some(row) = rows.next()? {
+        let header_hex: String = row.get(1)?;
+        let header_bytes = hex::decode(&header_hex)?;
+        let header = bitcoin::consensus::deserialize(&header_bytes)?;
+        headers.push(HeaderInfo {
+            height: row.get(0)?,
+            header: header,
+        });
+    }
+
     info!(
         "done loading headers for network {}: headers={}",
         network,
         headers.len()
     );
 
-    return headers;
+    Ok(headers)
 }
