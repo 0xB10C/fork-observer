@@ -44,10 +44,7 @@ async fn get_new_nonactive_headers(
 
             let header = rpc.get_block_header(&next_header)?;
 
-            new_headers.push(HeaderInfo {
-                height: height,
-                header: header,
-            });
+            new_headers.push(HeaderInfo { height, header });
             next_header = header.prev_blockhash;
         }
     }
@@ -163,10 +160,7 @@ async fn get_new_active_headers(
                 }
             }
             let header = rpc.get_block_header(&header_hash)?;
-            new_headers.push(HeaderInfo {
-                height: height,
-                header: header,
-            });
+            new_headers.push(HeaderInfo { height, header });
         }
     }
 
