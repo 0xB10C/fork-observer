@@ -28,6 +28,7 @@ use petgraph::visit::Dfs;
 
 use log::{debug, error, info, warn};
 
+mod db;
 mod config;
 mod types;
 
@@ -206,7 +207,7 @@ async fn main() {
     let db: Db = Arc::new(Mutex::new(connection));
     let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
 
-    setup_db(db.clone()).await;
+    db::setup_db(db.clone()).await;
 
     // A channel to notify about tip changes via ServerSentEvents to clients.
     let (tipchanges_tx, _) = broadcast::channel(16);
@@ -315,7 +316,7 @@ async fn main() {
                                 }
                             }
 
-                            write_to_db(&new_headers, db_write, network_cloned.id).await;
+                            db::write_to_db(&new_headers, db_write, network_cloned.id).await;
                         }
 
                         let headerinfojson =
@@ -641,52 +642,6 @@ async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, I
     Ok(warp::reply::json(&NetworksJsonResponse {
         networks: network_infos,
     }))
-}
-
-async fn setup_db(db: Db) {
-    db.lock()
-        .await
-        .execute(
-            "CREATE TABLE IF NOT EXISTS headers (
-             height     INT,
-             network    INT,
-             hash       BLOB,
-             header     BLOB,
-             PRIMARY KEY (network, hash, header)
-        )",
-            [],
-        )
-        .unwrap();
-}
-
-async fn write_to_db(new_headers: &Vec<HeaderInfo>, db: Db, network: u32) {
-    let mut db_locked = db.lock().await;
-    let tx = db_locked.transaction().unwrap();
-    info!(
-        "inserting {} headers from network {} into the database..",
-        new_headers.len(),
-        network
-    );
-    for info in new_headers {
-        tx.execute(
-            "INSERT OR IGNORE INTO headers
-                   (height, network, hash, header)
-                   values (?1, ?2, ?3, ?4)",
-            &[
-                &info.height.to_string(),
-                &network.to_string(),
-                &info.header.block_hash().to_string(),
-                &bitcoin::consensus::encode::serialize_hex(&info.header),
-            ],
-        )
-        .unwrap();
-    }
-    tx.commit().unwrap();
-    info!(
-        "done inserting {} headers from network {} into the database",
-        new_headers.len(),
-        network
-    );
 }
 
 #[derive(Debug)]
