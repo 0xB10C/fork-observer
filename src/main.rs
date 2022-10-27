@@ -189,13 +189,14 @@ async fn main() -> Result<(), MainError> {
                                     tree_locked.0.update_edge(idx_prev, idx_current, false);
                                 }
                             }
-
-                            match db::write_to_db(&new_headers, db_write, network_cloned.id).await {
-                                Ok(_) => info!("Written {} new heders to database for network '{}' by node '{}'", new_headers.len(), network_cloned.name, node.name),
-                                Err(e) => {
-                                    error!("Could not write new headers for network '{}' by node '{}' to database: {}", network_cloned.name, node.name, e);
-                                    return MainError::Db(e);
-                                },
+                            if !new_headers.is_empty() {
+                                match db::write_to_db(&new_headers, db_write, network_cloned.id).await {
+                                    Ok(_) => info!("Written {} new heders to database for network '{}' by node '{}'", new_headers.len(), network_cloned.name, node.name),
+                                    Err(e) => {
+                                        error!("Could not write new headers for network '{}' by node '{}' to database: {}", network_cloned.name, node.name, e);
+                                        return MainError::Db(e);
+                                    },
+                                }
                             }
                         }
 
@@ -231,10 +232,12 @@ async fn main() -> Result<(), MainError> {
                             node_infos.insert(node.id, nodeinfojson);
                             locked_cache.insert(network_cloned.id, (headerinfojson, node_infos));
                         }
-                        match tipchanges_tx_cloned.clone().send(network_cloned.id) {
-                            Ok(_) => (),
-                            Err(e) => error!("Could not send tip_changed update into the channel: {}", e),
-                        };
+                        if !new_headers.is_empty() {
+                            match tipchanges_tx_cloned.clone().send(network_cloned.id) {
+                                Ok(_) => (),
+                                Err(e) => warn!("Could not send tip_changed update into the channel: {}", e),
+                            };
+                        }
                         has_node_info = true;
                     }
                 }
