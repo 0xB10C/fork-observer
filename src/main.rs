@@ -39,7 +39,16 @@ const VERSION_UNKNOWN: &str = "unknown";
 async fn main() -> Result<(), MainError> {
     env_logger::init();
 
-    let config: config::Config = config::load_config()?;
+    let config: config::Config = match config::load_config() {
+        Ok(config) => {
+            info!("Configuration loaded");
+            config
+        }
+        Err(e) => {
+            error!("Could not load the configuration: {}", e);
+            return Err(e.into());
+        }
+    };
 
     let connection = match Connection::open(config.database_path.clone()) {
         Ok(db) => {
