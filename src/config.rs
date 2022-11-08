@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
-use std::{env, fs};
+use std::{env, fmt, fs};
 
 use bitcoincore_rpc::Auth;
 use log::info;
@@ -13,6 +13,7 @@ use crate::error::ConfigError;
 
 const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
+const DEFAULT_NODE_IMPL: NodeImplementation = NodeImplementation::BitcoinCore;
 
 #[derive(Deserialize)]
 struct TomlConfig {
@@ -65,6 +66,35 @@ struct TomlNode {
     rpc_user: Option<String>,
     rpc_password: Option<String>,
     use_rest: bool,
+    implementation: Option<String>,
+}
+
+#[derive(Hash, Clone)]
+pub enum NodeImplementation {
+    BitcoinCore,
+    Btcd,
+}
+
+impl FromStr for NodeImplementation {
+    type Err = ConfigError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "bitcoincore" => Ok(NodeImplementation::BitcoinCore),
+            "core" => Ok(NodeImplementation::BitcoinCore),
+            "btcd" => Ok(NodeImplementation::Btcd),
+            _ => Err(ConfigError::UnknownImplementation),
+        }
+    }
+}
+
+impl fmt::Display for NodeImplementation {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            NodeImplementation::BitcoinCore => write!(f, "BitcoinCore"),
+            NodeImplementation::Btcd => write!(f, "btcd"),
+        }
+    }
 }
 
 #[derive(Hash, Clone)]
@@ -75,6 +105,7 @@ pub struct Node {
     pub rpc_url: String,
     pub rpc_auth: Auth,
     pub use_rest: bool,
+    pub implementation: NodeImplementation,
 }
 
 fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
@@ -112,6 +143,11 @@ pub fn load_config() -> Result<Config, ConfigError> {
                 rpc_url: format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
                 rpc_auth: parse_rpc_auth(toml_node)?,
                 use_rest: toml_node.use_rest,
+                implementation: toml_node
+                    .implementation
+                    .as_ref()
+                    .unwrap_or(&DEFAULT_NODE_IMPL.to_string())
+                    .parse::<NodeImplementation>()?,
             })
         }
 
