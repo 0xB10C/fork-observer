@@ -2,6 +2,7 @@ use std::hash::Hash;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fmt, fs};
 
@@ -10,10 +11,14 @@ use log::{error, info};
 use serde::Deserialize;
 
 use crate::error::ConfigError;
+use crate::node::{BitcoinCoreNode, BtcdNode, Node, NodeInfo};
 
 const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
 const DEFAULT_NODE_IMPL: NodeImplementation = NodeImplementation::BitcoinCore;
+const DEFAULT_USE_REST: bool = true;
+
+type BoxedSyncSendNode = Arc<dyn Node + Send + Sync>;
 
 #[derive(Deserialize)]
 struct TomlConfig {
@@ -45,14 +50,14 @@ struct TomlNetwork {
     nodes: Vec<TomlNode>,
 }
 
-#[derive(Hash, Clone)]
+#[derive(Clone)]
 pub struct Network {
     pub id: u32,
     pub description: String,
     pub name: String,
     pub min_fork_height: u64,
     pub max_forks: u64,
-    pub nodes: Vec<Node>,
+    pub nodes: Vec<BoxedSyncSendNode>,
 }
 
 impl fmt::Display for TomlNetwork {
@@ -79,7 +84,7 @@ struct TomlNode {
     rpc_cookie_file: Option<PathBuf>,
     rpc_user: Option<String>,
     rpc_password: Option<String>,
-    use_rest: bool,
+    use_rest: Option<bool>,
     implementation: Option<String>,
 }
 
@@ -94,7 +99,7 @@ impl fmt::Display for TomlNode {
             self.rpc_port,
             self.rpc_user.as_ref().unwrap_or(&"".to_string()),
             self.rpc_cookie_file,
-            self.use_rest,
+            self.use_rest.unwrap_or(DEFAULT_USE_REST),
             self.implementation.as_ref().unwrap_or(&"".to_string()),
         )
     }
@@ -128,17 +133,6 @@ impl fmt::Display for NodeImplementation {
     }
 }
 
-#[derive(Hash, Clone)]
-pub struct Node {
-    pub id: u8,
-    pub description: String,
-    pub name: String,
-    pub rpc_url: String,
-    pub rpc_auth: Auth,
-    pub use_rest: bool,
-    pub implementation: NodeImplementation,
-}
-
 fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
     if node_config.rpc_cookie_file.is_some() {
         if let Some(rpc_cookie_file) = node_config.rpc_cookie_file.clone() {
@@ -153,7 +147,7 @@ fn parse_rpc_auth(node_config: &TomlNode) -> Result<Auth, ConfigError> {
     ) {
         return Ok(Auth::UserPass(user, password));
     }
-    Err(ConfigError::NoRpcAuth)
+    Err(ConfigError::NoBitcoinCoreRpcAuth)
 }
 
 pub fn load_config() -> Result<Config, ConfigError> {
@@ -165,7 +159,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
 
     let mut networks: Vec<Network> = vec![];
     for toml_network in toml_config.networks.iter() {
-        let mut nodes: Vec<Node> = vec![];
+        let mut nodes: Vec<BoxedSyncSendNode> = vec![];
         for toml_node in toml_network.nodes.iter() {
             match parse_toml_node(toml_node) {
                 Ok(node) => nodes.push(node),
@@ -203,7 +197,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
 
 fn parse_toml_network(
     toml_network: &TomlNetwork,
-    nodes: Vec<Node>,
+    nodes: Vec<BoxedSyncSendNode>,
 ) -> Result<Network, ConfigError> {
     Ok(Network {
         id: toml_network.id,
@@ -215,18 +209,41 @@ fn parse_toml_network(
     })
 }
 
-fn parse_toml_node(toml_node: &TomlNode) -> Result<Node, ConfigError> {
-    Ok(Node {
+fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigError> {
+    let implementation = toml_node
+        .implementation
+        .as_ref()
+        .unwrap_or(&DEFAULT_NODE_IMPL.to_string())
+        .parse::<NodeImplementation>()?;
+
+    let node_info = NodeInfo {
         id: toml_node.id,
         name: toml_node.name.clone(),
         description: toml_node.description.clone(),
-        rpc_url: format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
-        rpc_auth: parse_rpc_auth(toml_node)?,
-        use_rest: toml_node.use_rest,
-        implementation: toml_node
-            .implementation
-            .as_ref()
-            .unwrap_or(&DEFAULT_NODE_IMPL.to_string())
-            .parse::<NodeImplementation>()?,
-    })
+    };
+
+    let node: BoxedSyncSendNode = match implementation {
+        NodeImplementation::BitcoinCore => Arc::new(BitcoinCoreNode::new(
+            node_info,
+            format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
+            parse_rpc_auth(toml_node)?,
+            toml_node.use_rest.unwrap_or(DEFAULT_USE_REST),
+        )),
+        NodeImplementation::Btcd => {
+            if toml_node.rpc_user.is_none() || toml_node.rpc_password.is_none() {
+                return Err(ConfigError::NoBtcdRpcAuth);
+            }
+
+            Arc::new(BtcdNode::new(
+                node_info,
+                format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
+                toml_node.rpc_user.clone().expect("a rpc_user for btcd"),
+                toml_node
+                    .rpc_password
+                    .clone()
+                    .expect("a rpc_password for btcd"),
+            ))
+        }
+    };
+    Ok(node)
 }

@@ -2,7 +2,6 @@ use std::convert::Infallible;
 
 use warp::{sse::Event, Filter};
 
-use crate::config::Network;
 use crate::types::{
     Caches, DataChanged, DataJsonResponse, DataQuery, InfoJsonResponse, NetworkJson,
     NetworksJsonResponse,
@@ -31,9 +30,9 @@ pub async fn data_response(
     }
 }
 
-pub async fn networks_response(networks: Vec<Network>) -> Result<impl warp::Reply, Infallible> {
-    let network_infos: Vec<NetworkJson> = networks.iter().map(NetworkJson::new).collect();
-
+pub async fn networks_response(
+    network_infos: Vec<NetworkJson>,
+) -> Result<impl warp::Reply, Infallible> {
     Ok(warp::reply::json(&NetworksJsonResponse {
         networks: network_infos,
     }))
@@ -56,7 +55,7 @@ pub fn with_caches(caches: Caches) -> impl Filter<Extract = (Caches,), Error = I
 }
 
 pub fn with_networks(
-    networks: Vec<Network>,
-) -> impl Filter<Extract = (Vec<Network>,), Error = Infallible> + Clone {
+    networks: Vec<NetworkJson>,
+) -> impl Filter<Extract = (Vec<NetworkJson>,), Error = Infallible> + Clone {
     warp::any().map(move || networks.clone())
 }

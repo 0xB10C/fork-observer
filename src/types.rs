@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
+use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::config::{Network, Node};
+use crate::config::Network;
+use crate::node::NodeInfo;
 
 use bitcoincore_rpc::bitcoin::{BlockHash, BlockHeader};
-use bitcoincore_rpc::json::{GetChainTipsResult, GetChainTipsResultStatus, GetChainTipsResultTip};
-use bitcoincore_rpc::Client;
+use bitcoincore_rpc::json::{GetChainTipsResultStatus, GetChainTipsResultTip};
 
 use serde::{Deserialize, Serialize};
 
@@ -16,13 +18,12 @@ use rusqlite::Connection;
 
 use tokio::sync::Mutex;
 
-pub type NodeInfo = BTreeMap<u8, NodeInfoJson>;
-pub type Cache = (Vec<HeaderInfoJson>, NodeInfo);
+pub type NodeData = BTreeMap<u8, NodeDataJson>;
+pub type Cache = (Vec<HeaderInfoJson>, NodeData);
 pub type Caches = Arc<Mutex<BTreeMap<u32, Cache>>>;
 pub type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
 pub type Tree = Arc<Mutex<TreeInfo>>;
 pub type Db = Arc<Mutex<Connection>>;
-pub type Rpc = Arc<Client>;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct HeaderInfo {
@@ -35,7 +36,7 @@ pub struct DataQuery {
     pub network: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct NetworkJson {
     pub id: u32,
     pub name: String,
@@ -96,7 +97,7 @@ pub struct InfoJsonResponse {
 #[derive(Serialize)]
 pub struct DataJsonResponse {
     pub header_infos: Vec<HeaderInfoJson>,
-    pub nodes: Vec<NodeInfoJson>,
+    pub nodes: Vec<NodeDataJson>,
 }
 
 #[derive(Serialize, Clone)]
@@ -107,27 +108,17 @@ pub struct TipInfoJson {
 }
 
 impl TipInfoJson {
-    pub fn new(tip: &GetChainTipsResultTip) -> Self {
+    pub fn new(tip: &ChainTip) -> Self {
         TipInfoJson {
-            hash: tip.hash.to_string(),
-            status: tip_status_string(tip.status),
+            hash: tip.hash.clone(),
+            status: tip.status.to_string(),
             height: tip.height,
         }
     }
 }
 
-fn tip_status_string(status: GetChainTipsResultStatus) -> String {
-    match status {
-        GetChainTipsResultStatus::Active => String::from("active"),
-        GetChainTipsResultStatus::Invalid => String::from("invalid"),
-        GetChainTipsResultStatus::HeadersOnly => String::from("headers-only"),
-        GetChainTipsResultStatus::ValidHeaders => String::from("valid-headers"),
-        GetChainTipsResultStatus::ValidFork => String::from("valid-fork"),
-    }
-}
-
 #[derive(Serialize, Clone)]
-pub struct NodeInfoJson {
+pub struct NodeDataJson {
     pub id: u8,
     pub name: String,
     pub description: String,
@@ -138,17 +129,17 @@ pub struct NodeInfoJson {
     pub version: String,
 }
 
-impl NodeInfoJson {
+impl NodeDataJson {
     pub fn new(
-        node: Node,
-        tips: &GetChainTipsResult,
+        info: NodeInfo,
+        tips: &Vec<ChainTip>,
         version: String,
         last_changed_timestamp: u64,
     ) -> Self {
-        NodeInfoJson {
-            id: node.id,
-            name: node.name,
-            description: node.description,
+        NodeDataJson {
+            id: info.id,
+            name: info.name,
+            description: info.description,
             tips: tips.iter().map(TipInfoJson::new).collect(),
             last_changed_timestamp,
             version,
@@ -159,4 +150,82 @@ impl NodeInfoJson {
 #[derive(Serialize, Clone)]
 pub struct DataChanged {
     pub network_id: u32,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum ChainTipStatus {
+    #[serde(rename = "active")]
+    Active,
+    #[serde(rename = "invalid")]
+    Invalid,
+    #[serde(rename = "valid-fork")]
+    ValidFork,
+    #[serde(rename = "headers-only")]
+    HeadersOnly,
+    #[serde(rename = "valid-headers")]
+    ValidHeaders,
+    Unknown,
+}
+
+impl From<String> for ChainTipStatus {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "active" => ChainTipStatus::Active,
+            "invalid" => ChainTipStatus::Invalid,
+            "headers-only" => ChainTipStatus::HeadersOnly,
+            "valid-headers" => ChainTipStatus::ValidHeaders,
+            "valid-fork" => ChainTipStatus::ValidFork,
+            _ => ChainTipStatus::Unknown,
+        }
+    }
+}
+
+impl From<GetChainTipsResultStatus> for ChainTipStatus {
+    fn from(s: GetChainTipsResultStatus) -> Self {
+        match s {
+            GetChainTipsResultStatus::Active => ChainTipStatus::Active,
+            GetChainTipsResultStatus::Invalid => ChainTipStatus::Invalid,
+            GetChainTipsResultStatus::HeadersOnly => ChainTipStatus::HeadersOnly,
+            GetChainTipsResultStatus::ValidHeaders => ChainTipStatus::ValidHeaders,
+            GetChainTipsResultStatus::ValidFork => ChainTipStatus::ValidFork,
+        }
+    }
+}
+
+impl fmt::Display for ChainTipStatus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ChainTipStatus::Active => write!(f, "active"),
+            ChainTipStatus::Invalid => write!(f, "invalid"),
+            ChainTipStatus::HeadersOnly => write!(f, "headers-only"),
+            ChainTipStatus::ValidHeaders => write!(f, "valid-headers"),
+            ChainTipStatus::ValidFork => write!(f, "valid-fork"),
+            ChainTipStatus::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ChainTip {
+    pub height: u64,
+    pub hash: String,
+    pub branchlen: usize,
+    pub status: ChainTipStatus,
+}
+
+impl From<GetChainTipsResultTip> for ChainTip {
+    fn from(t: GetChainTipsResultTip) -> Self {
+        ChainTip {
+            height: t.height,
+            hash: t.hash.to_string(),
+            branchlen: t.branch_length,
+            status: t.status.into(),
+        }
+    }
+}
+
+impl ChainTip {
+    pub fn block_hash(&self) -> BlockHash {
+        BlockHash::from_str(&self.hash).unwrap()
+    }
 }

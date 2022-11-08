@@ -12,9 +12,6 @@ use tokio_stream::wrappers::BroadcastStream;
 use futures_util::StreamExt;
 use warp::Filter;
 
-use bitcoincore_rpc::json::GetChainTipsResult;
-use bitcoincore_rpc::Client;
-
 use rusqlite::Connection;
 
 use petgraph::graph::NodeIndex;
@@ -26,12 +23,13 @@ mod config;
 mod db;
 mod error;
 mod headertree;
-mod rpc;
+mod jsonrpc;
+mod node;
 mod types;
 
-use types::{Caches, DataQuery, Db, HeaderInfo, NodeInfoJson, Rpc, Tree};
+use types::{Caches, ChainTip, DataQuery, Db, HeaderInfo, NetworkJson, NodeDataJson, Tree};
 
-use crate::error::{DbError, FetchError, MainError};
+use crate::error::{DbError, MainError};
 
 const VERSION_UNKNOWN: &str = "unknown";
 
@@ -81,7 +79,11 @@ async fn main() -> Result<(), MainError> {
     // A channel to notify about tip changes via ServerSentEvents to clients.
     let (tipchanges_tx, _) = broadcast::channel(16);
 
+    let network_infos: Vec<NetworkJson> = config.networks.iter().map(NetworkJson::new).collect();
+
     for network in config.networks.iter().cloned() {
+        let network = network.clone();
+
         info!(
             "network '{}' (id={}) has {} nodes",
             network.name,
@@ -109,27 +111,15 @@ async fn main() -> Result<(), MainError> {
         }
 
         for node in network.nodes.iter().cloned() {
-            let client = match Client::new(&node.rpc_url, node.rpc_auth.clone()) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!(
-                        "Could not create a RPC client for node '{}' on network '{}': {:?}",
-                        node.name, network.name, e
-                    );
-                    return Err(FetchError::from(e).into());
-                }
-            };
-            let rpc: Rpc = Arc::new(client);
-            let rest_url = node.rpc_url.clone();
+            let network = network.clone();
             let mut interval = time::interval(config.query_interval);
             let db_write = db.clone();
             let tree_clone = tree.clone();
             let caches_clone = caches.clone();
-            let network_cloned = network.clone();
             let tipchanges_tx_cloned = tipchanges_tx.clone();
             let mut has_node_info = false;
             let mut version_info: String = String::default();
-            let mut last_tips: GetChainTipsResult = vec![];
+            let mut last_tips: Vec<ChainTip> = vec![];
             task::spawn(async move {
                 loop {
                     // We specifically wait at the beginning of the loop, as we
@@ -142,36 +132,42 @@ async fn main() -> Result<(), MainError> {
                         // RPC exposes sensitive information to the caller, so it might not be
                         // allowed on the whitelist. We set the version to VERSION_UNKNOWN if we
                         // can't request it.
-                        version_info = match rpc::get_version_info(rpc.clone()).await {
-                            Ok(version) => version,
+                        version_info = match node.version().await {
+                            Ok(v) => v,
                             Err(e) => {
-                                error!("Could not fetch getnetworkinfo from node '{}' (id={}) on network '{}' (id={}): {:?}", node.name, node.id, network_cloned.name, network_cloned.id, e);
+                                warn!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}. Using '{}' as version.", node.info(), network.name, network.id, e, VERSION_UNKNOWN);
                                 version_info = VERSION_UNKNOWN.to_string();
                                 continue;
                             }
                         };
                     };
-                    let tips = match rpc::get_tips(rpc.clone()).await {
+                    let tips = match node.tips().await {
                         Ok(tips) => tips,
                         Err(e) => {
-                            error!("Could not fetch chaintips from node '{}' (id={}) on network '{}' (id={}): {:?}", node.name, node.id, network_cloned.name, network_cloned.id, e);
+                            error!(
+                                "Could not fetch chaintips from {} on network '{}' (id={}): {:?}",
+                                node.info(),
+                                network.name,
+                                network.id,
+                                e
+                            );
                             continue;
                         }
                     };
 
-                    let new_headers: Vec<HeaderInfo> = match rpc::get_new_headers(
-                        &tips,
-                        &tree_clone,
-                        rpc.clone(),
-                        rest_url.clone(),
-                        node.use_rest,
-                        network_cloned.min_fork_height,
-                    )
-                    .await
+                    let new_headers: Vec<HeaderInfo> = match node
+                        .new_headers(&tips, &tree_clone, network.min_fork_height)
+                        .await
                     {
                         Ok(headers) => headers,
                         Err(e) => {
-                            error!("Could not fetch headers from node '{}' (id={}) on network '{}' (id={}): {}", node.name, node.id, network_cloned.name, network_cloned.id, e);
+                            error!(
+                                "Could not fetch headers from {} on network '{}' (id={}): {}",
+                                node.info(),
+                                network.name,
+                                network.id,
+                                e
+                            );
                             continue;
                         }
                     };
@@ -211,10 +207,10 @@ async fn main() -> Result<(), MainError> {
                                 }
                             }
                             if !new_headers.is_empty() {
-                                match db::write_to_db(&new_headers, db_write, network_cloned.id).await {
-                                    Ok(_) => info!("Written {} new heders to database for network '{}' by node '{}'", new_headers.len(), network_cloned.name, node.name),
+                                match db::write_to_db(&new_headers, db_write, network.id).await {
+                                    Ok(_) => info!("Written {} new heders to database for network '{}' by node {}", new_headers.len(), network.name, node.info()),
                                     Err(e) => {
-                                        error!("Could not write new headers for network '{}' by node '{}' to database: {}", network_cloned.name, node.name, e);
+                                        error!("Could not write new headers for network '{}' by node {} to database: {}", network.name, node.info(), e);
                                         return MainError::Db(e);
                                     },
                                 }
@@ -222,7 +218,7 @@ async fn main() -> Result<(), MainError> {
                         }
 
                         let headerinfojson =
-                            headertree::collapse_tree(&tree_clone, network_cloned.max_forks).await;
+                            headertree::collapse_tree(&tree_clone, network.max_forks).await;
 
                         // only put tips that we also have headers for in the cache
                         let min_height = headerinfojson
@@ -245,23 +241,23 @@ async fn main() -> Result<(), MainError> {
                                 0u64
                             }
                         };
-                        let nodeinfojson = NodeInfoJson::new(
-                            node.clone(),
+                        let nodeinfojson = NodeDataJson::new(
+                            node.info(),
                             &relevant_tips,
                             version_info.clone(),
                             last_change_timestamp,
                         );
                         {
                             let mut locked_cache = caches_clone.lock().await;
-                            let network = locked_cache
-                                .get(&network_cloned.id)
+                            let this_network = locked_cache
+                                .get(&network.id)
                                 .expect("network should already exist in cache");
-                            let mut node_infos = network.1.clone();
-                            node_infos.insert(node.id, nodeinfojson);
-                            locked_cache.insert(network_cloned.id, (headerinfojson, node_infos));
+                            let mut node_infos = this_network.1.clone();
+                            node_infos.insert(node.info().id, nodeinfojson);
+                            locked_cache.insert(network.id, (headerinfojson, node_infos));
                         }
                         if !new_headers.is_empty() {
-                            match tipchanges_tx_cloned.clone().send(network_cloned.id) {
+                            match tipchanges_tx_cloned.clone().send(network.id) {
                                 Ok(_) => (),
                                 Err(e) => warn!(
                                     "Could not send tip_changed update into the channel: {}",
@@ -296,7 +292,7 @@ async fn main() -> Result<(), MainError> {
 
     let networks_json = warp::get()
         .and(warp::path!("api" / "networks.json"))
-        .and(api::with_networks(config.networks.clone()))
+        .and(api::with_networks(network_infos))
         .and_then(api::networks_response);
 
     let change_sse = warp::path!("api" / "changes")
