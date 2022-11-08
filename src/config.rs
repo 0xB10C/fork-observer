@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::{env, fmt, fs};
 
 use bitcoincore_rpc::Auth;
-use log::info;
+use log::{error, info};
 use serde::Deserialize;
 
 use crate::error::ConfigError;
@@ -35,7 +35,7 @@ pub struct Config {
     pub footer_html: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct TomlNetwork {
     id: u32,
     name: String,
@@ -55,7 +55,21 @@ pub struct Network {
     pub nodes: Vec<Node>,
 }
 
-#[derive(Deserialize)]
+impl fmt::Display for TomlNetwork {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,"Network (id={}, description='{}', name='{}', min_fork_height={}, max_forks={}, nodes={:?})",
+            self.id,
+            self.description,
+            self.name,
+            self.min_fork_height,
+            self.max_forks,
+            self.nodes,
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct TomlNode {
     id: u8,
     description: String,
@@ -67,6 +81,23 @@ struct TomlNode {
     rpc_password: Option<String>,
     use_rest: bool,
     implementation: Option<String>,
+}
+
+impl fmt::Display for TomlNode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,"Node (id={}, description='{}', name='{}', rpc_host='{}', rpc_port={}, rpc_user='{}', rpc_password='***', rpc_cookie_file={:?}, use_rest={}, implementation='{}')",
+            self.id,
+            self.description,
+            self.name,
+            self.rpc_host,
+            self.rpc_port,
+            self.rpc_user.as_ref().unwrap_or(&"".to_string()),
+            self.rpc_cookie_file,
+            self.use_rest,
+            self.implementation.as_ref().unwrap_or(&"".to_string()),
+        )
+    }
 }
 
 #[derive(Hash, Clone)]
@@ -136,29 +167,24 @@ pub fn load_config() -> Result<Config, ConfigError> {
     for toml_network in toml_config.networks.iter() {
         let mut nodes: Vec<Node> = vec![];
         for toml_node in toml_network.nodes.iter() {
-            nodes.push(Node {
-                id: toml_node.id,
-                name: toml_node.name.clone(),
-                description: toml_node.description.clone(),
-                rpc_url: format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
-                rpc_auth: parse_rpc_auth(toml_node)?,
-                use_rest: toml_node.use_rest,
-                implementation: toml_node
-                    .implementation
-                    .as_ref()
-                    .unwrap_or(&DEFAULT_NODE_IMPL.to_string())
-                    .parse::<NodeImplementation>()?,
-            })
+            match parse_toml_node(toml_node) {
+                Ok(node) => nodes.push(node),
+                Err(e) => {
+                    error!("Error while parsing a node configuration: {}", toml_node);
+                    return Err(e);
+                }
+            }
         }
-
-        networks.push(Network {
-            id: toml_network.id,
-            name: toml_network.name.clone(),
-            description: toml_network.description.clone(),
-            min_fork_height: toml_network.min_fork_height,
-            max_forks: toml_network.max_forks,
-            nodes,
-        });
+        match parse_toml_network(toml_network, nodes) {
+            Ok(network) => networks.push(network),
+            Err(e) => {
+                error!(
+                    "Error while parsing a network configuration: {:?}",
+                    toml_network,
+                );
+                return Err(e);
+            }
+        }
     }
 
     if networks.is_empty() {
@@ -172,5 +198,35 @@ pub fn load_config() -> Result<Config, ConfigError> {
         address: SocketAddr::from_str(&toml_config.address)?,
         footer_html: toml_config.footer_html.clone(),
         networks,
+    })
+}
+
+fn parse_toml_network(
+    toml_network: &TomlNetwork,
+    nodes: Vec<Node>,
+) -> Result<Network, ConfigError> {
+    Ok(Network {
+        id: toml_network.id,
+        name: toml_network.name.clone(),
+        description: toml_network.description.clone(),
+        min_fork_height: toml_network.min_fork_height,
+        max_forks: toml_network.max_forks,
+        nodes,
+    })
+}
+
+fn parse_toml_node(toml_node: &TomlNode) -> Result<Node, ConfigError> {
+    Ok(Node {
+        id: toml_node.id,
+        name: toml_node.name.clone(),
+        description: toml_node.description.clone(),
+        rpc_url: format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
+        rpc_auth: parse_rpc_auth(toml_node)?,
+        use_rest: toml_node.use_rest,
+        implementation: toml_node
+            .implementation
+            .as_ref()
+            .unwrap_or(&DEFAULT_NODE_IMPL.to_string())
+            .parse::<NodeImplementation>()?,
     })
 }
