@@ -3,12 +3,14 @@ use std::net::AddrParseError;
 use std::{error, io};
 
 use bitcoincore_rpc::bitcoin;
+use bitcoincore_rpc::bitcoin::hashes as bitcoin_hashes;
 
 #[derive(Debug)]
 pub enum FetchError {
     TokioJoin(tokio::task::JoinError),
     BitcoinCoreRPC(bitcoincore_rpc::Error),
     BitcoinCoreREST(String),
+    BtcdRPC(JsonRPCError),
     MinReq(minreq::Error),
     DataError(String),
 }
@@ -18,6 +20,7 @@ impl fmt::Display for FetchError {
         match self {
             FetchError::TokioJoin(e) => write!(f, "TokioJoin Error: {:?}", e),
             FetchError::BitcoinCoreRPC(e) => write!(f, "Bitcoin Core RPC Error: {}", e),
+            FetchError::BtcdRPC(e) => write!(f, "btcd Error: {}", e),
             FetchError::BitcoinCoreREST(e) => write!(f, "Bitcoin Core REST Error: {}", e),
             FetchError::MinReq(e) => write!(f, "MinReq HTTP GET request error: {:?}", e),
             FetchError::DataError(e) => write!(f, "Invalid data response error {}", e),
@@ -30,6 +33,7 @@ impl error::Error for FetchError {
         match *self {
             FetchError::TokioJoin(ref e) => Some(e),
             FetchError::BitcoinCoreRPC(ref e) => Some(e),
+            FetchError::BtcdRPC(ref e) => Some(e),
             FetchError::BitcoinCoreREST(_) => None,
             FetchError::MinReq(ref e) => Some(e),
             FetchError::DataError(_) => None,
@@ -103,7 +107,8 @@ impl From<bitcoin::consensus::encode::Error> for DbError {
 #[derive(Debug)]
 pub enum ConfigError {
     CookieFileDoesNotExist,
-    NoRpcAuth,
+    NoBitcoinCoreRpcAuth,
+    NoBtcdRpcAuth,
     NoNetworks,
     UnknownImplementation,
     TomlError(toml::de::Error),
@@ -115,7 +120,8 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ConfigError::CookieFileDoesNotExist => write!(f, "the .cookie file path set via rpc_cookie_file does not exist"),
-            ConfigError::NoRpcAuth => write!(f, "please specify a Bitcoin Core RPC .cookie file (option: 'rpc_cookie_file') or a rpc_user and rpc_password"),
+            ConfigError::NoBitcoinCoreRpcAuth => write!(f, "please specify a Bitcoin Core RPC .cookie file (option: 'rpc_cookie_file') or a rpc_user and rpc_password"),
+            ConfigError::NoBtcdRpcAuth => write!(f, "no values for rpc_user and rpc_password"),
             ConfigError::NoNetworks => write!(f, "no networks defined in the configuration"),
             ConfigError::UnknownImplementation => write!(f, "the node implementation defined in the config is not supported"),
             ConfigError::TomlError(e) => write!(f, "the TOML in the configuration file could not be parsed: {}", e),
@@ -128,7 +134,8 @@ impl fmt::Display for ConfigError {
 impl error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
-            ConfigError::NoRpcAuth => None,
+            ConfigError::NoBitcoinCoreRpcAuth => None,
+            ConfigError::NoBtcdRpcAuth => None,
             ConfigError::CookieFileDoesNotExist => None,
             ConfigError::NoNetworks => None,
             ConfigError::UnknownImplementation => None,
@@ -199,5 +206,75 @@ impl From<FetchError> for MainError {
 impl From<ConfigError> for MainError {
     fn from(e: ConfigError) -> Self {
         MainError::Config(e)
+    }
+}
+
+#[derive(Debug)]
+pub enum JsonRPCError {
+    Http(String),
+    JsonRpc(String),
+    RpcUnexpectedResponseContents(String),
+    MinReq(minreq::Error),
+    FromHex(hex::FromHexError),
+    BitcoinFromHex(bitcoin_hashes::hex::Error),
+    BitcoinDeserializeError(bitcoin::consensus::encode::Error),
+    NotImplemented,
+}
+
+impl fmt::Display for JsonRPCError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            JsonRPCError::MinReq(e) => write!(f, "minreq error: {:?}", e),
+            JsonRPCError::Http(s) => write!(f, "HTTP error: {}", s),
+            JsonRPCError::JsonRpc(s) => write!(f, "json-rpc error: {}", s),
+            JsonRPCError::RpcUnexpectedResponseContents(s) => {
+                write!(f, "unexpected contents in RPC response: {}", s)
+            }
+            JsonRPCError::BitcoinDeserializeError(e) => {
+                write!(f, "bitcoin deserialize error: {}", e)
+            }
+            JsonRPCError::FromHex(e) => write!(f, "from-hex error: {}", e),
+            JsonRPCError::BitcoinFromHex(e) => write!(f, "bitcoin from-hex error: {}", e),
+            JsonRPCError::NotImplemented => write!(f, "NotImplemented",),
+        }
+    }
+}
+
+impl error::Error for JsonRPCError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match *self {
+            JsonRPCError::Http(_) => None,
+            JsonRPCError::JsonRpc(_) => None,
+            JsonRPCError::RpcUnexpectedResponseContents(_) => None,
+            JsonRPCError::NotImplemented => None,
+            JsonRPCError::MinReq(ref e) => Some(e),
+            JsonRPCError::FromHex(ref e) => Some(e),
+            JsonRPCError::BitcoinFromHex(ref e) => Some(e),
+            JsonRPCError::BitcoinDeserializeError(ref e) => Some(e),
+        }
+    }
+}
+
+impl From<minreq::Error> for JsonRPCError {
+    fn from(e: minreq::Error) -> Self {
+        JsonRPCError::MinReq(e)
+    }
+}
+
+impl From<hex::FromHexError> for JsonRPCError {
+    fn from(e: hex::FromHexError) -> Self {
+        JsonRPCError::FromHex(e)
+    }
+}
+
+impl From<bitcoin::consensus::encode::Error> for JsonRPCError {
+    fn from(e: bitcoin::consensus::encode::Error) -> Self {
+        JsonRPCError::BitcoinDeserializeError(e)
+    }
+}
+
+impl From<bitcoin_hashes::hex::Error> for JsonRPCError {
+    fn from(e: bitcoin::hashes::hex::Error) -> Self {
+        JsonRPCError::BitcoinFromHex(e)
     }
 }
