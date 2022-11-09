@@ -13,6 +13,8 @@ const networkInfoDescription = d3.select("#network_info_description")
 const networkInfoName = d3.select("#network_info_name")
 const footerCustom = d3.select("#footer-custom")
 
+const SEARCH_PARAM_NETWORK = "network"
+
 const orientations = {
   "bottom-to-top": {
     x: (d, _) => d.x,
@@ -407,17 +409,31 @@ async function fetch_networks() {
     .then(response => response.json())
     .then(networks => {
       state_networks = networks.networks
-      let first_network_id = state_networks[0].id
-      networkSelect.selectAll('option')
-        .data(state_networks)
-        .enter()
-          .append('option')
-          .attr('value', d => d.id)
-          .text(d => d.name)
-          .property("selected", d => d.id == first_network_id)
-      state_selected_network_id = state_networks[0].id
+      set_initial_network()
       update_network()
     }).catch(console.error);
+}
+
+function set_initial_network() {
+  let url = new URL(window.location);
+  let searchParams = new URLSearchParams(url.search);
+  let searchParamNetwork = searchParams.get(SEARCH_PARAM_NETWORK)
+
+  if (searchParamNetwork != null && state_networks.filter(x => x.id == searchParamNetwork).length > 0) {
+    console.debug("Setting network to", searchParamNetwork, "based on the URL search parameter", SEARCH_PARAM_NETWORK)
+    state_selected_network_id = searchParamNetwork
+  } else {
+    console.debug("Setting network to first network:", state_networks[0].id);
+    state_selected_network_id = state_networks[0].id
+  }
+
+  networkSelect.selectAll('option')
+    .data(state_networks)
+    .enter()
+      .append('option')
+      .attr('value', d => d.id)
+      .text(d => d.name)
+      .property("selected", d => d.id == state_selected_network_id)
 }
 
 async function fetch_info() {
