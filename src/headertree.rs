@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use petgraph::graph::NodeIndex;
 use petgraph::visit::Dfs;
@@ -7,46 +8,85 @@ use crate::types::{HeaderInfoJson, Tree};
 
 use log::{info, warn};
 
-pub async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
+async fn sorted_interesting_heights(
+    tree: &Tree,
+    max_interesting_heights: usize,
+    tip_heights: BTreeSet<u64>,
+) -> Vec<u64> {
     let tree_locked = tree.lock().await;
     if tree_locked.0.node_count() == 0 {
         warn!("tried to collapse an empty tree!");
         return vec![];
     }
 
+    // We are intersted in all heights where we know more than one block
+    // (as this indicates a fork).
     let mut height_occurences: BTreeMap<u64, usize> = BTreeMap::new();
     for node in tree_locked.0.raw_nodes() {
         let counter = height_occurences.entry(node.weight.height).or_insert(0);
         *counter += 1;
     }
-    let active_tip_height: u64 = height_occurences
-        .iter()
-        .map(|(k, _)| *k)
-        .max()
-        .expect("we should have at least one height here as we have blocks");
-
-    let mut relevant_heights: Vec<u64> = height_occurences
+    let heights_with_multiple_blocks: Vec<u64> = height_occurences
         .iter()
         .filter(|(_, v)| **v > 1)
         .map(|(k, _)| *k)
         .collect();
-    relevant_heights.push(active_tip_height);
-    relevant_heights.sort();
-    relevant_heights = relevant_heights
+
+    // Combine the heights with multiple blocks with the tip_heights.
+    let mut interesting_heights_set: BTreeSet<u64> = heights_with_multiple_blocks
         .iter()
-        .rev()
-        .take(max_forks as usize)
-        .rev()
-        .cloned()
+        .map(|i| *i)
+        .chain(tip_heights)
         .collect();
 
-    // filter out unrelevant (no forks) heights from the header tree
-    let mut collapsed_tree = tree_locked.0.filter_map(
-        |_, node| {
-            let height = node.height;
+    // We are also interested in the block with the max height. We should
+    // already have that in `tip_heights`, but include it here just to be
+    // sure.
+    let max_height: u64 = height_occurences
+        .iter()
+        .map(|(k, _)| *k)
+        .max()
+        .expect("we should have at least one height here as we have blocks");
+    interesting_heights_set.insert(max_height);
+
+    let mut interesting_heights: Vec<u64> = interesting_heights_set.iter().map(|h| *h).collect();
+    interesting_heights.sort();
+
+    // As, for example, testnet has a lot of forks we'd return many headers
+    // via the API (causing things to slow down), we allow limiting this with
+    // max_interesting_heights.
+    interesting_heights = interesting_heights_set
+        .iter()
+        .map(|h| *h)
+        .rev() // reversing: ascending -> desescending
+        .take(max_interesting_heights) // taking the 'last' max_interesting_heights
+        .rev() // reversing: desescending -> ascending
+        .collect();
+
+    // To be sure, sort again.
+    interesting_heights.sort();
+
+    interesting_heights
+}
+
+// We strip the tree of headers that aren't interesting to us.
+pub async fn strip_tree(
+    tree: &Tree,
+    max_interesting_heights: usize,
+    tip_heights: BTreeSet<u64>,
+) -> Vec<HeaderInfoJson> {
+    let interesting_heights =
+        sorted_interesting_heights(tree, max_interesting_heights, tip_heights).await;
+
+    let tree_locked = tree.lock().await;
+
+    // Drop headers from our header tree that aren't 'interesting'.
+    let mut striped_tree = tree_locked.0.filter_map(
+        |_, header| {
+            // Keep some surrounding headers for the headers we find interesting.
             for x in -2i64..=1 {
-                if relevant_heights.contains(&((height as i64 - x) as u64)) {
-                    return Some(node);
+                if interesting_heights.contains(&((header.height as i64 - x) as u64)) {
+                    return Some(header);
                 }
             }
             None
@@ -54,26 +94,39 @@ pub async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
         |_, edge| Some(edge),
     );
 
-    // in the new collapsed_tree, connect headers that previously a
-    // linear chain of headers between them.
-    let mut root_indicies: Vec<NodeIndex> = collapsed_tree
+    // We now have muliple sub header trees. To reconnect them
+    // we figure out the starts of these chains (roots) and sort
+    // them by height. We can't assume they are sorted when as we
+    // added data from mulitple nodes to the tree.
+
+    let mut roots: Vec<NodeIndex> = striped_tree
         .externals(petgraph::Direction::Incoming)
         .collect();
+
     // We need this to be sorted by height if we use
     // prev_header_to_connect_to to connect to the last header
-    // we saw. We can't assume it's sorted when we add data from
-    // mulitple nodes on the same network to the tree.
-    root_indicies.sort_by_key(|idx| collapsed_tree[*idx].height);
+    // we saw below.
+    roots.sort_by_key(|idx| striped_tree[*idx].height);
 
     let mut prev_header_to_connect_to: Option<NodeIndex> = None;
-    for root in root_indicies.iter() {
+    for root in roots.iter() {
+        // If we have apprev_header_to_connect_to, then connect
+        // the current root to it.
         if let Some(prev_idx) = prev_header_to_connect_to {
-            collapsed_tree.add_edge(prev_idx, *root, &false);
+            striped_tree.add_edge(prev_idx, *root, &false);
+            prev_header_to_connect_to = None;
         }
+
+        // Find the header with the maximum height in the sub chain
+        // with a depth first search. This will be the header we
+        // connect the next block to. This works, because:
+        // - if we have an older fork, we have a clear winner (connect to this)
+        // - if we are in an active fork, we don't need to connect anything
+        // - if we are not in a fork, there will only be one header to connect to.
         let mut max_height: u64 = u64::default();
-        let mut dfs = Dfs::new(&collapsed_tree, *root);
-        while let Some(idx) = dfs.next(&collapsed_tree) {
-            let height = collapsed_tree[idx].height;
+        let mut dfs = Dfs::new(&striped_tree, *root);
+        while let Some(idx) = dfs.next(&striped_tree) {
+            let height = striped_tree[idx].height;
             if height > max_height {
                 max_height = height;
                 prev_header_to_connect_to = Some(idx);
@@ -83,20 +136,20 @@ pub async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
 
     info!(
         "done collapsing tree: roots={}, tips={}",
-        collapsed_tree
+        striped_tree
             .externals(petgraph::Direction::Incoming)
             .count(), // root nodes
-        collapsed_tree
+        striped_tree
             .externals(petgraph::Direction::Outgoing)
             .count(), // tip nodes
     );
 
     let mut headers: Vec<HeaderInfoJson> = Vec::new();
-    for idx in collapsed_tree.node_indices() {
-        let prev_nodes = collapsed_tree.neighbors_directed(idx, petgraph::Direction::Incoming);
+    for idx in striped_tree.node_indices() {
+        let prev_nodes = striped_tree.neighbors_directed(idx, petgraph::Direction::Incoming);
         let prev_node_index: usize;
         match prev_nodes.clone().count() {
-            0 => prev_node_index = usize::MAX,
+            0 => prev_node_index = usize::MAX, // indicates the start in JavaScript
             1 => {
                 prev_node_index = prev_nodes
                     .last()
@@ -106,7 +159,7 @@ pub async fn collapse_tree(tree: &Tree, max_forks: u64) -> Vec<HeaderInfoJson> {
             _ => panic!("got multiple previous nodes. this should not happen."),
         }
         headers.push(HeaderInfoJson::new(
-            collapsed_tree[idx],
+            striped_tree[idx],
             idx.index(),
             prev_node_index,
         ));

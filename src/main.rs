@@ -1,6 +1,6 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -27,7 +27,9 @@ mod jsonrpc;
 mod node;
 mod types;
 
-use types::{Caches, ChainTip, DataQuery, Db, HeaderInfo, NetworkJson, NodeDataJson, Tree};
+use types::{
+    Caches, ChainTip, DataQuery, Db, HeaderInfo, NetworkJson, NodeData, NodeDataJson, Tree,
+};
 
 use crate::error::{DbError, MainError};
 
@@ -104,7 +106,8 @@ async fn main() -> Result<(), MainError> {
             },
         ));
 
-        let headerinfojson = headertree::collapse_tree(&tree, network.max_forks).await;
+        let headerinfojson =
+            headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
         {
             let mut locked_caches = caches.lock().await;
             locked_caches.insert(network.id, (headerinfojson, BTreeMap::new()));
@@ -208,7 +211,7 @@ async fn main() -> Result<(), MainError> {
                             }
                             if !new_headers.is_empty() {
                                 match db::write_to_db(&new_headers, db_write, network.id).await {
-                                    Ok(_) => info!("Written {} new heders to database for network '{}' by node {}", new_headers.len(), network.name, node.info()),
+                                    Ok(_) => info!("Written {} new headers to database for network '{}' by node {}", new_headers.len(), network.name, node.info()),
                                     Err(e) => {
                                         error!("Could not write new headers for network '{}' by node {} to database: {}", network.name, node.info(), e);
                                         return MainError::Db(e);
@@ -217,14 +220,40 @@ async fn main() -> Result<(), MainError> {
                             }
                         }
 
-                        let headerinfojson =
-                            headertree::collapse_tree(&tree_clone, network.max_forks).await;
+                        // Find out for which heights we have tips for. These are
+                        // interesting to us - we don't want strip them from the tree.
+                        // This includes tips that aren't from a fork, but rather from
+                        // a stale or stuck node (i.e. not an up-to-date view of the
+                        // blocktree).
+                        let mut tip_heights: BTreeSet<u64> = BTreeSet::new();
+                        {
+                            let locked_cache = caches_clone.lock().await;
+                            let this_network = locked_cache
+                                .get(&network.id)
+                                .expect("network should already exist in cache");
+                            let node_infos: NodeData = this_network.1.clone();
+                            for node in node_infos.iter() {
+                                for tip in node.1.tips.iter() {
+                                    tip_heights.insert(tip.height);
+                                }
+                            }
+                        }
+                        for tip in tips.iter() {
+                            tip_heights.insert(tip.height);
+                        }
 
-                        // only put tips that we also have headers for in the cache
+                        let headerinfojson = headertree::strip_tree(
+                            &tree_clone,
+                            network.max_interesting_heights,
+                            tip_heights,
+                        )
+                        .await;
+
+                        // only put tips that we also keep headers for in the cache
                         let min_height = headerinfojson
                             .iter()
                             .min_by_key(|h| h.height)
-                            .expect("we should have atleast on header in here")
+                            .expect("we should have atleast one header in here")
                             .height;
                         let relevant_tips = tips
                             .iter()

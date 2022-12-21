@@ -62,7 +62,7 @@ function draw() {
       return (d.prev_id == MAX_USIZE ? null : d.prev_id)
     })(header_infos);
 
-  collapseLinearChainsOfBlocks(treeData, 3)
+  stripUninteresting(treeData, 4)
 
   let interesting_heights = []
   treeData.descendants().forEach(d => {
@@ -312,33 +312,43 @@ function draw() {
 
 // recursivly collapses linear branches of blocks longer than x,
 // starting from the root until all tips are reached.
-function collapseLinearChainsOfBlocks(node, x) {
+function stripUninteresting(node, x) {
   if (node.children) {
     node.children.forEach(child => {
-      let nextForkOrTip = findNextForkOrTip(child)
+      let nextForkOrTip = findNextInteresting(child)
       let distance_between_nodes = nextForkOrTip.depth - child.depth
       if (distance_between_nodes > x) {
         child.children[0].children = [nextForkOrTip.parent];
       }
-      collapseLinearChainsOfBlocks(nextForkOrTip, x)
+      stripUninteresting(nextForkOrTip, x)
     })
   }
 }
 
-function findNextForkOrTip(node) {
-  if (node.children == null) {
-    // the node is a tip
-    return node
-  } else if (node.children.length > 1){
-    // the node is a fork
-    return node
-  } else {
-    for (const descendant of node) {
-      if (descendant.children === undefined || descendant.children.length > 1) {
-        return descendant;
-      }
+function findNextInteresting(node) {
+  if (isInteresting(node)) {
+    return node;
+  }
+  for (const descendant of node) {
+    if (isInteresting(descendant)) {
+      return descendant;
     }
   }
+  return null;
+}
+
+function isInteresting(node) {
+  if (node.children === undefined) {
+    // the node is a tip
+    return true
+  } else if (node.children.length > 1) {
+    // the node is a fork
+    return true
+  } else if (node.data.status != "in-chain") {
+    // the node has a status != "in-chain"
+    return true
+  }
+  return false
 }
 
 function gen_treemap(o, tips, unique_heights) {
