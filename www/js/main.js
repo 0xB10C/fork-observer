@@ -18,6 +18,7 @@ var state_networks = []
 var state_data = {}
 
 async function fetch_info() {
+  console.debug("called fetch_info()")
   await fetch(getInfo)
     .then(response => response.json())
     .then(info => {
@@ -26,6 +27,7 @@ async function fetch_info() {
 }
 
 async function fetch_data() {
+  console.debug("called fetch_data()")
   await fetch('api/data.json?network='+networkSelect.node().value)
     .then(response => response.json())
     .then(data => state_data = data)
@@ -33,6 +35,7 @@ async function fetch_data() {
 }
 
 async function fetch_networks() {
+  console.debug("called fetch_networks()")
   await fetch(getNetworks)
     .then(response => response.json())
     .then(networks => {
@@ -43,6 +46,7 @@ async function fetch_networks() {
 }
 
 function update_network() {
+  console.debug("called update_network()")
   let current_network = state_networks.filter(net => net.id == state_selected_network_id)[0]
   document.title = PAGE_NAME + " - " + current_network.name;
   networkInfoName.text(current_network.name)
@@ -50,6 +54,7 @@ function update_network() {
 }
 
 function set_initial_network() {
+  console.debug("called set_initial_network()")
   let url = new URL(window.location);
   let searchParams = new URLSearchParams(url.search);
   let searchParamNetwork = searchParams.get(SEARCH_PARAM_NETWORK)
@@ -78,12 +83,14 @@ networkSelect.on("input", async function() {
 })
 
 async function update() {
+  console.debug("called update()")
   await fetch_data()
   await draw_nodes()
   await draw()
 }
 
 async function run() {
+  console.debug("called run()")
   await fetch_networks()
   await fetch_info()
   await update()
@@ -91,7 +98,9 @@ async function run() {
 
 changeSSE.addEventListener("tip_changed", (e) => {
   let data = JSON.parse(e.data)
+  console.debug("server side event: the tip of one of the networks changed: ", data)
   if(data.network_id == state_selected_network_id) {
+    console.debug("server side event: the tip of the currently displayed network changed: ", data)
     update()
   }
 })
