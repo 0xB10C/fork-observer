@@ -1,19 +1,7 @@
-const getNetworks = new Request('api/networks.json');
-const getInfo = new Request('api/info.json');
-const changeSSE = new EventSource('api/changes');
-
 const NODE_SIZE = 100
 const MAX_USIZE = 18446744073709551615;
-const PAGE_NAME = "fork-observer"
 
 const orientationSelect = d3.select("#orientation")
-const networkSelect = d3.select("#network")
-const nodeInfoRow = d3.select("#node_infos")
-const networkInfoDescription = d3.select("#network_info_description")
-const networkInfoName = d3.select("#network_info_name")
-const footerCustom = d3.select("#footer-custom")
-
-const SEARCH_PARAM_NETWORK = "network"
 
 const orientations = {
   "bottom-to-top": {
@@ -39,10 +27,6 @@ const status_to_color = {
   "valid-headers": "red",
   "headers-only": "yellow",
 }
-
-var state_selected_network_id = 0
-var state_networks = []
-var state_data = {}
 
 function draw() {
   data = state_data
@@ -404,64 +388,10 @@ async function draw_nodes() {
     `)
 }
 
-async function fetch_networks() {
-  await fetch(getNetworks)
-    .then(response => response.json())
-    .then(networks => {
-      state_networks = networks.networks
-      set_initial_network()
-      update_network()
-    }).catch(console.error);
-}
-
-function set_initial_network() {
-  let url = new URL(window.location);
-  let searchParams = new URLSearchParams(url.search);
-  let searchParamNetwork = searchParams.get(SEARCH_PARAM_NETWORK)
-
-  if (searchParamNetwork != null && state_networks.filter(x => x.id == searchParamNetwork).length > 0) {
-    console.debug("Setting network to", searchParamNetwork, "based on the URL search parameter", SEARCH_PARAM_NETWORK)
-    state_selected_network_id = searchParamNetwork
-  } else {
-    console.debug("Setting network to first network:", state_networks[0].id);
-    state_selected_network_id = state_networks[0].id
-  }
-
-  networkSelect.selectAll('option')
-    .data(state_networks)
-    .enter()
-      .append('option')
-      .attr('value', d => d.id)
-      .text(d => d.name)
-      .property("selected", d => d.id == state_selected_network_id)
-}
-
-async function fetch_info() {
-  await fetch(getInfo)
-    .then(response => response.json())
-    .then(info => {
-      footerCustom.html(info.footer)
-    }).catch(console.error);
-}
-
-async function fetch_data() {
-  await fetch('api/data.json?network='+networkSelect.node().value)
-    .then(response => response.json())
-    .then(data => state_data = data)
-    .catch(console.error);
-}
-
 orientationSelect.on("input", async function() {
   o = orientations[this.value]
   await draw()
 })
-
-networkSelect.on("input", async function() {
-  state_selected_network_id = networkSelect.node().value
-  update_network()
-  await update()
-})
-
 
 // Set the orientation by checking the screen width and height
 {
@@ -486,32 +416,3 @@ networkSelect.on("input", async function() {
 	    .property("selected", d => d.value == choosen_orientation)
 }
 o = orientations[orientationSelect.node().value]
-
-changeSSE.addEventListener("tip_changed", (e) => {
-  let data = JSON.parse(e.data)
-  if(data.network_id == state_selected_network_id) {
-    update()
-  }
-})
-
-function update_network() {
-  let current_network = state_networks.filter(net => net.id == state_selected_network_id)[0]
-  document.title = PAGE_NAME + " - " + current_network.name;
-  networkInfoName.text(current_network.name)
-  networkInfoDescription.text(current_network.description)
-}
-
-async function update() {
-  await fetch_data()
-  await draw_nodes()
-  await draw()
-}
-
-async function run() {
-  await fetch_networks()
-  await fetch_info()
-  await update()
-}
-
-run()
-
