@@ -46,7 +46,7 @@ struct TomlNetwork {
     name: String,
     description: String,
     min_fork_height: u64,
-    max_forks: u64,
+    max_interesting_heights: usize,
     nodes: Vec<TomlNode>,
 }
 
@@ -56,19 +56,19 @@ pub struct Network {
     pub description: String,
     pub name: String,
     pub min_fork_height: u64,
-    pub max_forks: u64,
+    pub max_interesting_heights: usize,
     pub nodes: Vec<BoxedSyncSendNode>,
 }
 
 impl fmt::Display for TomlNetwork {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
-            f,"Network (id={}, description='{}', name='{}', min_fork_height={}, max_forks={}, nodes={:?})",
+            f,"Network (id={}, description='{}', name='{}', min_fork_height={}, max_interesting_heights={}, nodes={:?})",
             self.id,
             self.description,
             self.name,
             self.min_fork_height,
-            self.max_forks,
+            self.max_interesting_heights,
             self.nodes,
         )
     }
@@ -204,7 +204,7 @@ fn parse_toml_network(
         name: toml_network.name.clone(),
         description: toml_network.description.clone(),
         min_fork_height: toml_network.min_fork_height,
-        max_forks: toml_network.max_forks,
+        max_interesting_heights: toml_network.max_interesting_heights,
         nodes,
     })
 }
