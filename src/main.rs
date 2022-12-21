@@ -256,15 +256,14 @@ async fn main() -> Result<(), MainError> {
                             node_infos.insert(node.info().id, nodeinfojson);
                             locked_cache.insert(network.id, (headerinfojson, node_infos));
                         }
-                        if !new_headers.is_empty() {
-                            match tipchanges_tx_cloned.clone().send(network.id) {
-                                Ok(_) => (),
-                                Err(e) => warn!(
-                                    "Could not send tip_changed update into the channel: {}",
-                                    e
-                                ),
-                            };
-                        }
+
+                        match tipchanges_tx_cloned.clone().send(network.id) {
+                            Ok(_) => (),
+                            Err(e) => {
+                                warn!("Could not send tip_changed update into the channel: {}", e)
+                            }
+                        };
+
                         has_node_info = true;
                     }
                 }
