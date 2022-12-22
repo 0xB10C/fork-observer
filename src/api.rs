@@ -19,9 +19,9 @@ pub async fn data_response(
 
     let caches_locked = caches.lock().await;
     match caches_locked.get(&network) {
-        Some((header_info_json, node_infos)) => Ok(warp::reply::json(&DataJsonResponse {
-            header_infos: header_info_json.clone(),
-            nodes: node_infos.values().cloned().collect(),
+        Some(cache) => Ok(warp::reply::json(&DataJsonResponse {
+            header_infos: cache.header_infos_json.clone(),
+            nodes: cache.node_data.values().cloned().collect(),
         })),
         None => Ok(warp::reply::json(&DataJsonResponse {
             header_infos: vec![],
