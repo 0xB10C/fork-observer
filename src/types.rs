@@ -18,8 +18,12 @@ use rusqlite::Connection;
 
 use tokio::sync::Mutex;
 
+pub struct Cache {
+    pub header_infos_json: Vec<HeaderInfoJson>,
+    pub node_data: NodeData,
+}
+
 pub type NodeData = BTreeMap<u8, NodeDataJson>;
-pub type Cache = (Vec<HeaderInfoJson>, NodeData);
 pub type Caches = Arc<Mutex<BTreeMap<u32, Cache>>>;
 pub type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
 pub type Tree = Arc<Mutex<TreeInfo>>;

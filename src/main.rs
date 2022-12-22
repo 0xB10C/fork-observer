@@ -28,7 +28,7 @@ mod node;
 mod types;
 
 use types::{
-    Caches, ChainTip, DataQuery, Db, HeaderInfo, NetworkJson, NodeData, NodeDataJson, Tree,
+    Caches, ChainTip, DataQuery, Db, HeaderInfo, NetworkJson, NodeData, NodeDataJson, Tree, Cache
 };
 
 use crate::error::{DbError, MainError};
@@ -106,11 +106,11 @@ async fn main() -> Result<(), MainError> {
             },
         ));
 
-        let headerinfojson =
+        let header_infos_json =
             headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
         {
             let mut locked_caches = caches.lock().await;
-            locked_caches.insert(network.id, (headerinfojson, BTreeMap::new()));
+            locked_caches.insert(network.id, Cache{header_infos_json, node_data: BTreeMap::new()});
         }
 
         for node in network.nodes.iter().cloned() {
@@ -231,7 +231,7 @@ async fn main() -> Result<(), MainError> {
                             let this_network = locked_cache
                                 .get(&network.id)
                                 .expect("network should already exist in cache");
-                            let node_infos: NodeData = this_network.1.clone();
+                            let node_infos: NodeData = this_network.node_data.clone();
                             for node in node_infos.iter() {
                                 for tip in node.1.tips.iter() {
                                     tip_heights.insert(tip.height);
@@ -242,7 +242,7 @@ async fn main() -> Result<(), MainError> {
                             tip_heights.insert(tip.height);
                         }
 
-                        let headerinfojson = headertree::strip_tree(
+                        let header_infos_json = headertree::strip_tree(
                             &tree_clone,
                             network.max_interesting_heights,
                             tip_heights,
@@ -250,7 +250,7 @@ async fn main() -> Result<(), MainError> {
                         .await;
 
                         // only put tips that we also keep headers for in the cache
-                        let min_height = headerinfojson
+                        let min_height = header_infos_json
                             .iter()
                             .min_by_key(|h| h.height)
                             .expect("we should have atleast one header in here")
@@ -270,7 +270,7 @@ async fn main() -> Result<(), MainError> {
                                 0u64
                             }
                         };
-                        let nodeinfojson = NodeDataJson::new(
+                        let node_info_json = NodeDataJson::new(
                             node.info(),
                             &relevant_tips,
                             version_info.clone(),
@@ -281,9 +281,9 @@ async fn main() -> Result<(), MainError> {
                             let this_network = locked_cache
                                 .get(&network.id)
                                 .expect("network should already exist in cache");
-                            let mut node_infos = this_network.1.clone();
-                            node_infos.insert(node.info().id, nodeinfojson);
-                            locked_cache.insert(network.id, (headerinfojson, node_infos));
+                            let mut node_infos = this_network.node_data.clone();
+                            node_infos.insert(node.info().id, node_info_json);
+                            locked_cache.insert(network.id, Cache { header_infos_json, node_data: node_infos });
                         }
 
                         match tipchanges_tx_cloned.clone().send(network.id) {
