@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 pub struct Cache {
     pub header_infos_json: Vec<HeaderInfoJson>,
     pub node_data: NodeData,
+    pub forks: Vec<Fork>,
 }
 
 pub type NodeData = BTreeMap<u8, NodeDataJson>;
@@ -109,6 +110,12 @@ pub struct TipInfoJson {
     pub hash: String,
     pub status: String,
     pub height: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Fork {
+    pub common: HeaderInfo,
+    pub children: Vec<HeaderInfo>,
 }
 
 impl TipInfoJson {
