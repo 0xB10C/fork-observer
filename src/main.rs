@@ -25,15 +25,17 @@ mod error;
 mod headertree;
 mod jsonrpc;
 mod node;
+mod rss;
 mod types;
 
 use types::{
-    Caches, ChainTip, DataQuery, Db, HeaderInfo, NetworkJson, NodeData, NodeDataJson, Tree, Cache
+    Cache, Caches, ChainTip, DataQuery, Db, HeaderInfo, NetworkJson, NodeData, NodeDataJson, Tree,
 };
 
 use crate::error::{DbError, MainError};
 
 const VERSION_UNKNOWN: &str = "unknown";
+const MAX_FORKS_IN_CACHE: usize = 50;
 
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
@@ -106,11 +108,19 @@ async fn main() -> Result<(), MainError> {
             },
         ));
 
+        let forks = headertree::recent_forks(&tree, MAX_FORKS_IN_CACHE).await;
         let header_infos_json =
             headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
         {
             let mut locked_caches = caches.lock().await;
-            locked_caches.insert(network.id, Cache{header_infos_json, node_data: BTreeMap::new()});
+            locked_caches.insert(
+                network.id,
+                Cache {
+                    header_infos_json,
+                    node_data: BTreeMap::new(),
+                    forks,
+                },
+            );
         }
 
         for node in network.nodes.iter().cloned() {
@@ -277,6 +287,8 @@ async fn main() -> Result<(), MainError> {
                             version_info.clone(),
                             last_change_timestamp,
                         );
+
+                        let forks = headertree::recent_forks(&tree_clone, MAX_FORKS_IN_CACHE).await;
                         {
                             let mut locked_cache = caches_clone.lock().await;
                             let this_network = locked_cache
@@ -284,7 +296,14 @@ async fn main() -> Result<(), MainError> {
                                 .expect("network should already exist in cache");
                             let mut node_infos = this_network.node_data.clone();
                             node_infos.insert(node.info().id, node_info_json);
-                            locked_cache.insert(network.id, Cache { header_infos_json, node_data: node_infos });
+                            locked_cache.insert(
+                                network.id,
+                                Cache {
+                                    header_infos_json,
+                                    node_data: node_infos,
+                                    forks,
+                                },
+                            );
                         }
 
                         match tipchanges_tx_cloned.clone().send(network.id) {
@@ -319,6 +338,13 @@ async fn main() -> Result<(), MainError> {
         .and(warp::query::<DataQuery>())
         .and_then(api::data_response);
 
+    let forks_rss = warp::get()
+        .and(warp::path!("rss" / "forks.xml"))
+        .and(api::with_caches(caches.clone()))
+        .and(api::with_networks(network_infos.clone()))
+        .and(warp::query::<DataQuery>())
+        .and_then(rss::forks_response);
+
     let networks_json = warp::get()
         .and(warp::path!("api" / "networks.json"))
         .and(api::with_networks(network_infos))
@@ -345,7 +371,8 @@ async fn main() -> Result<(), MainError> {
         .or(data_json)
         .or(info_json)
         .or(networks_json)
-        .or(change_sse);
+        .or(change_sse)
+        .or(forks_rss);
 
     warp::serve(routes).run(config.address).await;
     Ok(())

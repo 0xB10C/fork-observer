@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use petgraph::graph::NodeIndex;
-use petgraph::visit::Dfs;
+use petgraph::visit::{Dfs, EdgeRef};
 
-use crate::types::{HeaderInfoJson, Tree};
+use crate::types::{Fork, HeaderInfoJson, Tree};
 
 use log::{info, warn};
 
@@ -166,4 +166,34 @@ pub async fn strip_tree(
     }
 
     headers
+}
+
+// calculate the forks for rss
+pub async fn recent_forks(tree: &Tree, how_many: usize) -> Vec<Fork> {
+    let tree_locked = tree.lock().await;
+    let tree = &tree_locked.0;
+
+    let mut forks: Vec<Fork> = vec![];
+    // it could be, that we have mutliple roots. To be safe, do this for all
+    // roots.
+    tree.externals(petgraph::Direction::Incoming)
+        .for_each(|root| {
+            let mut dfs = Dfs::new(&tree, root);
+            while let Some(idx) = dfs.next(&tree) {
+                let outgoing_iter = tree.edges_directed(idx, petgraph::Direction::Outgoing);
+                if outgoing_iter.clone().count() > 1 {
+                    let common = &tree[idx];
+                    let fork = Fork {
+                        common: common.clone(),
+                        children: outgoing_iter
+                            .map(|edge| tree[edge.target()].clone())
+                            .collect(),
+                    };
+                    forks.push(fork);
+                }
+            }
+        });
+
+    forks.sort_by_key(|f| f.common.height);
+    forks.iter().rev().take(how_many).cloned().collect()
 }
