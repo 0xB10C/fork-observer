@@ -65,7 +65,7 @@ pub trait Node: Sync {
             }
         };
         let min_height = first_fork_tip.height - first_fork_tip.branchlen as u64;
-        let scan_start_height = max(min_height as u64 - 5, 0);
+        let scan_start_height = max(min_height as i64 - 5, 0) as u64;
 
         let current_height: u64;
         {
