@@ -12,7 +12,7 @@ use bitcoincore_rpc::RpcApi;
 
 use async_trait::async_trait;
 
-use log::{debug, error, warn};
+use log::{debug, error};
 
 use tokio::task;
 
@@ -53,34 +53,6 @@ pub trait Node: Sync {
         min_fork_height: u64,
     ) -> Result<Vec<HeaderInfo>, FetchError> {
         let mut new_headers: Vec<HeaderInfo> = Vec::new();
-        let first_fork_tip = match tips
-            .iter()
-            .filter(|tip| tip.height - tip.branchlen as u64 > min_fork_height)
-            .min_by_key(|tip| tip.height - tip.branchlen as u64)
-        {
-            Some(tip) => tip,
-            None => {
-                warn!("No tip qualifies as first_fork_tip. Is min_fork_height={} reasonable for this network?", min_fork_height);
-                return Ok(new_headers);
-            }
-        };
-        let min_height = first_fork_tip.height - first_fork_tip.branchlen as u64;
-        let scan_start_height = max(min_height as i64 - 5, 0) as u64;
-
-        let current_height: u64;
-        {
-            let locked_tree = tree.lock().await;
-            if locked_tree.0.node_count() == 0 {
-                current_height = scan_start_height;
-            } else {
-                let max_tip_idx = locked_tree
-                .0
-                .externals(petgraph::Direction::Outgoing)
-                .max_by_key(|idx| locked_tree.0[*idx].height)
-                .expect("we have at least one node in the tree so we should also have a max height node in the tree");
-                current_height = locked_tree.0[max_tip_idx].height;
-            }
-        }
 
         let active_tip = match tips
             .iter()
@@ -94,45 +66,65 @@ pub trait Node: Sync {
                 )))
             }
         };
+        const STEP_SIZE: i64 = 2000;
+        let mut query_height: i64 = active_tip.height as i64;
+        loop {
+            if self.use_rest() {
+                let rest_query_height = max(min_fork_height as i64, query_height - STEP_SIZE);
+                let mut already_knew_a_header = false;
+                // get the header hash for a header STEP_SIZE away from query_height
+                let header_hash = self.block_hash(rest_query_height as u64).await?;
 
-        if self.use_rest() {
-            let mut headers: Vec<bitcoin::BlockHeader>;
-            const STEP_SIZE: u64 = 2000;
-            for query_height in (current_height + 1..=active_tip.height).step_by(STEP_SIZE as usize)
-            {
-                let header_hash = self.block_hash(query_height).await?;
-                {
-                    let locked_tree = tree.lock().await;
-                    if locked_tree.1.contains_key(&header_hash) {
-                        continue;
-                    }
-                }
-                headers = self
-                    .active_chain_headers_rest(STEP_SIZE, header_hash)
+                // get STEP_SIZE headers
+                let headers = self
+                    .active_chain_headers_rest(STEP_SIZE as u64, header_hash)
                     .await?;
-                for height_header_pair in
-                    (query_height..(query_height + headers.len() as u64)).zip(headers)
+
+                // zip heights and headers up and to iterate through them by descending height
+                // newest first
+                for height_header_pair in headers
+                    .iter()
+                    .zip(rest_query_height..rest_query_height + headers.len() as i64)
                 {
                     new_headers.push(HeaderInfo {
-                        height: height_header_pair.0,
-                        header: height_header_pair.1,
+                        header: *height_header_pair.0,
+                        height: height_header_pair.1 as u64,
                     });
+
+                    if !already_knew_a_header {
+                        let locked_tree = tree.lock().await;
+                        if locked_tree.1.contains_key(&header_hash) {
+                            already_knew_a_header = true;
+                        }
+                    }
                 }
-            }
-        } else {
-            for height in current_height + 1..=active_tip.height {
-                let header_hash = self.block_hash(height).await?;
+
+                if already_knew_a_header {
+                    break;
+                }
+
+                query_height -= STEP_SIZE;
+            } else {
+                let header_hash = self.block_hash(query_height as u64).await?;
                 {
                     let locked_tree = tree.lock().await;
                     if locked_tree.1.contains_key(&header_hash) {
-                        continue;
+                        break;
                     }
                 }
                 let header = self.block_header(&header_hash).await?;
-                new_headers.push(HeaderInfo { height, header });
+                new_headers.push(HeaderInfo {
+                    height: query_height as u64,
+                    header,
+                });
+                query_height -= 1;
+            }
+
+            if query_height < min_fork_height as i64 {
+                break;
             }
         }
-
+        new_headers.sort_by_key(|h| h.height);
         Ok(new_headers)
     }
 

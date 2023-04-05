@@ -158,26 +158,27 @@ async fn main() -> Result<(), MainError> {
                         }
                     };
 
-                    let new_headers: Vec<HeaderInfo> = match node
-                        .new_headers(&tips, &tree_clone, network.min_fork_height)
-                        .await
-                    {
-                        Ok(headers) => headers,
-                        Err(e) => {
-                            error!(
-                                "Could not fetch headers from {} on network '{}' (id={}): {}",
-                                node.info(),
-                                network.name,
-                                network.id,
-                                e
-                            );
-                            continue;
-                        }
-                    };
-
                     if last_tips != tips {
+                        let new_headers: Vec<HeaderInfo> = match node
+                            .new_headers(&tips, &tree_clone, network.min_fork_height)
+                            .await
+                        {
+                            Ok(headers) => headers,
+                            Err(e) => {
+                                error!(
+                                    "Could not fetch headers from {} on network '{}' (id={}): {}",
+                                    node.info(),
+                                    network.name,
+                                    network.id,
+                                    e
+                                );
+                                continue;
+                            }
+                        };
+
                         last_tips = tips.clone();
                         let db_write = db_write.clone();
+
                         if !new_headers.is_empty() || !has_node_info {
                             {
                                 let mut tree_locked = tree_clone.lock().await;
