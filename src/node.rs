@@ -5,7 +5,8 @@ use crate::error::{FetchError, JsonRPCError};
 use crate::types::{ChainTip, ChainTipStatus, HeaderInfo, Tree};
 
 use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::{BlockHash, BlockHeader};
+use bitcoincore_rpc::bitcoin::blockdata::block::Header;
+use bitcoincore_rpc::bitcoin::BlockHash;
 use bitcoincore_rpc::Auth;
 use bitcoincore_rpc::Client;
 use bitcoincore_rpc::RpcApi;
@@ -24,7 +25,7 @@ pub trait Node: Sync {
     fn use_rest(&self) -> bool;
     fn rpc_url(&self) -> String;
     async fn version(&self) -> Result<String, FetchError>;
-    async fn block_header(&self, hash: &BlockHash) -> Result<BlockHeader, FetchError>;
+    async fn block_header(&self, hash: &BlockHash) -> Result<Header, FetchError>;
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError>;
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError>;
 
@@ -170,7 +171,7 @@ pub trait Node: Sync {
         &self,
         count: u64,
         start: BlockHash,
-    ) -> Result<Vec<bitcoin::BlockHeader>, FetchError> {
+    ) -> Result<Vec<Header>, FetchError> {
         assert!(self.use_rest());
         debug!(
             "loading active-chain headers starting from {}",
@@ -196,12 +197,12 @@ pub trait Node: Sync {
         }
 
         let header_results: Result<
-            Vec<bitcoin::BlockHeader>,
+            Vec<Header>,
             bitcoincore_rpc::bitcoin::consensus::encode::Error,
         > = res
             .as_bytes()
             .chunks(80)
-            .map(bitcoin::consensus::deserialize::<bitcoin::BlockHeader>)
+            .map(bitcoin::consensus::deserialize::<Header>)
             .collect();
 
         let headers = match header_results {
@@ -310,7 +311,7 @@ impl Node for BitcoinCoreNode {
         }
     }
 
-    async fn block_header(&self, hash: &BlockHash) -> Result<BlockHeader, FetchError> {
+    async fn block_header(&self, hash: &BlockHash) -> Result<Header, FetchError> {
         let rpc = self.rpc_client()?;
         let hash_clone = hash.clone();
         match task::spawn_blocking(move || rpc.get_block_header(&hash_clone)).await {
@@ -371,7 +372,7 @@ impl Node for BtcdNode {
         Err(FetchError::BtcdRPC(JsonRPCError::NotImplemented))
     }
 
-    async fn block_header(&self, hash: &BlockHash) -> Result<BlockHeader, FetchError> {
+    async fn block_header(&self, hash: &BlockHash) -> Result<Header, FetchError> {
         let url = format!("http://{}/", self.rpc_url);
         match crate::jsonrpc::btcd_blockheader(
             url,
