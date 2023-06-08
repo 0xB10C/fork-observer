@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::config::Network;
 use crate::node::NodeInfo;
 
-use bitcoincore_rpc::bitcoin::{BlockHash, BlockHeader};
+use bitcoincore_rpc::bitcoin::blockdata::block::Header;
+use bitcoincore_rpc::bitcoin::BlockHash;
 use bitcoincore_rpc::json::{GetChainTipsResultStatus, GetChainTipsResultTip};
 
 use serde::{Deserialize, Serialize};
@@ -33,7 +34,7 @@ pub type Db = Arc<Mutex<Connection>>;
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct HeaderInfo {
     pub height: u64,
-    pub header: BlockHeader,
+    pub header: Header,
 }
 
 #[derive(Deserialize)]
@@ -84,11 +85,11 @@ impl HeaderInfoJson {
             prev_id,
             height: hi.height,
             hash: hi.header.block_hash().to_string(),
-            version: hi.header.version as u32,
+            version: hi.header.version.to_consensus() as u32,
             prev_blockhash: hi.header.prev_blockhash.to_string(),
             merkle_root: hi.header.merkle_root.to_string(),
             time: hi.header.time,
-            bits: hi.header.bits,
+            bits: hi.header.bits.to_consensus(),
             nonce: hi.header.nonce,
         }
     }

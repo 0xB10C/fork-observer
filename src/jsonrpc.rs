@@ -5,6 +5,7 @@ use crate::error::JsonRPCError;
 use crate::types::ChainTip;
 
 use bitcoincore_rpc::bitcoin;
+use bitcoincore_rpc::bitcoin::blockdata::block::Header;
 
 use base64;
 use serde::{Deserialize, Serialize};
@@ -97,7 +98,7 @@ pub fn btcd_blockheader(
     user: String,
     password: String,
     hash: String,
-) -> Result<bitcoin::BlockHeader, JsonRPCError> {
+) -> Result<Header, JsonRPCError> {
     const METHOD: &str = "getblockheader";
     const PARAM_VERBOSE: bool = false;
 
@@ -124,7 +125,7 @@ pub fn btcd_blockheader(
 
     let header_bytes = hex::decode(header_hex)?;
 
-    let header: bitcoin::BlockHeader = bitcoin::consensus::deserialize(&header_bytes)?;
+    let header: Header = bitcoin::consensus::deserialize(&header_bytes)?;
     return Ok(header);
 }
 
