@@ -13,7 +13,7 @@ query_interval = 10
 address = "127.0.0.1:2323"
 
 # Custom footer for the site.
-footer = """
+footer_html = """
     <div class="my-2">
       <div>
         <span class="text-muted">This site is hosted by</span>
@@ -30,6 +30,8 @@ footer = """
 id = 0x248281
 name = "Nikhils custom SigNet"
 description = "A custom SigNet with reorgs used for the development of the reorg-miner"
+min_fork_height = 5
+max_interesting_heights = 5
 
     [[networks.nodes]]
     id = 0
@@ -55,6 +57,8 @@ description = "A custom SigNet with reorgs used for the development of the reorg
 id = 0xFFFFFFFE
 name = "FFFFFFFF testnetwork"
 description = "test"
+min_fork_height = 5
+max_interesting_heights = 5
 
 
     [[networks.nodes]]
