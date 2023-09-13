@@ -28,12 +28,15 @@
         <p>
           <h3>Network: <span id="network_info_name"></span></h3>
           <span id="network_info_description"></span>
-          <p>
-            <h4>Nodes</h3>
-            <div class="container-fluid px-0">
+          <br>
+          <details style="color: var(--text-color);" open>
+            <summary>
+              <span class="h4">Nodes</span>
+            </summary>
+            <div class="container-fluid">
               <div class="row row-cols-auto" id="node_infos"></div>
             </div>
-          </p>
+          </details>
         </p>
         <div>
           <label>Orientation <select name="orientation" id="orientation"></select></label>
