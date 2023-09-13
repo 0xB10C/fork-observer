@@ -71,7 +71,10 @@ pub trait Node: Sync {
         let mut query_height: i64 = active_tip.height as i64;
         loop {
             if self.use_rest() {
-                let rest_query_height = max(min_fork_height as i64, query_height - STEP_SIZE);
+                // We want to either start to query blocks at the `min_fork_height` or
+                // the `tip height - STEP_SIZE + 1` which ever is larger.
+                // (+ 1 as we would otherwise not query the tip)
+                let rest_query_height = max(min_fork_height as i64, query_height - STEP_SIZE + 1);
                 let mut already_knew_a_header = false;
                 // get the header hash for a header STEP_SIZE away from query_height
                 let header_hash = self.block_hash(rest_query_height as u64).await?;
