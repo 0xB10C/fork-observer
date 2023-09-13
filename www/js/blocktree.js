@@ -355,29 +355,48 @@ function gen_treemap(o, tips, unique_heights) {
   return d3.tree().size([tips, unique_heights]).nodeSize([NODE_SIZE, NODE_SIZE]);
 }
 
+
+// If nessecary, return a <details> <summary> of the description
+function node_description_summary(description) {
+  if (description.length > 20) {
+    return `
+      <details>
+        <summary>
+          <span>description</span>
+        </summary>
+        <span>${description}</span>
+      </details>
+    `
+  }
+  return description
+}
+
+
 async function draw_nodes() {
   nodeInfoRow.html(null);
   nodeInfoRow.selectAll('.node-info')
     .data(state_data.nodes)
     .enter()
     .append("div")
-      .attr("class", "col-12 col-sm-6 col-lg-4 col-xl-3")
+      .attr("class", "row-cols-auto px-1")
       .html(d => `
-      <div class="col border rounded node-info m-2" style="min-height: 12rem;">
-        <div class="m-3">
+      <div class="col border rounded node-info my-1" style="min-height: 10rem; width: 16rem;">
+        <div class="m-2">
           <h5 class="card-title py-0 my-0">
-            <img class="invert" src="static/img/node.svg" height=48 alt="Node symbol">
-            ${d.name}
+            <span class="d-inline-block text-truncate" style="max-width: 15rem;">
+              <img class="invert" src="static/img/node.svg" height=28 alt="Node symbol">
+              ${d.name}
+            </span>
           </h5>
-          <div style="max-height: 4rem; overflow: auto;">
-            <span style="max-height: 2rem;">${d.description}</span>
-          </div>
+          <span>
+            ${node_description_summary(d.description)}
+          </span>
         </div>
         <div class="px-2">
-          <span class="small"> version: ${d.version}
+          <span class="small">version: ${d.version}
         </div>
         <div class="px-2">
-          <span class="small"> tip data changed: ${new Date(d.last_changed_timestamp * 1000).toLocaleTimeString()}
+          <span class="small">changed: ${new Date(d.last_changed_timestamp * 1000).toLocaleTimeString()}
         </div>
         <div class="px-2" style="background-color: hsl(${parseInt(d.tips.filter(tip => tip.status == "active")[0].height * 90, 10) % 360}, 50%, 75%)">
           <span class="small text-color-dark"> height: ${d.tips.filter(tip => tip.status == "active")[0].height}
@@ -386,11 +405,11 @@ async function draw_nodes() {
           <details>
             <summary style="list-style: none;">
               <span class="small text-color-dark">
-                tip: ${d.tips.filter(tip => tip.status == "active")[0].hash.substring(0, 10)}..${d.tips.filter(tip => tip.status == "active")[0].hash.substring(54, 64)}
+                tip: …${d.tips.filter(tip => tip.status == "active")[0].hash.substring(54, 64)}
               </span>
             </summary>
             <span class="small text-color-dark">
-              active tip hash: ${d.tips.filter(tip => tip.status == "active")[0].hash}
+              ${d.tips.filter(tip => tip.status == "active")[0].hash}
             </span>
           </details>
         </div>
