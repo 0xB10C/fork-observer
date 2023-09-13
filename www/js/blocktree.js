@@ -375,7 +375,7 @@ function node_description_summary(description) {
 async function draw_nodes() {
   nodeInfoRow.html(null);
   nodeInfoRow.selectAll('.node-info')
-    .data(state_data.nodes)
+    .data(state_data.nodes.sort((a, b) => a.tips.filter(tip => tip.status == "active")[0].height - b.tips.filter(tip => tip.status == "active")[0].height))
     .enter()
     .append("div")
       .attr("class", "row-cols-auto px-1")
