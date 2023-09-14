@@ -1,6 +1,7 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use bitcoincore_rpc::Error::JsonRpc;
+use env_logger::Env;
 use futures_util::StreamExt;
 use log::{error, info, warn};
 use petgraph::graph::NodeIndex;
@@ -35,7 +36,7 @@ const MAX_FORKS_IN_CACHE: usize = 50;
 
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
-    env_logger::init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let config: config::Config = match config::load_config() {
         Ok(config) => {
