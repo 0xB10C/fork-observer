@@ -1,22 +1,18 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
+use bitcoincore_rpc::Error::JsonRpc;
+use futures_util::StreamExt;
+use log::{error, info, warn};
+use petgraph::graph::NodeIndex;
+use rusqlite::Connection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::SystemTime;
-
 use tokio::sync::{broadcast, Mutex};
 use tokio::task;
 use tokio::time;
 use tokio_stream::wrappers::BroadcastStream;
-
-use futures_util::StreamExt;
 use warp::Filter;
-
-use rusqlite::Connection;
-
-use petgraph::graph::NodeIndex;
-
-use log::{error, info, warn};
 
 mod api;
 mod config;
@@ -132,6 +128,7 @@ async fn main() -> Result<(), MainError> {
             let tipchanges_tx_cloned = tipchanges_tx.clone();
             let mut has_node_info = false;
             let mut version_info: String = String::default();
+            let mut version_request_tries: u8 = 0;
             let mut last_tips: Vec<ChainTip> = vec![];
             task::spawn(async move {
                 loop {
@@ -139,20 +136,38 @@ async fn main() -> Result<(), MainError> {
                     // are using 'continue' on errors. If we would wait at the end,
                     // we might skip the waiting.
                     interval.tick().await;
-
                     if version_info == String::default() {
                         // The Bitcoin Core version is requested via the getnetworkinfo RPC. This
                         // RPC exposes sensitive information to the caller, so it might not be
                         // allowed on the whitelist. We set the version to VERSION_UNKNOWN if we
-                        // can't request it.
-                        version_info = match node.version().await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                warn!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}. Using '{}' as version.", node.info(), network.name, network.id, e, VERSION_UNKNOWN);
-                                version_info = VERSION_UNKNOWN.to_string();
-                                continue;
-                            }
-                        };
+                        // can't request it. As Bitcoin Core RPC interface might not be up yet, we
+                        // try to request the version multiple times.
+                        loop {
+                            match node.version().await {
+                                Ok(v) => {
+                                    version_info = v;
+                                    break;
+                                }
+                                Err(e) => match e {
+                                    error::FetchError::BitcoinCoreRPC(JsonRpc(msg)) => {
+                                        if version_request_tries > 5 {
+                                            warn!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}. Using '{}' as version.", node.info(), network.name, network.id, msg, VERSION_UNKNOWN);
+                                            version_info = VERSION_UNKNOWN.to_string();
+                                            break;
+                                        } else {
+                                            warn!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}. Retrying...", node.info(), network.name, network.id, msg);
+                                            version_request_tries += 1;
+                                            interval.tick().await;
+                                        }
+                                    }
+                                    _ => {
+                                        error!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}.", node.info(), network.name, network.id, e);
+                                        break;
+                                    }
+                                },
+                            };
+                        }
+                        continue;
                     };
                     let tips = match node.tips().await {
                         Ok(tips) => tips,
