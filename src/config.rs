@@ -76,7 +76,7 @@ impl fmt::Display for TomlNetwork {
 
 #[derive(Debug, Deserialize)]
 struct TomlNode {
-    id: u8,
+    id: u32,
     description: String,
     name: String,
     rpc_host: String,

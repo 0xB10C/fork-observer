@@ -25,7 +25,7 @@ pub struct Cache {
     pub forks: Vec<Fork>,
 }
 
-pub type NodeData = BTreeMap<u8, NodeDataJson>;
+pub type NodeData = BTreeMap<u32, NodeDataJson>;
 pub type Caches = Arc<Mutex<BTreeMap<u32, Cache>>>;
 pub type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
 pub type Tree = Arc<Mutex<TreeInfo>>;
@@ -131,7 +131,7 @@ impl TipInfoJson {
 
 #[derive(Serialize, Clone)]
 pub struct NodeDataJson {
-    pub id: u8,
+    pub id: u32,
     pub name: String,
     pub description: String,
     pub tips: Vec<TipInfoJson>,

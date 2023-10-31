@@ -230,7 +230,7 @@ pub trait Node: Sync {
 
 #[derive(Hash, Clone)]
 pub struct NodeInfo {
-    pub id: u8,
+    pub id: u32,
     pub name: String,
     pub description: String,
 }
