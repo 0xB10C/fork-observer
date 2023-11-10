@@ -125,48 +125,36 @@ pub async fn forks_response(
     let network_id: u32 = query.network;
 
     let caches_locked = caches.lock().await;
-    if let Some(cache) = caches_locked.get(&network_id) {
-        let mut network_name = "";
-        if let Some(network) = network_infos
-            .iter()
-            .filter(|net| net.id == network_id)
-            .collect::<Vec<&NetworkJson>>()
-            .first()
-        {
-            network_name = &network.name;
+    match caches_locked.get(&network_id) {
+        Some(cache) => {
+            let mut network_name = "";
+            if let Some(network) = network_infos
+                .iter()
+                .filter(|net| net.id == network_id)
+                .collect::<Vec<&NetworkJson>>()
+                .first()
+            {
+                network_name = &network.name;
+            }
+
+            let feed = Feed {
+                channel: Channel {
+                    title: format!("Recent Forks - {}", network_name),
+                    description: format!(
+                        "Recent forks that occured on the Bitcoin {} network",
+                        network_name
+                    )
+                    .to_string(),
+                    items: cache.forks.iter().map(|f| f.clone().into()).collect(),
+                },
+            };
+
+            Ok(Response::builder()
+                .header("content-type", "application/rss+xml")
+                .body(feed.to_string()))
         }
-
-        let feed = Feed {
-            channel: Channel {
-                title: format!("Recent Forks - {}", network_name),
-                description: format!(
-                    "Recent forks that occured on the Bitcoin {} network",
-                    network_name
-                )
-                .to_string(),
-                items: cache.forks.iter().map(|f| f.clone().into()).collect(),
-            },
-        };
-
-        return Ok(Response::builder()
-            .header("content-type", "application/rss+xml")
-            .body(feed.to_string()));
-    };
-
-    let avaliable_networks = network_infos
-        .iter()
-        .map(|net| format!("{} ({})", net.id.to_string(), net.name))
-        .collect::<Vec<String>>();
-
-    let avaliable_networks_string = avaliable_networks.join(", ");
-
-    return Ok(Response::builder()
-        .status(404)
-        .header("content-type", "text/plain")
-        .body(format!(
-            "Unknown network. Avaliable networks are: {}.",
-            avaliable_networks_string
-        )));
+        None => Ok(Ok(response_unknown_network(network_infos))),
+    }
 }
 
 pub async fn invalid_blocks_response(
@@ -177,63 +165,69 @@ pub async fn invalid_blocks_response(
     let network_id: u32 = query.network;
 
     let caches_locked = caches.lock().await;
-    if let Some(cache) = caches_locked.get(&network_id) {
-        let mut network_name = "";
-        if let Some(network) = network_infos
-            .iter()
-            .filter(|net| net.id == network_id)
-            .collect::<Vec<&NetworkJson>>()
-            .first()
-        {
-            network_name = &network.name;
-        }
 
-        let mut invalid_blocks_to_node_id: HashMap<TipInfoJson, Vec<NodeDataJson>> = HashMap::new();
-        for node in cache.node_data.values() {
-            for tip in node.tips.iter() {
-                if tip.status == ChainTipStatus::Invalid.to_string() {
-                    invalid_blocks_to_node_id
-                        .entry(tip.clone())
-                        .and_modify(|k| k.push(node.clone()))
-                        .or_insert(vec![node.clone()]);
+    match caches_locked.get(&network_id) {
+        Some(cache) => {
+            let mut network_name = "";
+            if let Some(network) = network_infos
+                .iter()
+                .filter(|net| net.id == network_id)
+                .collect::<Vec<&NetworkJson>>()
+                .first()
+            {
+                network_name = &network.name;
+            }
+
+            let mut invalid_blocks_to_node_id: HashMap<TipInfoJson, Vec<NodeDataJson>> =
+                HashMap::new();
+            for node in cache.node_data.values() {
+                for tip in node.tips.iter() {
+                    if tip.status == ChainTipStatus::Invalid.to_string() {
+                        invalid_blocks_to_node_id
+                            .entry(tip.clone())
+                            .and_modify(|k| k.push(node.clone()))
+                            .or_insert(vec![node.clone()]);
+                    }
                 }
             }
+
+            let mut invalid_blocks: Vec<(&TipInfoJson, &Vec<NodeDataJson>)> =
+                invalid_blocks_to_node_id.iter().collect();
+            invalid_blocks.sort_by(|a, b| b.0.height.cmp(&a.0.height));
+            let feed = Feed {
+                channel: Channel {
+                    title: format!("Invalid Blocks - {}", network_name),
+                    description: format!(
+                        "Recent invalid blocks on the Bitcoin {} network",
+                        network_name
+                    ),
+                    items: invalid_blocks
+                        .iter()
+                        .map(|(tipinfo, nodes)| (*tipinfo, *nodes).into())
+                        .collect::<Vec<Item>>(),
+                },
+            };
+
+            return Ok(Response::builder()
+                .header("content-type", "application/rss+xml")
+                .body(feed.to_string()));
         }
+        None => Ok(Ok(response_unknown_network(network_infos))),
+    }
+}
 
-        let mut invalid_blocks: Vec<(&TipInfoJson, &Vec<NodeDataJson>)> =
-            invalid_blocks_to_node_id.iter().collect();
-        invalid_blocks.sort_by(|a, b| b.0.height.cmp(&a.0.height));
-        let feed = Feed {
-            channel: Channel {
-                title: format!("Invalid Blocks - {}", network_name),
-                description: format!(
-                    "Recent invalid blocks on the Bitcoin {} network",
-                    network_name
-                ),
-                items: invalid_blocks
-                    .iter()
-                    .map(|(tipinfo, nodes)| (*tipinfo, *nodes).into())
-                    .collect::<Vec<Item>>(),
-            },
-        };
-
-        return Ok(Response::builder()
-            .header("content-type", "application/rss+xml")
-            .body(feed.to_string()));
-    };
-
+pub fn response_unknown_network(network_infos: Vec<NetworkJson>) -> Response<String> {
     let avaliable_networks = network_infos
         .iter()
         .map(|net| format!("{} ({})", net.id.to_string(), net.name))
         .collect::<Vec<String>>();
 
-    let avaliable_networks_string = avaliable_networks.join(", ");
-
-    return Ok(Response::builder()
+    Response::builder()
         .status(404)
         .header("content-type", "text/plain")
         .body(format!(
             "Unknown network. Avaliable networks are: {}.",
-            avaliable_networks_string
-        )));
+            avaliable_networks.join(", ")
+        ))
+        .unwrap()
 }
