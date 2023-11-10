@@ -46,7 +46,7 @@ body, .card {
   background: var(--body-bg);
 }
 
-h1, h2, h3, h4, h5, h6, p, label, span, hr {
+h1, h2, h3, h4, h5, h6, p, label, span, hr, a {
   color: var(--text-color);
 }
 
