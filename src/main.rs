@@ -401,3 +401,24 @@ async fn main() -> Result<(), MainError> {
     warp::serve(routes).run(config.address).await;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn load_example_config() {
+        use crate::config;
+        use std::env;
+
+        const FILENAME_EXAMPLE_CONFIG: &str = "config.toml.example";
+        env::set_var(config::ENVVAR_CONFIG_FILE, FILENAME_EXAMPLE_CONFIG);
+        let cfg = config::load_config().expect(&format!(
+            "We should be able to load the {} file.",
+            FILENAME_EXAMPLE_CONFIG
+        ));
+
+        assert_eq!(cfg.address.to_string(), "127.0.0.1:2323");
+        assert_eq!(cfg.networks.len(), 2);
+        assert_eq!(cfg.query_interval, std::time::Duration::from_secs(15));
+    }
+}
