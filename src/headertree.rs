@@ -168,7 +168,7 @@ pub async fn strip_tree(
     headers
 }
 
-// calculate the forks for rss
+// get recent forks for rss
 pub async fn recent_forks(tree: &Tree, how_many: usize) -> Vec<Fork> {
     let tree_locked = tree.lock().await;
     let tree = &tree_locked.0;
