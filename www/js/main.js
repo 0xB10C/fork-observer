@@ -8,6 +8,7 @@ const networkInfoDescription = d3.select("#network_info_description")
 const networkInfoName = d3.select("#network_info_name")
 const footerCustom = d3.select("#footer-custom")
 const rssRecentForks = d3.select("#rss_recent_forks")
+const rssInvalidBlocks = d3.select("#rss_invalid_blocks")
 
 const SEARCH_PARAM_NETWORK = "network"
 
@@ -52,7 +53,8 @@ function update_network() {
   document.title = PAGE_NAME + " - " + current_network.name;
   networkInfoName.text(current_network.name)
   networkInfoDescription.text(current_network.description)
-  rssRecentForks.node().href = "/rss/forks.xml?network=" + current_network.id
+  rssRecentForks.node().href = "rss/forks.xml?network=" + current_network.id
+  rssInvalidBlocks.node().href = "rss/invalid.xml?network=" + current_network.id
 }
 
 function set_initial_network() {
