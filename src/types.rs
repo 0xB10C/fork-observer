@@ -106,7 +106,7 @@ pub struct DataJsonResponse {
     pub nodes: Vec<NodeDataJson>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Eq, Hash, PartialEq)]
 pub struct TipInfoJson {
     pub hash: String,
     pub status: String,

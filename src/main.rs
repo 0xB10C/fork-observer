@@ -361,6 +361,13 @@ async fn main() -> Result<(), MainError> {
         .and(warp::query::<DataQuery>())
         .and_then(rss::forks_response);
 
+    let invalid_blocks_rss = warp::get()
+        .and(warp::path!("rss" / "invalid.xml"))
+        .and(api::with_caches(caches.clone()))
+        .and(api::with_networks(network_infos.clone()))
+        .and(warp::query::<DataQuery>())
+        .and_then(rss::invalid_blocks_response);
+
     let networks_json = warp::get()
         .and(warp::path!("api" / "networks.json"))
         .and(api::with_networks(network_infos))
@@ -388,7 +395,8 @@ async fn main() -> Result<(), MainError> {
         .or(info_json)
         .or(networks_json)
         .or(change_sse)
-        .or(forks_rss);
+        .or(forks_rss)
+        .or(invalid_blocks_rss);
 
     warp::serve(routes).run(config.address).await;
     Ok(())
