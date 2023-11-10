@@ -6,8 +6,8 @@ database_path = "example_db_dir"
 # path to the location of the static www files
 www_path = "./www"
 
-# Interval for checking for new blocks
-query_interval = 10
+# Interval in seconds for checking for new blocks
+query_interval = 15
 
 # Webserver listen address
 address = "127.0.0.1:2323"
@@ -27,11 +27,11 @@ footer_html = """
   """
 
 [[networks]]
-id = 0x248281
-name = "Nikhils custom SigNet"
-description = "A custom SigNet with reorgs used for the development of the reorg-miner"
-min_fork_height = 5
-max_interesting_heights = 5
+id = 1
+name = "Mainnet"
+description = "An example mainnet node."
+min_fork_height = 0
+max_interesting_heights = 100
 
     [[networks.nodes]]
     id = 0
@@ -45,7 +45,7 @@ max_interesting_heights = 5
 
     [[networks.nodes]]
     id = 1
-    name = "Node R"
+    name = "Node B"
     description = "R node with a signet-miner that is always mining blocks"
     # rpc_cookie_file = "~/.bitcoin/.cookie"
     rpc_host = "127.0.0.1"
@@ -55,16 +55,16 @@ max_interesting_heights = 5
 
 [[networks]]
 id = 0xFFFFFFFE
-name = "FFFFFFFF testnetwork"
-description = "test"
+name = "FFFFFFFE testnetwork"
+description = "example"
 min_fork_height = 5
-max_interesting_heights = 5
+max_interesting_heights = 200
 
 
     [[networks.nodes]]
     id = 0
     name = "Node A"
-    description = "A node with a signet-miner that is always mining blocks"
+    description = "A node. Just A node."
     # rpc_cookie_file = "~/.bitcoin/.cookie"
     rpc_host = "127.0.0.1"
     rpc_port = 38342

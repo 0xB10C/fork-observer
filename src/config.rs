@@ -13,7 +13,7 @@ use serde::Deserialize;
 use crate::error::ConfigError;
 use crate::node::{BitcoinCoreNode, BtcdNode, Node, NodeInfo};
 
-const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
+pub const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
 const DEFAULT_NODE_IMPL: NodeImplementation = NodeImplementation::BitcoinCore;
 const DEFAULT_USE_REST: bool = true;
