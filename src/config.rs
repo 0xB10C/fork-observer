@@ -25,6 +25,7 @@ struct TomlConfig {
     address: String,
     database_path: String,
     www_path: String,
+    rss_base_url: Option<String>,
     query_interval: u64,
     networks: Vec<TomlNetwork>,
     footer_html: String,
@@ -38,6 +39,7 @@ pub struct Config {
     pub address: SocketAddr,
     pub networks: Vec<Network>,
     pub footer_html: String,
+    pub rss_base_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +193,7 @@ pub fn load_config() -> Result<Config, ConfigError> {
         query_interval: Duration::from_secs(toml_config.query_interval),
         address: SocketAddr::from_str(&toml_config.address)?,
         footer_html: toml_config.footer_html.clone(),
+        rss_base_url: toml_config.rss_base_url.unwrap_or_default().clone(),
         networks,
     })
 }
