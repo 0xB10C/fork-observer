@@ -23,7 +23,7 @@ impl fmt::Display for Item {
   <item>
 	<title>{}</title>
 	<description>{}</description>
-	<guid>{}</guid>
+	<guid isPermaLink="false">{}</guid>
   </item>"#,
             self.title, self.description, self.guid,
         )
