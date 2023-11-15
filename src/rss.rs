@@ -1,5 +1,6 @@
 use std::fmt;
 use warp::http::Response;
+use warp::Filter;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -7,6 +8,12 @@ use std::convert::Infallible;
 use crate::types::{
     Caches, ChainTipStatus, DataQuery, Fork, NetworkJson, NodeDataJson, TipInfoJson,
 };
+
+pub fn with_rss_base_url(
+    base_url: String,
+) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
+    warp::any().map(move || base_url.clone())
+}
 
 // A RSS item.
 struct Item {
@@ -34,6 +41,7 @@ impl fmt::Display for Item {
 struct Channel {
     title: String,
     description: String,
+    link: String,
     items: Vec<Item>,
 }
 
@@ -44,10 +52,12 @@ impl fmt::Display for Channel {
             r#"<channel>
   <title>{}</title>
   <description>{}</description>
+  <link>{}</link>
   {}
 </channel>"#,
             self.title,
             self.description,
+            self.link,
             self.items.iter().map(|i| i.to_string()).collect::<String>(),
         )
     }
@@ -120,6 +130,7 @@ impl From<(&TipInfoJson, &Vec<NodeDataJson>)> for Item {
 pub async fn forks_response(
     caches: Caches,
     network_infos: Vec<NetworkJson>,
+    base_url: String,
     query: DataQuery,
 ) -> Result<impl warp::Reply, Infallible> {
     let network_id: u32 = query.network;
@@ -145,6 +156,7 @@ pub async fn forks_response(
                         network_name
                     )
                     .to_string(),
+                    link: base_url,
                     items: cache.forks.iter().map(|f| f.clone().into()).collect(),
                 },
             };
@@ -160,6 +172,7 @@ pub async fn forks_response(
 pub async fn invalid_blocks_response(
     caches: Caches,
     network_infos: Vec<NetworkJson>,
+    base_url: String,
     query: DataQuery,
 ) -> Result<impl warp::Reply, Infallible> {
     let network_id: u32 = query.network;
@@ -201,6 +214,7 @@ pub async fn invalid_blocks_response(
                         "Recent invalid blocks on the Bitcoin {} network",
                         network_name
                     ),
+                    link: base_url,
                     items: invalid_blocks
                         .iter()
                         .map(|(tipinfo, nodes)| (*tipinfo, *nodes).into())
