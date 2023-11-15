@@ -358,6 +358,7 @@ async fn main() -> Result<(), MainError> {
         .and(warp::path!("rss" / "forks.xml"))
         .and(api::with_caches(caches.clone()))
         .and(api::with_networks(network_infos.clone()))
+        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and(warp::query::<DataQuery>())
         .and_then(rss::forks_response);
 
@@ -365,6 +366,7 @@ async fn main() -> Result<(), MainError> {
         .and(warp::path!("rss" / "invalid.xml"))
         .and(api::with_caches(caches.clone()))
         .and(api::with_networks(network_infos.clone()))
+        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and(warp::query::<DataQuery>())
         .and_then(rss::invalid_blocks_response);
 
