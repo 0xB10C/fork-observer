@@ -43,6 +43,7 @@ struct Channel {
     description: String,
     link: String,
     items: Vec<Item>,
+    href: String,
 }
 
 impl fmt::Display for Channel {
@@ -53,11 +54,13 @@ impl fmt::Display for Channel {
   <title>{}</title>
   <description>{}</description>
   <link>{}</link>
+  <atom:link href="{}" rel="self" type="application/rss+xml" />
   {}
 </channel>"#,
             self.title,
             self.description,
             self.link,
+            self.href,
             self.items.iter().map(|i| i.to_string()).collect::<String>(),
         )
     }
@@ -73,7 +76,7 @@ impl fmt::Display for Feed {
         write!(
             f,
             r#"<?xml version="1.0" encoding="UTF-8" ?>
-<rss version="2.0">
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
 {}
 </rss>
 "#,
@@ -156,7 +159,8 @@ pub async fn forks_response(
                         network_name
                     )
                     .to_string(),
-                    link: base_url,
+                    link: base_url.clone(),
+                    href: format!("{}/rss/{}.xml?network={}", base_url, "forks", network_id),
                     items: cache.forks.iter().map(|f| f.clone().into()).collect(),
                 },
             };
@@ -214,7 +218,8 @@ pub async fn invalid_blocks_response(
                         "Recent invalid blocks on the Bitcoin {} network",
                         network_name
                     ),
-                    link: base_url,
+                    link: base_url.clone(),
+                    href: format!("{}/rss/{}.xml?network={}", base_url, "invalid", network_id),
                     items: invalid_blocks
                         .iter()
                         .map(|(tipinfo, nodes)| (*tipinfo, *nodes).into())
