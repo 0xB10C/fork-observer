@@ -12,6 +12,11 @@ query_interval = 15
 # Webserver listen address
 address = "127.0.0.1:2323"
 
+# RSS feeds need a URL of the site. This is optional. If unset,
+# the RSS feeds might not be valid according to the RSS 2.0 specification.
+# Some RSS readers might complain.
+rss_base_url = "https://fork-observer.example.com/"
+
 # Custom footer for the site.
 footer_html = """
     <div class="my-2">
