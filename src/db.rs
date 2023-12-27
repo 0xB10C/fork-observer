@@ -13,7 +13,7 @@ use crate::types::{Db, HeaderInfo, TreeInfo};
 
 const SELECT_STMT_HEADER_HEIGHT: &str = "
 SELECT
-    height, header
+    height, header, miner
 FROM
     headers
 WHERE
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS headers (
     network    INT,
     hash       BLOB,
     header     BLOB,
+    miner      TEXT,
     PRIMARY KEY (network, hash, header)
 )
 ";
@@ -53,13 +54,14 @@ pub async fn write_to_db(
     for info in new_headers {
         tx.execute(
             "INSERT OR IGNORE INTO headers
-                   (height, network, hash, header)
-                   values (?1, ?2, ?3, ?4)",
+                   (height, network, hash, header, miner)
+                   values (?1, ?2, ?3, ?4, ?5)",
             &[
                 &info.height.to_string(),
                 &network.to_string(),
                 &info.header.block_hash().to_string(),
                 &bitcoin::consensus::encode::serialize_hex(&info.header),
+                &info.miner,
             ],
         )?;
     }
@@ -132,6 +134,7 @@ async fn load_header_infos(db: Db, network: u32) -> Result<Vec<HeaderInfo>, DbEr
         headers.push(HeaderInfo {
             height: row.get(0)?,
             header,
+            miner: row.get(2)?,
         });
     }
 

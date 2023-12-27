@@ -35,6 +35,7 @@ pub type Db = Arc<Mutex<Connection>>;
 pub struct HeaderInfo {
     pub height: u64,
     pub header: Header,
+    pub miner: String,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +77,7 @@ pub struct HeaderInfoJson {
     pub time: u32,
     pub bits: u32,
     pub nonce: u32,
+    pub miner: String,
 }
 
 impl HeaderInfoJson {
@@ -91,6 +93,7 @@ impl HeaderInfoJson {
             time: hi.header.time,
             bits: hi.header.bits.to_consensus(),
             nonce: hi.header.nonce,
+            miner: hi.miner.clone(),
         }
     }
 }
