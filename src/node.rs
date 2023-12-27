@@ -93,6 +93,7 @@ pub trait Node: Sync {
                     new_headers.push(HeaderInfo {
                         header: *height_header_pair.0,
                         height: height_header_pair.1 as u64,
+                        miner: "TODO: miner".to_string(),
                     });
 
                     if !already_knew_a_header {
@@ -103,126 +104,127 @@ pub trait Node: Sync {
                     }
                 }
 
-                if already_knew_a_header {
-                    break;
-                }
+                    if already_knew_a_header {
+                        break;
+                    }
 
-                query_height -= STEP_SIZE;
-            } else {
-                let header_hash = self.block_hash(query_height as u64).await?;
-                {
-                    let locked_tree = tree.lock().await;
-                    if locked_tree.1.contains_key(&header_hash) {
+                    query_height -= STEP_SIZE;
+                } else {
+                    let header_hash = self.block_hash(query_height as u64).await?;
+                    {
+                        let locked_tree = tree.lock().await;
+                        if locked_tree.1.contains_key(&header_hash) {
+                            break;
+                        }
+                    }
+                    let header = self.block_header(&header_hash).await?;
+                    new_headers.push(HeaderInfo {
+                        height: query_height as u64,
+                        header,
+                            miner: "TODO: miner".to_string(),
+                        });
+                        query_height -= 1;
+                    }
+
+                    if query_height < min_fork_height as i64 {
                         break;
                     }
                 }
-                let header = self.block_header(&header_hash).await?;
-                new_headers.push(HeaderInfo {
-                    height: query_height as u64,
-                    header,
-                });
-                query_height -= 1;
+                new_headers.sort_by_key(|h| h.height);
+                Ok(new_headers)
             }
 
-            if query_height < min_fork_height as i64 {
-                break;
-            }
-        }
-        new_headers.sort_by_key(|h| h.height);
-        Ok(new_headers)
-    }
+            async fn new_nonactive_headers(
+                &self,
+                tips: &Vec<ChainTip>,
+                tree: &Tree,
+                min_fork_height: u64,
+            ) -> Result<Vec<HeaderInfo>, FetchError> {
+                let mut new_headers: Vec<HeaderInfo> = Vec::new();
 
-    async fn new_nonactive_headers(
-        &self,
-        tips: &Vec<ChainTip>,
-        tree: &Tree,
-        min_fork_height: u64,
-    ) -> Result<Vec<HeaderInfo>, FetchError> {
-        let mut new_headers: Vec<HeaderInfo> = Vec::new();
-
-        for inactive_tip in tips
-            .iter()
-            .filter(|tip| tip.height - tip.branchlen as u64 > min_fork_height)
-            .filter(|tip| tip.status != ChainTipStatus::Active)
-        {
-            let mut next_header = inactive_tip.block_hash();
-            for i in 0..=inactive_tip.branchlen {
+                for inactive_tip in tips
+                    .iter()
+                    .filter(|tip| tip.height - tip.branchlen as u64 > min_fork_height)
+                    .filter(|tip| tip.status != ChainTipStatus::Active)
                 {
-                    let tree_locked = tree.lock().await;
-                    if tree_locked.1.contains_key(&inactive_tip.block_hash()) {
-                        break;
-                    }
+                    let mut next_header = inactive_tip.block_hash();
+                    for i in 0..=inactive_tip.branchlen {
+                        {
+                            let tree_locked = tree.lock().await;
+                            if tree_locked.1.contains_key(&inactive_tip.block_hash()) {
+                                break;
+                            }
+                        }
+
+                        let height = inactive_tip.height - i as u64;
+                        debug!(
+                            "loading non-active-chain header: hash={}, height={}",
+                            next_header, height
+                        );
+
+                        let header = self.block_header(&next_header).await?;
+
+                    new_headers.push(HeaderInfo { height, header, miner: "TODO miner".to_string() });
+                    next_header = header.prev_blockhash;
                 }
-
-                let height = inactive_tip.height - i as u64;
-                debug!(
-                    "loading non-active-chain header: hash={}, height={}",
-                    next_header, height
-                );
-
-                let header = self.block_header(&next_header).await?;
-
-                new_headers.push(HeaderInfo { height, header });
-                next_header = header.prev_blockhash;
             }
+
+            Ok(new_headers)
         }
 
-        Ok(new_headers)
-    }
+        async fn active_chain_headers_rest(
+            &self,
+            count: u64,
+            start: BlockHash,
+        ) -> Result<Vec<Header>, FetchError> {
+            assert!(self.use_rest());
+            debug!(
+                "loading active-chain headers starting from {}",
+                start.to_string()
+            );
 
-    async fn active_chain_headers_rest(
-        &self,
-        count: u64,
-        start: BlockHash,
-    ) -> Result<Vec<Header>, FetchError> {
-        assert!(self.use_rest());
-        debug!(
-            "loading active-chain headers starting from {}",
-            start.to_string()
-        );
+            let url = format!(
+                "http://{}/rest/headers/{}/{}.bin",
+                self.rpc_url(),
+                count,
+                start
+            );
+            let res = minreq::get(url.clone()).with_timeout(8).send()?;
 
-        let url = format!(
-            "http://{}/rest/headers/{}/{}.bin",
-            self.rpc_url(),
-            count,
-            start
-        );
-        let res = minreq::get(url.clone()).with_timeout(8).send()?;
-
-        if res.status_code != 200 {
-            return Err(FetchError::BitcoinCoreREST(format!(
-                "could not load headers from REST URL ({}): {} {}: {:?}",
-                url,
-                res.status_code,
-                res.reason_phrase,
-                res.as_str(),
-            )));
-        }
-
-        let header_results: Result<
-            Vec<Header>,
-            bitcoincore_rpc::bitcoin::consensus::encode::Error,
-        > = res
-            .as_bytes()
-            .chunks(80)
-            .map(bitcoin::consensus::deserialize::<Header>)
-            .collect();
-
-        let headers = match header_results {
-            Ok(headers) => headers,
-            Err(e) => {
+            if res.status_code != 200 {
                 return Err(FetchError::BitcoinCoreREST(format!(
-                    "could not deserialize REST header response: {}",
-                    e
-                )))
+                    "could not load headers from REST URL ({}): {} {}: {:?}",
+                    url,
+                    res.status_code,
+                    res.reason_phrase,
+                    res.as_str(),
+                )));
             }
-        };
 
-        debug!(
-            "loaded {} active-chain headers starting from {}",
-            headers.len(),
-            start.to_string()
-        );
+            let header_results: Result<
+                Vec<Header>,
+                bitcoincore_rpc::bitcoin::consensus::encode::Error,
+            > = res
+                .as_bytes()
+                .chunks(80)
+                .map(bitcoin::consensus::deserialize::<Header>)
+                .collect();
+
+            let headers = match header_results {
+                Ok(headers) => headers,
+                Err(e) => {
+                    return Err(FetchError::BitcoinCoreREST(format!(
+                        "could not deserialize REST header response: {}",
+                        e
+                    )))
+                }
+            };
+
+            debug!(
+                "loaded {} active-chain headers starting from {}",
+                headers.len(),
+                start.to_string()
+            );
 
         Ok(headers)
     }
