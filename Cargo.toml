@@ -7,7 +7,7 @@ edition = "2018"
 
 [dependencies]
 
-bitcoincore-rpc = "0.17.0"
+bitcoincore-rpc = "0.18.0"
 warp = "0.3"
 toml = "0.5"
 
