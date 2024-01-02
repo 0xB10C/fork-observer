@@ -1,5 +1,6 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
+use bitcoincore_rpc::bitcoin::Network;
 use bitcoincore_rpc::Error::JsonRpc;
 use env_logger::Env;
 use futures_util::StreamExt;
@@ -185,8 +186,19 @@ async fn main() -> Result<(), MainError> {
                     };
 
                     if last_tips != tips {
+                        let pool_identification_network = match network.pool_identification_network
+                        {
+                            Some(ref network) => network.to_network(),
+                            None => Network::Regtest,
+                        };
+
                         let new_headers: Vec<HeaderInfo> = match node
-                            .new_headers(&tips, &tree_clone, network.min_fork_height)
+                            .new_headers(
+                                &tips,
+                                &tree_clone,
+                                network.min_fork_height,
+                                pool_identification_network,
+                            )
                             .await
                         {
                             Ok(headers) => headers,
