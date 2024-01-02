@@ -231,10 +231,9 @@ function draw() {
                     <div class="row">
                       <span class="col-2">timestamp</span><span class="col-4">${d.data.data.time}</span>
                       <span class="col-2">version</span><span class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</span>
-                    </div>
-                    <div class="row">
                       <span class="col-2">nonce</span><span class="col-4 font-monospace">0x${d.data.data.nonce.toString(16)}</span>
                       <span class="col-2">bits</span><span class="col-4 font-monospace">0x${d.data.data.bits.toString(16)}</span>
+                      <span class="col-2">miner</span><span class="col-4 font-monospace">${d.data.data.miner}</span>
                     </div>
                     <div class="row"><span class="col">${status_text}</span></div>
                   </div>
@@ -262,12 +261,19 @@ function draw() {
     .attr("stroke-width", "1")
     .attr("transform", "translate("+ (-block_size)/2  +", " + (-block_size)/2 + ")")
 
-  // text for the blocks
+  // height in the block
   blocks
     .append("text")
     .attr("dy", ".35em")
     .attr("class", "block-text")
     .text(d => d.data.data.height);
+
+  // miner next to the block
+  blocks
+    .append("text")
+    .attr("dy", "4em")
+    .attr("class", "block-miner")
+    .text(d => d.data.data.miner);
 
   var node_groups = blocks
     .filter(d => d.data.data.status != "in-chain")

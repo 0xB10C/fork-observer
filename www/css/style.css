@@ -84,6 +84,12 @@ text.block-text {
  font-size: 10px;
 }
 
+text.block-miner {
+ fill: var(--text-color);
+ text-anchor: middle;
+ font-size: 10px;
+}
+
 .block {
   cursor: pointer;
 }
