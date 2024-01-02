@@ -3,7 +3,7 @@ use std::net::AddrParseError;
 use std::{error, io};
 
 use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::hashes as bitcoin_hashes;
+use bitcoincore_rpc::bitcoin::hashes::hex::parse::HexToArrayError;
 
 #[derive(Debug)]
 pub enum FetchError {
@@ -216,7 +216,7 @@ pub enum JsonRPCError {
     RpcUnexpectedResponseContents(String),
     MinReq(minreq::Error),
     FromHex(hex::FromHexError),
-    BitcoinFromHex(bitcoin_hashes::hex::Error),
+    BitcoinFromHex(HexToArrayError),
     BitcoinDeserializeError(bitcoin::consensus::encode::Error),
     NotImplemented,
 }
@@ -273,8 +273,8 @@ impl From<bitcoin::consensus::encode::Error> for JsonRPCError {
     }
 }
 
-impl From<bitcoin_hashes::hex::Error> for JsonRPCError {
-    fn from(e: bitcoin::hashes::hex::Error) -> Self {
+impl From<HexToArrayError> for JsonRPCError {
+    fn from(e: HexToArrayError) -> Self {
         JsonRPCError::BitcoinFromHex(e)
     }
 }
