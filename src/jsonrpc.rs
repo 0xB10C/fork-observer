@@ -6,6 +6,7 @@ use crate::types::ChainTip;
 
 use bitcoincore_rpc::bitcoin;
 use bitcoincore_rpc::bitcoin::blockdata::block::Header;
+use bitcoincore_rpc::bitcoin::Block;
 
 use base64;
 use serde::{Deserialize, Serialize};
@@ -127,6 +128,33 @@ pub fn btcd_blockheader(
 
     let header: Header = bitcoin::consensus::deserialize(&header_bytes)?;
     return Ok(header);
+}
+
+pub fn btcd_block(
+    url: String,
+    user: String,
+    password: String,
+    hash: String,
+) -> Result<Block, JsonRPCError> {
+    const METHOD: &str = "getblock";
+    const PARAM_VERBOSE: i8 = 0; // requests the raw block
+
+    let res = request(
+        METHOD.to_string(),
+        vec![Value::from(hash), Value::from(PARAM_VERBOSE)],
+        url,
+        user,
+        password,
+    )?;
+    let jsonrpc_response: Response<String> = res.json()?;
+    if let Some(e) = jsonrpc_response.check(METHOD) {
+        return Err(e);
+    }
+
+    let block_hex = jsonrpc_response.result.unwrap_or_default();
+    let block_bytes = hex::decode(block_hex)?;
+    let block: Block = bitcoin::consensus::deserialize(&block_bytes)?;
+    Ok(block)
 }
 
 pub fn btcd_blockhash(

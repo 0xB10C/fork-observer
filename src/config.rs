@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fmt, fs};
 
+use bitcoincore_rpc::bitcoin::Network as BitcoinNetwork;
 use bitcoincore_rpc::Auth;
 use log::{error, info};
 use serde::Deserialize;
@@ -19,6 +20,23 @@ const DEFAULT_NODE_IMPL: NodeImplementation = NodeImplementation::BitcoinCore;
 const DEFAULT_USE_REST: bool = true;
 
 type BoxedSyncSendNode = Arc<dyn Node + Send + Sync>;
+
+#[derive(Clone, Deserialize, Debug)]
+pub enum PoolIdentificationNetwork {
+    Mainnet,
+    Testnet,
+    Signet,
+}
+
+impl PoolIdentificationNetwork {
+    pub fn to_network(&self) -> BitcoinNetwork {
+        match self {
+            PoolIdentificationNetwork::Mainnet => BitcoinNetwork::Bitcoin,
+            PoolIdentificationNetwork::Testnet => BitcoinNetwork::Testnet,
+            PoolIdentificationNetwork::Signet => BitcoinNetwork::Signet,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct TomlConfig {
@@ -50,6 +68,7 @@ struct TomlNetwork {
     min_fork_height: u64,
     max_interesting_heights: usize,
     nodes: Vec<TomlNode>,
+    pool_identification_network: Option<PoolIdentificationNetwork>,
 }
 
 #[derive(Clone)]
@@ -60,6 +79,7 @@ pub struct Network {
     pub min_fork_height: u64,
     pub max_interesting_heights: usize,
     pub nodes: Vec<BoxedSyncSendNode>,
+    pub pool_identification_network: Option<PoolIdentificationNetwork>,
 }
 
 impl fmt::Display for TomlNetwork {
@@ -209,6 +229,7 @@ fn parse_toml_network(
         min_fork_height: toml_network.min_fork_height,
         max_interesting_heights: toml_network.max_interesting_heights,
         nodes,
+        pool_identification_network: toml_network.pool_identification_network.clone(),
     })
 }
 
