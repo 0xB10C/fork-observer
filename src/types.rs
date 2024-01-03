@@ -38,6 +38,12 @@ pub struct HeaderInfo {
     pub miner: String,
 }
 
+impl HeaderInfo {
+    pub fn update_miner(&mut self, miner: String) {
+        self.miner = miner;
+    }
+}
+
 #[derive(Deserialize)]
 pub struct DataQuery {
     pub network: u32,

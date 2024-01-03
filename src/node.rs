@@ -4,7 +4,7 @@ use std::fmt;
 use crate::error::{FetchError, JsonRPCError};
 use crate::types::{ChainTip, ChainTipStatus, HeaderInfo, Tree};
 
-use bitcoin_pool_identification::{default_data, PoolIdentification};
+use bitcoin_pool_identification::{Pool, PoolIdentification};
 use bitcoincore_rpc::bitcoin;
 use bitcoincore_rpc::bitcoin::blockdata::block::Header;
 use bitcoincore_rpc::bitcoin::{BlockHash, Transaction};
@@ -14,7 +14,7 @@ use bitcoincore_rpc::RpcApi;
 
 use async_trait::async_trait;
 
-use log::{debug, error};
+use log::{debug, error, warn};
 
 use tokio::task;
 
@@ -37,6 +37,7 @@ pub trait Node: Sync {
         tree: &Tree,
         min_fork_height: u64,
         network: bitcoin::Network,
+        pool_identification_data: &[Pool],
     ) -> Result<Vec<HeaderInfo>, FetchError> {
         let mut new_headers: Vec<HeaderInfo> = Vec::new();
 
@@ -44,7 +45,13 @@ pub trait Node: Sync {
             self.new_active_headers(tips, tree, min_fork_height).await?;
         new_headers.append(&mut active_new_headers);
         let mut nonactive_new_headers: Vec<HeaderInfo> = self
-            .new_nonactive_headers(tips, tree, min_fork_height, network)
+            .new_nonactive_headers(
+                tips,
+                tree,
+                min_fork_height,
+                network,
+                pool_identification_data,
+            )
             .await?;
         new_headers.append(&mut nonactive_new_headers);
         Ok(new_headers)
@@ -143,9 +150,9 @@ pub trait Node: Sync {
         tree: &Tree,
         min_fork_height: u64,
         network: bitcoin::Network,
+        pool_identification_data: &[Pool],
     ) -> Result<Vec<HeaderInfo>, FetchError> {
         let mut new_headers: Vec<HeaderInfo> = Vec::new();
-        let pools = default_data(network);
         for inactive_tip in tips
             .iter()
             .filter(|tip| tip.height - tip.branchlen as u64 > min_fork_height)
@@ -168,11 +175,21 @@ pub trait Node: Sync {
 
                 let header = self.block_header(&next_header).await?;
                 let mut miner = "Unknown".to_string();
-                if let Ok(coinbase) = self.coinbase(&next_header).await {
-                    miner = match coinbase.identify_pool(network, &pools) {
-                        Some(result) => result.pool.name,
-                        None => "Unknown".to_string(),
-                    };
+                match self.coinbase(&next_header).await {
+                    Ok(coinbase) => {
+                        miner = match coinbase.identify_pool(network, &pool_identification_data) {
+                            Some(result) => result.pool.name,
+                            None => "Unknown".to_string(),
+                        };
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Could not get coinbase for block {} from node {}: {}",
+                            next_header.to_string(),
+                            self.info(),
+                            e
+                        );
+                    }
                 }
 
                 new_headers.push(HeaderInfo {

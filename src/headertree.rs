@@ -8,7 +8,7 @@ use crate::types::{Fork, HeaderInfoJson, Tree};
 
 use log::{info, warn};
 
-async fn sorted_interesting_heights(
+pub async fn sorted_interesting_heights(
     tree: &Tree,
     max_interesting_heights: usize,
     tip_heights: BTreeSet<u64>,

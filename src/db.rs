@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS headers (
 )
 ";
 
+const UPDATE_STMT_HEADER_MINER: &str = "
+UPDATE
+    headers
+SET
+    miner = ?1
+WHERE
+    hash = ?2;
+";
+
 pub async fn setup_db(db: Db) -> Result<(), DbError> {
     db.lock().await.execute(CREATE_STMT_TABLE_HEADERS, [])?;
     Ok(())
@@ -71,6 +80,15 @@ pub async fn write_to_db(
         new_headers.len(),
         network
     );
+    Ok(())
+}
+
+pub async fn update_miner(db: Db, hash: &BlockHash, miner: String) -> Result<(), DbError> {
+    let mut db_locked = db.lock().await;
+    let tx = db_locked.transaction()?;
+
+    tx.execute(UPDATE_STMT_HEADER_MINER, [miner, hash.to_string()])?;
+    tx.commit()?;
     Ok(())
 }
 
