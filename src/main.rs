@@ -1,5 +1,6 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
+use bitcoin_pool_identification::{default_data, PoolIdentification};
 use bitcoincore_rpc::bitcoin::Network;
 use bitcoincore_rpc::Error::JsonRpc;
 use env_logger::Env;
@@ -7,6 +8,7 @@ use futures_util::StreamExt;
 use log::{error, info, warn};
 use petgraph::graph::NodeIndex;
 use rusqlite::Connection;
+use std::cmp::max;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -33,6 +35,7 @@ use types::{
 use crate::error::{DbError, MainError};
 
 const VERSION_UNKNOWN: &str = "unknown";
+const MINER_UNKNOWN: &str = "Unknown";
 const MAX_FORKS_IN_CACHE: usize = 50;
 
 #[tokio::main]
@@ -82,9 +85,15 @@ async fn main() -> Result<(), MainError> {
     let (tipchanges_tx, _) = broadcast::channel(16);
 
     let network_infos: Vec<NetworkJson> = config.networks.iter().map(NetworkJson::new).collect();
+    let db_clone = db.clone();
 
     for network in config.networks.iter().cloned() {
         let network = network.clone();
+        let pool_identification_network = match network.pool_identification_network {
+            Some(ref network) => network.to_network(),
+            None => Network::Regtest,
+        };
+        let pool_identification_data = default_data(pool_identification_network);
 
         info!(
             "network '{}' (id={}) has {} nodes",
@@ -94,7 +103,7 @@ async fn main() -> Result<(), MainError> {
         );
 
         let tree: Tree = Arc::new(Mutex::new(
-            match db::load_treeinfos(db.clone(), network.id).await {
+            match db::load_treeinfos(db_clone.clone(), network.id).await {
                 Ok(tree) => tree,
                 Err(e) => {
                     error!(
@@ -123,6 +132,7 @@ async fn main() -> Result<(), MainError> {
 
         for node in network.nodes.iter().cloned() {
             let network = network.clone();
+            let pool_identification_data_clone = pool_identification_data.clone();
             let mut interval = time::interval(config.query_interval);
             let db_write = db.clone();
             let tree_clone = tree.clone();
@@ -186,18 +196,13 @@ async fn main() -> Result<(), MainError> {
                     };
 
                     if last_tips != tips {
-                        let pool_identification_network = match network.pool_identification_network
-                        {
-                            Some(ref network) => network.to_network(),
-                            None => Network::Regtest,
-                        };
-
                         let new_headers: Vec<HeaderInfo> = match node
                             .new_headers(
                                 &tips,
                                 &tree_clone,
                                 network.min_fork_height,
                                 pool_identification_network,
+                                &pool_identification_data_clone,
                             )
                             .await
                         {
@@ -259,24 +264,8 @@ async fn main() -> Result<(), MainError> {
                             }
                         }
 
-                        // Find out for which heights we have tips for. These are
-                        // interesting to us - we don't want strip them from the tree.
-                        // This includes tips that aren't from a fork, but rather from
-                        // a stale or stuck node (i.e. not an up-to-date view of the
-                        // blocktree).
-                        let mut tip_heights: BTreeSet<u64> = BTreeSet::new();
-                        {
-                            let locked_cache = caches_clone.lock().await;
-                            let this_network = locked_cache
-                                .get(&network.id)
-                                .expect("network should already exist in cache");
-                            let node_infos: NodeData = this_network.node_data.clone();
-                            for node in node_infos.iter() {
-                                for tip in node.1.tips.iter() {
-                                    tip_heights.insert(tip.height);
-                                }
-                            }
-                        }
+                        let mut tip_heights: BTreeSet<u64> =
+                            tip_heights(network.id, &caches_clone).await;
                         for tip in tips.iter() {
                             tip_heights.insert(tip.height);
                         }
@@ -346,6 +335,107 @@ async fn main() -> Result<(), MainError> {
                 }
             });
         }
+
+        // A one-shot thread trying to identify all unidentified miners. This
+        // runs once after startup.
+        let tree_clone = tree.clone();
+        let caches_clone = caches.clone();
+        let pool_identification_data_clone = pool_identification_data.clone();
+        let db_clone2 = db_clone.clone();
+        task::spawn(async move {
+            let tip_heights: BTreeSet<u64> = tip_heights(network.id, &caches_clone).await;
+            let interesting_heights = headertree::sorted_interesting_heights(
+                &tree_clone,
+                network.max_interesting_heights,
+                tip_heights,
+            )
+            .await;
+
+            let infos: Vec<HeaderInfo> = {
+                let tree_locked = tree.lock().await;
+
+                tree_locked
+                    .0
+                    .raw_nodes()
+                    .iter()
+                    .filter(|node| node.weight.miner == "" || node.weight.miner == MINER_UNKNOWN)
+                    .filter(|node| {
+                        let h = node.weight.height;
+                        interesting_heights.contains(&h)
+                            || interesting_heights.contains(&(h + 1))
+                            || interesting_heights.contains(&(h + 2))
+                            || interesting_heights.contains(&(max(h, 1) - 1))
+                    })
+                    .map(|node| node.weight.clone())
+                    .collect()
+            };
+
+            for info_chunk in infos.chunks(10) {
+                let mut updated_header_infos: Vec<(NodeIndex, HeaderInfo)> = vec![];
+                for info in info_chunk.iter() {
+                    let tree_locked = tree.lock().await;
+                    let mut updated = info.clone();
+                    let idx = tree_locked
+                        .1
+                        .get(&info.header.block_hash())
+                        .expect("hash should already be present");
+
+                    let mut miner = MINER_UNKNOWN.to_string();
+                    for node in network.nodes.iter().cloned() {
+                        match node.coinbase(&updated.header.block_hash()).await {
+                            Ok(coinbase) => {
+                                miner = match coinbase.identify_pool(
+                                    pool_identification_network,
+                                    &pool_identification_data_clone,
+                                ) {
+                                    Some(result) => result.pool.name,
+                                    None => MINER_UNKNOWN.to_string(),
+                                };
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Could not get coinbase for block {} from node {}: {}",
+                                    updated.header.block_hash().to_string(),
+                                    node.info(),
+                                    e
+                                );
+                            }
+                        }
+                        if miner != MINER_UNKNOWN.to_string() {
+                            info!(
+                                "Updated miner for block {} from node {}: {}",
+                                updated.header.block_hash().to_string(),
+                                node.info(),
+                                miner
+                            );
+                            break;
+                        }
+                    }
+                    updated.update_miner(miner);
+                    updated_header_infos.push((*idx, updated));
+                }
+                {
+                    let mut tree_locked = tree.lock().await;
+                    for (idx, header_info) in updated_header_infos {
+                        if let Err(e) = db::update_miner(
+                            db_clone2.clone(),
+                            &header_info.header.block_hash(),
+                            header_info.miner.clone(),
+                        )
+                        .await
+                        {
+                            warn!(
+                                "Could not update miner to {} for block {}: {}",
+                                header_info.miner.clone(),
+                                &header_info.header.block_hash(),
+                                e
+                            );
+                        }
+                        tree_locked.0[idx] = header_info;
+                    }
+                }
+            }
+        });
     }
 
     let www_dir = warp::get()
@@ -414,6 +504,28 @@ async fn main() -> Result<(), MainError> {
 
     warp::serve(routes).run(config.address).await;
     Ok(())
+}
+
+// Find out for which heights we have tips for. These are
+// interesting to us - we don't want strip them from the tree.
+// This includes tips that aren't from a fork, but rather from
+// a stale or stuck node (i.e. not an up-to-date view of the
+// blocktree).
+async fn tip_heights(network_id: u32, caches: &Caches) -> BTreeSet<u64> {
+    let mut tip_heights: BTreeSet<u64> = BTreeSet::new();
+    {
+        let locked_cache = caches.lock().await;
+        let this_network = locked_cache
+            .get(&network_id)
+            .expect("network should already exist in cache");
+        let node_infos: NodeData = this_network.node_data.clone();
+        for node in node_infos.iter() {
+            for tip in node.1.tips.iter() {
+                tip_heights.insert(tip.height);
+            }
+        }
+    }
+    tip_heights
 }
 
 #[cfg(test)]
