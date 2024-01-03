@@ -7,6 +7,7 @@
   --block-to-block-link-color: black;
   --block-description-link-color: gray;
   --block-description-bg: #f8f9fa;
+  --block-miner-color: rgb(122, 122, 122);
   --node-indicatior-stroke: black;
 }
 
@@ -20,6 +21,7 @@
     --block-description-link-color: lightgray;
     --block-description-bg: #f8f9fa;
     --node-indicatior-stroke: black;
+    --block-miner-color: rgb(172, 172, 172);
   }
   svg.invert, img.invert, .btn-close {
     -webkit-filter: invert(100%); /* safari 6.0 - 9.0 */
@@ -36,6 +38,7 @@
   --block-description-link-color: lightgray;
   --block-description-bg: #f8f9fa;
   --node-indicatior-stroke: black;
+  --block-miner-color: rgb(172, 172, 172);
   svg.invert, img.invert, .btn-close {
     -webkit-filter: invert(100%); /* safari 6.0 - 9.0 */
     filter: invert(100%);
@@ -85,7 +88,7 @@ text.block-text {
 }
 
 text.block-miner {
- fill: var(--text-color);
+ fill: var(--block-miner-color);
  text-anchor: middle;
  font-size: 10px;
 }

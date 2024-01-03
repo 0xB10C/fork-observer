@@ -9,12 +9,14 @@ const orientations = {
     y: (d, htoi) => -htoi[d.data.data.height] * NODE_SIZE,
     linkDir: (htoi) => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
     hidden_blocks_text: {offset_x: -45, offset_y: 0, anchor: "left"},
+    block_text_rotate: -90,
   },
   "left-to-right": {
     x: (d, htoi) => htoi[d.data.data.height] * NODE_SIZE,
     y: (d, _) => d.x,
     linkDir: (htoi) => d3.linkHorizontal().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
     hidden_blocks_text: {offset_x: 0, offset_y: 15, anchor: "middle"},
+    block_text_rotate: 0,
   },
 };
 
@@ -271,9 +273,10 @@ function draw() {
   // miner next to the block
   blocks
     .append("text")
+    .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
     .attr("dy", "4em")
     .attr("class", "block-miner")
-    .text(d => d.data.data.miner);
+    .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
 
   var node_groups = blocks
     .filter(d => d.data.data.status != "in-chain")
