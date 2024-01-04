@@ -1,24 +1,19 @@
-use std::cmp::max;
-use std::fmt;
-
 use crate::error::{FetchError, JsonRPCError};
 use crate::types::{ChainTip, ChainTipStatus, HeaderInfo, Tree};
-
-use bitcoin_pool_identification::{Pool, PoolIdentification};
+use async_trait::async_trait;
 use bitcoincore_rpc::bitcoin;
 use bitcoincore_rpc::bitcoin::blockdata::block::Header;
 use bitcoincore_rpc::bitcoin::{BlockHash, Transaction};
 use bitcoincore_rpc::Auth;
 use bitcoincore_rpc::Client;
 use bitcoincore_rpc::RpcApi;
-
-use async_trait::async_trait;
-
-use log::{debug, error, warn};
-
+use log::{debug, error};
+use std::cmp::max;
+use std::fmt;
 use tokio::task;
 
 const BTCD_USE_REST: bool = false;
+const DEFAULT_EMPTY_MINER: &str = "";
 
 #[async_trait]
 pub trait Node: Sync {
@@ -36,25 +31,29 @@ pub trait Node: Sync {
         tips: &Vec<ChainTip>,
         tree: &Tree,
         min_fork_height: u64,
-        network: bitcoin::Network,
-        pool_identification_data: &[Pool],
-    ) -> Result<Vec<HeaderInfo>, FetchError> {
+    ) -> Result<(Vec<HeaderInfo>, Vec<BlockHash>), FetchError> {
         let mut new_headers: Vec<HeaderInfo> = Vec::new();
+        let mut headers_needing_miners: Vec<BlockHash> = Vec::new();
 
         let mut active_new_headers: Vec<HeaderInfo> =
             self.new_active_headers(tips, tree, min_fork_height).await?;
+        // We only want miners for active headers if they are (smaller) tip updates.
+        if active_new_headers.len() <= 20 {
+            for h in active_new_headers.iter() {
+                headers_needing_miners.push(h.header.block_hash());
+            }
+        }
         new_headers.append(&mut active_new_headers);
+
         let mut nonactive_new_headers: Vec<HeaderInfo> = self
-            .new_nonactive_headers(
-                tips,
-                tree,
-                min_fork_height,
-                network,
-                pool_identification_data,
-            )
+            .new_nonactive_headers(tips, tree, min_fork_height)
             .await?;
+        // We want miners for all headers in a non-active chain.
+        for h in nonactive_new_headers.iter() {
+            headers_needing_miners.push(h.header.block_hash());
+        }
         new_headers.append(&mut nonactive_new_headers);
-        Ok(new_headers)
+        Ok((new_headers, headers_needing_miners))
     }
 
     async fn new_active_headers(
@@ -100,17 +99,18 @@ pub trait Node: Sync {
                     .iter()
                     .zip(rest_query_height..rest_query_height + headers.len() as i64)
                 {
-                    new_headers.push(HeaderInfo {
-                        header: *height_header_pair.0,
-                        height: height_header_pair.1 as u64,
-                        miner: "".to_string(),
-                    });
-
-                    if !already_knew_a_header {
-                        let locked_tree = tree.lock().await;
-                        if locked_tree.1.contains_key(&header_hash) {
-                            already_knew_a_header = true;
-                        }
+                    let locked_tree = tree.lock().await;
+                    if !locked_tree
+                        .1
+                        .contains_key(&height_header_pair.0.block_hash())
+                    {
+                        new_headers.push(HeaderInfo {
+                            header: *height_header_pair.0,
+                            height: height_header_pair.1 as u64,
+                            miner: DEFAULT_EMPTY_MINER.to_string(),
+                        });
+                    } else {
+                        already_knew_a_header = true;
                     }
                 }
 
@@ -120,6 +120,7 @@ pub trait Node: Sync {
 
                 query_height -= STEP_SIZE;
             } else {
+                // using RPC, not using REST
                 let header_hash = self.block_hash(query_height as u64).await?;
                 {
                     let locked_tree = tree.lock().await;
@@ -131,7 +132,7 @@ pub trait Node: Sync {
                 new_headers.push(HeaderInfo {
                     height: query_height as u64,
                     header,
-                    miner: "".to_string(),
+                    miner: DEFAULT_EMPTY_MINER.to_string(),
                 });
                 query_height -= 1;
             }
@@ -149,8 +150,6 @@ pub trait Node: Sync {
         tips: &Vec<ChainTip>,
         tree: &Tree,
         min_fork_height: u64,
-        network: bitcoin::Network,
-        pool_identification_data: &[Pool],
     ) -> Result<Vec<HeaderInfo>, FetchError> {
         let mut new_headers: Vec<HeaderInfo> = Vec::new();
         for inactive_tip in tips
@@ -174,33 +173,15 @@ pub trait Node: Sync {
                 );
 
                 let header = self.block_header(&next_header).await?;
-                let mut miner = "Unknown".to_string();
-                match self.coinbase(&next_header).await {
-                    Ok(coinbase) => {
-                        miner = match coinbase.identify_pool(network, &pool_identification_data) {
-                            Some(result) => result.pool.name,
-                            None => "Unknown".to_string(),
-                        };
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Could not get coinbase for block {} from node {}: {}",
-                            next_header.to_string(),
-                            self.info(),
-                            e
-                        );
-                    }
-                }
 
                 new_headers.push(HeaderInfo {
                     height,
                     header,
-                    miner,
+                    miner: DEFAULT_EMPTY_MINER.to_string(),
                 });
                 next_header = header.prev_blockhash;
             }
         }
-
         Ok(new_headers)
     }
 
