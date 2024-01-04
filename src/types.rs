@@ -19,6 +19,7 @@ use rusqlite::Connection;
 
 use tokio::sync::Mutex;
 
+#[derive(Clone)]
 pub struct Cache {
     pub header_infos_json: Vec<HeaderInfoJson>,
     pub node_data: NodeData,
