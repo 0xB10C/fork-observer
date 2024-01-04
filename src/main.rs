@@ -385,6 +385,7 @@ async fn main() -> Result<(), MainError> {
         // id channel
         let tree_clone = tree.clone();
         let db_clone2 = db_clone.clone();
+        let caches_clone = caches.clone();
         let network_clone = network.clone();
         task::spawn(async move {
             let pool_identification_network = match network.pool_identification.network {
@@ -393,80 +394,106 @@ async fn main() -> Result<(), MainError> {
             };
             let pool_identification_data = default_data(pool_identification_network);
 
-            while let Some(hash) = pool_id_rx.recv().await {
-                if !network_clone.pool_identification.enable {
-                    continue;
-                }
+            let limit = 100;
+            let mut buffer: Vec<BlockHash> = Vec::with_capacity(limit);
+            loop {
+                buffer.clear();
+                pool_id_rx.recv_many(&mut buffer, limit).await;
+                for hash in buffer.iter() {
+                    if !network_clone.pool_identification.enable {
+                        continue;
+                    }
 
-                let idx: NodeIndex = {
-                    let tree_locked = tree_clone.lock().await;
-                    *tree_locked
-                        .1
-                        .get(&hash)
-                        .expect("hash should already be present")
-                };
+                    let idx: NodeIndex = {
+                        let tree_locked = tree_clone.lock().await;
+                        *tree_locked
+                            .1
+                            .get(hash)
+                            .expect("hash should already be present")
+                    };
 
-                let mut header_info = {
-                    let tree_locked = tree_clone.lock().await;
-                    tree_locked.0[idx].clone()
-                };
+                    let mut header_info = {
+                        let tree_locked = tree_clone.lock().await;
+                        tree_locked.0[idx].clone()
+                    };
 
-                // skip miner identification if we previously identified a miner
-                if !(header_info.miner == MINER_UNKNOWN.to_string() || header_info.miner == "") {
-                    continue;
-                }
+                    // skip miner identification if we previously identified a miner
+                    if !(header_info.miner == MINER_UNKNOWN.to_string() || header_info.miner == "")
+                    {
+                        continue;
+                    }
 
-                let mut miner = MINER_UNKNOWN.to_string();
-                for node in network_clone.nodes.iter().cloned() {
-                    match node.coinbase(&header_info.header.block_hash()).await {
-                        Ok(coinbase) => {
-                            miner = match coinbase.identify_pool(
-                                pool_identification_network,
-                                &pool_identification_data,
-                            ) {
-                                Some(result) => result.pool.name,
-                                None => MINER_UNKNOWN.to_string(),
-                            };
+                    let mut miner = MINER_UNKNOWN.to_string();
+                    for node in network_clone.nodes.iter().cloned() {
+                        match node.coinbase(&header_info.header.block_hash()).await {
+                            Ok(coinbase) => {
+                                miner = match coinbase.identify_pool(
+                                    pool_identification_network,
+                                    &pool_identification_data,
+                                ) {
+                                    Some(result) => result.pool.name,
+                                    None => MINER_UNKNOWN.to_string(),
+                                };
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Could not get coinbase for block {} from node {}: {}",
+                                    header_info.header.block_hash().to_string(),
+                                    node.info().name,
+                                    e
+                                );
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "Could not get coinbase for block {} from node {}: {}",
-                                header_info.header.block_hash().to_string(),
+                        if miner != MINER_UNKNOWN.to_string() {
+                            info!(
+                                "Updated miner for block {} from node {}: {}",
+                                header_info.height,
                                 node.info().name,
-                                e
+                                miner
                             );
+                            break;
                         }
                     }
-                    if miner != MINER_UNKNOWN.to_string() {
-                        info!(
-                            "Updated miner for block {} from node {}: {}",
-                            header_info.height,
-                            node.info().name,
-                            miner
+                    header_info.update_miner(miner);
+
+                    // write to db and cache
+                    if let Err(e) = db::update_miner(
+                        db_clone2.clone(),
+                        &header_info.header.block_hash(),
+                        header_info.miner.clone(),
+                    )
+                    .await
+                    {
+                        warn!(
+                            "Could not update miner to {} for block {}: {}",
+                            header_info.miner.clone(),
+                            &header_info.header.block_hash(),
+                            e
                         );
-                        break;
+                    }
+                    {
+                        let mut tree_locked = tree_clone.lock().await;
+                        tree_locked.0[idx] = header_info;
                     }
                 }
-                header_info.update_miner(miner);
 
-                // write to db and cache
-                if let Err(e) = db::update_miner(
-                    db_clone2.clone(),
-                    &header_info.header.block_hash(),
-                    header_info.miner.clone(),
-                )
-                .await
+                // update the cache
                 {
-                    warn!(
-                        "Could not update miner to {} for block {}: {}",
-                        header_info.miner.clone(),
-                        &header_info.header.block_hash(),
-                        e
-                    );
-                }
-                {
-                    let mut tree_locked = tree_clone.lock().await;
-                    tree_locked.0[idx] = header_info;
+                    let tip_heights: BTreeSet<u64> = tip_heights(network.id, &caches_clone).await;
+
+                    let header_infos_json = headertree::strip_tree(
+                        &tree_clone,
+                        network.max_interesting_heights,
+                        tip_heights,
+                    )
+                    .await;
+                    let mut locked_cache = caches_clone.lock().await;
+                    let mut cached = locked_cache
+                        .get(&network.id)
+                        .expect("network should already exist in cache")
+                        .clone();
+                    cached.header_infos_json = header_infos_json;
+                    locked_cache.insert(network.id, cached);
                 }
             }
         });
