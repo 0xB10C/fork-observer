@@ -105,6 +105,9 @@ changeSSE.addEventListener("tip_changed", (e) => {
   console.debug("server side event: the tip of one of the networks changed: ", data)
   if(data.network_id == state_selected_network_id) {
     console.debug("server side event: the tip of the currently displayed network changed: ", data)
+    // HACK: wait for 1 second before fetching data
+    // this gives the backend time to set the miner
+    delay(1000);
     update()
   }
 })
