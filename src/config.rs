@@ -60,6 +60,12 @@ pub struct Config {
     pub rss_base_url: String,
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PoolIdentification {
+    pub enable: bool,
+    pub network: Option<PoolIdentificationNetwork>,
+}
+
 #[derive(Debug, Deserialize)]
 struct TomlNetwork {
     id: u32,
@@ -68,7 +74,7 @@ struct TomlNetwork {
     min_fork_height: u64,
     max_interesting_heights: usize,
     nodes: Vec<TomlNode>,
-    pool_identification_network: Option<PoolIdentificationNetwork>,
+    pool_identification: Option<PoolIdentification>,
 }
 
 #[derive(Clone)]
@@ -79,7 +85,7 @@ pub struct Network {
     pub min_fork_height: u64,
     pub max_interesting_heights: usize,
     pub nodes: Vec<BoxedSyncSendNode>,
-    pub pool_identification_network: Option<PoolIdentificationNetwork>,
+    pub pool_identification: PoolIdentification,
 }
 
 impl fmt::Display for TomlNetwork {
@@ -229,7 +235,7 @@ fn parse_toml_network(
         min_fork_height: toml_network.min_fork_height,
         max_interesting_heights: toml_network.max_interesting_heights,
         nodes,
-        pool_identification_network: toml_network.pool_identification_network.clone(),
+        pool_identification: toml_network.pool_identification.clone().unwrap_or_default(),
     })
 }
 
