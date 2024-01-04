@@ -1,7 +1,7 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use bitcoin_pool_identification::{default_data, PoolIdentification};
-use bitcoincore_rpc::bitcoin::Network;
+use bitcoincore_rpc::bitcoin::{BlockHash, Network};
 use bitcoincore_rpc::Error::JsonRpc;
 use env_logger::Env;
 use futures_util::StreamExt;
@@ -12,9 +12,10 @@ use std::cmp::max;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::SystemTime;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task;
-use tokio::time;
+use tokio::time::{interval, sleep, Duration};
 use tokio_stream::wrappers::BroadcastStream;
 use warp::Filter;
 
@@ -89,11 +90,7 @@ async fn main() -> Result<(), MainError> {
 
     for network in config.networks.iter().cloned() {
         let network = network.clone();
-        let pool_identification_network = match network.pool_identification_network {
-            Some(ref network) => network.to_network(),
-            None => Network::Regtest,
-        };
-        let pool_identification_data = default_data(pool_identification_network);
+        let (pool_id_tx, mut pool_id_rx) = unbounded_channel::<BlockHash>();
 
         info!(
             "network '{}' (id={}) has {} nodes",
@@ -132,12 +129,12 @@ async fn main() -> Result<(), MainError> {
 
         for node in network.nodes.iter().cloned() {
             let network = network.clone();
-            let pool_identification_data_clone = pool_identification_data.clone();
-            let mut interval = time::interval(config.query_interval);
+            let mut interval = interval(config.query_interval);
             let db_write = db.clone();
             let tree_clone = tree.clone();
             let caches_clone = caches.clone();
             let tipchanges_tx_cloned = tipchanges_tx.clone();
+            let pool_id_tx_clone = pool_id_tx.clone();
             let mut has_node_info = false;
             let mut version_info: String = String::default();
             let mut version_request_tries: u8 = 0;
@@ -196,28 +193,33 @@ async fn main() -> Result<(), MainError> {
                     };
 
                     if last_tips != tips {
-                        let new_headers: Vec<HeaderInfo> = match node
-                            .new_headers(
-                                &tips,
-                                &tree_clone,
-                                network.min_fork_height,
-                                pool_identification_network,
-                                &pool_identification_data_clone,
-                            )
-                            .await
-                        {
-                            Ok(headers) => headers,
-                            Err(e) => {
-                                error!(
+                        let (new_headers, miners_needed): (Vec<HeaderInfo>, Vec<BlockHash>) =
+                            match node
+                                .new_headers(&tips, &tree_clone, network.min_fork_height)
+                                .await
+                            {
+                                Ok(headers) => headers,
+                                Err(e) => {
+                                    error!(
                                     "Could not fetch headers from {} on network '{}' (id={}): {}",
                                     node.info(),
                                     network.name,
                                     network.id,
                                     e
                                 );
-                                continue;
+                                    continue;
+                                }
+                            };
+
+                        // Identify the miner of the new header(s)
+                        for hash in miners_needed.iter() {
+                            if let Err(e) = pool_id_tx_clone.send(*hash) {
+                                error!(
+                                    "Could not send a block hash into the pool identification channel: {}",
+                                    e
+                                );
                             }
-                        };
+                        }
 
                         last_tips = tips.clone();
                         let db_write = db_write.clone();
@@ -337,102 +339,130 @@ async fn main() -> Result<(), MainError> {
         }
 
         // A one-shot thread trying to identify all unidentified miners. This
-        // runs once after startup.
+        // runs once after startup (with a 5 minutes delay to be sure nodes
+        // are ready and the headertree is loaded).
         let tree_clone = tree.clone();
         let caches_clone = caches.clone();
-        let pool_identification_data_clone = pool_identification_data.clone();
-        let db_clone2 = db_clone.clone();
+        let network_clone = network.clone();
+        let pool_id_tx_clone = pool_id_tx.clone();
         task::spawn(async move {
-            let tip_heights: BTreeSet<u64> = tip_heights(network.id, &caches_clone).await;
+            sleep(Duration::from_secs(5 * 60)).await;
+
+            let tip_heights: BTreeSet<u64> = tip_heights(network_clone.id, &caches_clone).await;
             let interesting_heights = headertree::sorted_interesting_heights(
                 &tree_clone,
-                network.max_interesting_heights,
+                network_clone.max_interesting_heights,
                 tip_heights,
             )
             .await;
 
-            let infos: Vec<HeaderInfo> = {
-                let tree_locked = tree.lock().await;
+            let tree_locked = tree_clone.lock().await;
 
-                tree_locked
-                    .0
-                    .raw_nodes()
-                    .iter()
-                    .filter(|node| node.weight.miner == "" || node.weight.miner == MINER_UNKNOWN)
-                    .filter(|node| {
-                        let h = node.weight.height;
-                        interesting_heights.contains(&h)
-                            || interesting_heights.contains(&(h + 1))
-                            || interesting_heights.contains(&(h + 2))
-                            || interesting_heights.contains(&(max(h, 1) - 1))
-                    })
-                    .map(|node| node.weight.clone())
-                    .collect()
-            };
-
-            for info_chunk in infos.chunks(10) {
-                let mut updated_header_infos: Vec<(NodeIndex, HeaderInfo)> = vec![];
-                for info in info_chunk.iter() {
-                    let tree_locked = tree.lock().await;
-                    let mut updated = info.clone();
-                    let idx = tree_locked
-                        .1
-                        .get(&info.header.block_hash())
-                        .expect("hash should already be present");
-
-                    let mut miner = MINER_UNKNOWN.to_string();
-                    for node in network.nodes.iter().cloned() {
-                        match node.coinbase(&updated.header.block_hash()).await {
-                            Ok(coinbase) => {
-                                miner = match coinbase.identify_pool(
-                                    pool_identification_network,
-                                    &pool_identification_data_clone,
-                                ) {
-                                    Some(result) => result.pool.name,
-                                    None => MINER_UNKNOWN.to_string(),
-                                };
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Could not get coinbase for block {} from node {}: {}",
-                                    updated.header.block_hash().to_string(),
-                                    node.info(),
-                                    e
-                                );
-                            }
-                        }
-                        if miner != MINER_UNKNOWN.to_string() {
-                            info!(
-                                "Updated miner for block {} from node {}: {}",
-                                updated.header.block_hash().to_string(),
-                                node.info(),
-                                miner
-                            );
-                            break;
-                        }
-                    }
-                    updated.update_miner(miner);
-                    updated_header_infos.push((*idx, updated));
+            for header_info in tree_locked
+                .0
+                .raw_nodes()
+                .iter()
+                .filter(|node| node.weight.miner == "" || node.weight.miner == MINER_UNKNOWN)
+                .filter(|node| {
+                    let h = node.weight.height;
+                    interesting_heights.contains(&h)
+                        || interesting_heights.contains(&(h + 1))
+                        || interesting_heights.contains(&(h + 2))
+                        || interesting_heights.contains(&(max(h, 1) - 1))
+                })
+                .map(|node| node.weight.clone())
+            {
+                if let Err(e) = pool_id_tx_clone.send(header_info.header.block_hash()) {
+                    error!(
+                        "Could not block hash into the pool identification channel: {}",
+                        e
+                    );
                 }
-                {
-                    let mut tree_locked = tree.lock().await;
-                    for (idx, header_info) in updated_header_infos {
-                        if let Err(e) = db::update_miner(
-                            db_clone2.clone(),
-                            &header_info.header.block_hash(),
-                            header_info.miner.clone(),
-                        )
-                        .await
-                        {
+            }
+        });
+
+        // A thread that identifies miners for each header send into the pool
+        // id channel
+        let tree_clone = tree.clone();
+        let db_clone2 = db_clone.clone();
+        let network_clone = network.clone();
+        task::spawn(async move {
+            let pool_identification_network = match network.pool_identification_network {
+                Some(ref network) => network.to_network(),
+                None => Network::Regtest,
+            };
+            let pool_identification_data = default_data(pool_identification_network);
+
+            while let Some(hash) = pool_id_rx.recv().await {
+                let idx: NodeIndex = {
+                    let tree_locked = tree_clone.lock().await;
+                    *tree_locked
+                        .1
+                        .get(&hash)
+                        .expect("hash should already be present")
+                };
+
+                let mut header_info = {
+                    let tree_locked = tree_clone.lock().await;
+                    tree_locked.0[idx].clone()
+                };
+
+                // skip miner identification if we previously identified a miner
+                if !(header_info.miner == MINER_UNKNOWN.to_string() || header_info.miner == "") {
+                    continue;
+                }
+
+                let mut miner = MINER_UNKNOWN.to_string();
+                for node in network_clone.nodes.iter().cloned() {
+                    match node.coinbase(&header_info.header.block_hash()).await {
+                        Ok(coinbase) => {
+                            miner = match coinbase.identify_pool(
+                                pool_identification_network,
+                                &pool_identification_data,
+                            ) {
+                                Some(result) => result.pool.name,
+                                None => MINER_UNKNOWN.to_string(),
+                            };
+                        }
+                        Err(e) => {
                             warn!(
-                                "Could not update miner to {} for block {}: {}",
-                                header_info.miner.clone(),
-                                &header_info.header.block_hash(),
+                                "Could not get coinbase for block {} from node {}: {}",
+                                header_info.header.block_hash().to_string(),
+                                node.info().name,
                                 e
                             );
                         }
-                        tree_locked.0[idx] = header_info;
                     }
+                    if miner != MINER_UNKNOWN.to_string() {
+                        info!(
+                            "Updated miner for block {} from node {}: {}",
+                            header_info.height,
+                            node.info().name,
+                            miner
+                        );
+                        break;
+                    }
+                }
+                header_info.update_miner(miner);
+
+                // write to db and cache
+                if let Err(e) = db::update_miner(
+                    db_clone2.clone(),
+                    &header_info.header.block_hash(),
+                    header_info.miner.clone(),
+                )
+                .await
+                {
+                    warn!(
+                        "Could not update miner to {} for block {}: {}",
+                        header_info.miner.clone(),
+                        &header_info.header.block_hash(),
+                        e
+                    );
+                }
+                {
+                    let mut tree_locked = tree_clone.lock().await;
+                    tree_locked.0[idx] = header_info;
                 }
             }
         });
