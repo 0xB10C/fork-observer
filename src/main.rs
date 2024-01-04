@@ -387,13 +387,17 @@ async fn main() -> Result<(), MainError> {
         let db_clone2 = db_clone.clone();
         let network_clone = network.clone();
         task::spawn(async move {
-            let pool_identification_network = match network.pool_identification_network {
+            let pool_identification_network = match network.pool_identification.network {
                 Some(ref network) => network.to_network(),
                 None => Network::Regtest,
             };
             let pool_identification_data = default_data(pool_identification_network);
 
             while let Some(hash) = pool_id_rx.recv().await {
+                if !network_clone.pool_identification.enable {
+                    continue;
+                }
+
                 let idx: NodeIndex = {
                     let tree_locked = tree_clone.lock().await;
                     *tree_locked
@@ -576,5 +580,6 @@ mod tests {
         assert_eq!(cfg.address.to_string(), "127.0.0.1:2323");
         assert_eq!(cfg.networks.len(), 2);
         assert_eq!(cfg.query_interval, std::time::Duration::from_secs(15));
+        assert_eq!(cfg.networks[0].pool_identification.enable, true);
     }
 }

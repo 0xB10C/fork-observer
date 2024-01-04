@@ -37,7 +37,9 @@ name = "Mainnet"
 description = "An example mainnet node."
 min_fork_height = 0
 max_interesting_heights = 100
-pool_identification_network = "Mainnet"
+    [networks.pool_identification]
+    enable = true
+    network = "Mainnet"
 
     [[networks.nodes]]
     id = 0
@@ -65,7 +67,8 @@ name = "FFFFFFFE testnetwork"
 description = "example"
 min_fork_height = 5
 max_interesting_heights = 200
-
+    [pool_identification]
+    enable = false
 
     [[networks.nodes]]
     id = 0
