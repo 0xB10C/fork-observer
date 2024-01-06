@@ -406,10 +406,13 @@ async fn main() -> Result<(), MainError> {
 
                     let idx: NodeIndex = {
                         let tree_locked = tree_clone.lock().await;
-                        *tree_locked
-                            .1
-                            .get(hash)
-                            .expect("hash should already be present")
+                        match tree_locked.1.get(hash) {
+                            Some(idx) => *idx,
+                            None => {
+                                error!("Block hash {} not (yet) present in tree for network: {}. Skipping identification...", hash.to_string(), network_clone.name);
+                                continue;
+                            }
+                        }
                     };
 
                     let mut header_info = {
