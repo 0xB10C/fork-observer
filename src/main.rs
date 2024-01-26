@@ -171,6 +171,7 @@ async fn main() -> Result<(), MainError> {
                                     }
                                     _ => {
                                         error!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}.", node.info(), network.name, network.id, e);
+                                        version_info = VERSION_UNKNOWN.to_string();
                                         break;
                                     }
                                 },
