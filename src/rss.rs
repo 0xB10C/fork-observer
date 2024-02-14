@@ -5,9 +5,7 @@ use warp::Filter;
 use std::collections::HashMap;
 use std::convert::Infallible;
 
-use crate::types::{
-    Caches, ChainTipStatus, DataQuery, Fork, NetworkJson, NodeDataJson, TipInfoJson,
-};
+use crate::types::{Caches, ChainTipStatus, Fork, NetworkJson, NodeDataJson, TipInfoJson};
 
 pub fn with_rss_base_url(
     base_url: String,
@@ -131,13 +129,11 @@ impl From<(&TipInfoJson, &Vec<NodeDataJson>)> for Item {
 }
 
 pub async fn forks_response(
+    network_id: u32,
     caches: Caches,
     network_infos: Vec<NetworkJson>,
     base_url: String,
-    query: DataQuery,
 ) -> Result<impl warp::Reply, Infallible> {
-    let network_id: u32 = query.network;
-
     let caches_locked = caches.lock().await;
     match caches_locked.get(&network_id) {
         Some(cache) => {
@@ -159,8 +155,8 @@ pub async fn forks_response(
                         network_name
                     )
                     .to_string(),
-                    link: base_url.clone(),
-                    href: format!("{}/rss/{}.xml?network={}", base_url, "forks", network_id),
+                    link: format!("{}?network={}", base_url.clone(), network_id),
+                    href: format!("{}/rss/{}/forks.xml", base_url, network_id),
                     items: cache.forks.iter().map(|f| f.clone().into()).collect(),
                 },
             };
@@ -174,13 +170,11 @@ pub async fn forks_response(
 }
 
 pub async fn invalid_blocks_response(
+    network_id: u32,
     caches: Caches,
     network_infos: Vec<NetworkJson>,
     base_url: String,
-    query: DataQuery,
 ) -> Result<impl warp::Reply, Infallible> {
-    let network_id: u32 = query.network;
-
     let caches_locked = caches.lock().await;
 
     match caches_locked.get(&network_id) {
@@ -218,8 +212,8 @@ pub async fn invalid_blocks_response(
                         "Recent invalid blocks on the Bitcoin {} network",
                         network_name
                     ),
-                    link: base_url.clone(),
-                    href: format!("{}/rss/{}.xml?network={}", base_url, "invalid", network_id),
+                    link: format!("{}?network={}", base_url.clone(), network_id),
+                    href: format!("{}/rss/{}/invalid.xml", base_url, network_id),
                     items: invalid_blocks
                         .iter()
                         .map(|(tipinfo, nodes)| (*tipinfo, *nodes).into())

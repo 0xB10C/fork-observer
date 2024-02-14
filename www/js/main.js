@@ -30,7 +30,7 @@ async function fetch_info() {
 
 async function fetch_data() {
   console.debug("called fetch_data()")
-  await fetch('api/data.json?network='+networkSelect.node().value)
+  await fetch(`api/${state_selected_network_id}/data.json`)
     .then(response => response.json())
     .then(data => state_data = data)
     .catch(console.error);
@@ -53,8 +53,8 @@ function update_network() {
   document.title = PAGE_NAME + " - " + current_network.name;
   networkInfoName.text(current_network.name)
   networkInfoDescription.text(current_network.description)
-  rssRecentForks.node().href = "rss/forks.xml?network=" + current_network.id
-  rssInvalidBlocks.node().href = "rss/invalid.xml?network=" + current_network.id
+  rssRecentForks.node().href = `rss/${current_network.id}/forks.xml`
+  rssInvalidBlocks.node().href = `rss/${current_network.id}/invalid.xml`
 }
 
 function set_initial_network() {

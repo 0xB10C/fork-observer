@@ -3,20 +3,14 @@ use std::convert::Infallible;
 use warp::{sse::Event, Filter};
 
 use crate::types::{
-    Caches, DataChanged, DataJsonResponse, DataQuery, InfoJsonResponse, NetworkJson,
-    NetworksJsonResponse,
+    Caches, DataChanged, DataJsonResponse, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
 };
 
 pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
     Ok(warp::reply::json(&InfoJsonResponse { footer }))
 }
 
-pub async fn data_response(
-    caches: Caches,
-    query: DataQuery,
-) -> Result<impl warp::Reply, Infallible> {
-    let network: u32 = query.network;
-
+pub async fn data_response(network: u32, caches: Caches) -> Result<impl warp::Reply, Infallible> {
     let caches_locked = caches.lock().await;
     match caches_locked.get(&network) {
         Some(cache) => Ok(warp::reply::json(&DataJsonResponse {

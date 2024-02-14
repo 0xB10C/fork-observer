@@ -29,9 +29,7 @@ mod node;
 mod rss;
 mod types;
 
-use types::{
-    Cache, Caches, ChainTip, DataQuery, Db, HeaderInfo, NetworkJson, NodeData, NodeDataJson, Tree,
-};
+use types::{Cache, Caches, ChainTip, Db, HeaderInfo, NetworkJson, NodeData, NodeDataJson, Tree};
 
 use crate::error::{DbError, MainError};
 
@@ -516,25 +514,22 @@ async fn main() -> Result<(), MainError> {
         .and_then(api::info_response);
 
     let data_json = warp::get()
-        .and(warp::path!("api" / "data.json"))
+        .and(warp::path!("api" / u32 / "data.json"))
         .and(api::with_caches(caches.clone()))
-        .and(warp::query::<DataQuery>())
         .and_then(api::data_response);
 
     let forks_rss = warp::get()
-        .and(warp::path!("rss" / "forks.xml"))
+        .and(warp::path!("rss" / u32 / "forks.xml"))
         .and(api::with_caches(caches.clone()))
         .and(api::with_networks(network_infos.clone()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
-        .and(warp::query::<DataQuery>())
         .and_then(rss::forks_response);
 
     let invalid_blocks_rss = warp::get()
-        .and(warp::path!("rss" / "invalid.xml"))
+        .and(warp::path!("rss" / u32 / "invalid.xml"))
         .and(api::with_caches(caches.clone()))
         .and(api::with_networks(network_infos.clone()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
-        .and(warp::query::<DataQuery>())
         .and_then(rss::invalid_blocks_response);
 
     let networks_json = warp::get()

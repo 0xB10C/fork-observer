@@ -45,11 +45,6 @@ impl HeaderInfo {
     }
 }
 
-#[derive(Deserialize)]
-pub struct DataQuery {
-    pub network: u32,
-}
-
 #[derive(Serialize, Clone)]
 pub struct NetworkJson {
     pub id: u32,
