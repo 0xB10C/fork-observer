@@ -157,7 +157,7 @@ pub async fn forks_response(
                         network_name
                     )
                     .to_string(),
-                    link: format!("{}?network={}", base_url.clone(), network_id),
+                    link: format!("{}?network={}?src=forks-rss", base_url.clone(), network_id),
                     href: format!("{}/rss/{}/forks.xml", base_url, network_id),
                     items: cache.forks.iter().map(|f| f.clone().into()).collect(),
                 },
@@ -245,7 +245,7 @@ pub async fn lagging_nodes_response(
                         network_name
                     )
                     .to_string(),
-                    link: format!("{}?network={}", base_url.clone(), network_id),
+                    link: format!("{}?network={}?src=lagging-rss", base_url.clone(), network_id),
                     href: format!("{}/rss/{}/lagging.xml", base_url, network_id),
                     items: lagging_nodes,
                 },
@@ -302,7 +302,11 @@ pub async fn invalid_blocks_response(
                         "Recent invalid blocks on the Bitcoin {} network",
                         network_name
                     ),
-                    link: format!("{}?network={}", base_url.clone(), network_id),
+                    link: format!(
+                        "{}?network={}?src=invalid-rss",
+                        base_url.clone(),
+                        network_id
+                    ),
                     href: format!("{}/rss/{}/invalid.xml", base_url, network_id),
                     items: invalid_blocks
                         .iter()
