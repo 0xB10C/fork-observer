@@ -9,6 +9,7 @@ const networkInfoName = d3.select("#network_info_name")
 const footerCustom = d3.select("#footer-custom")
 const rssRecentForks = d3.select("#rss_recent_forks")
 const rssInvalidBlocks = d3.select("#rss_invalid_blocks")
+const rssLaggingNodes = d3.select("#rss_lagging_nodes")
 
 const SEARCH_PARAM_NETWORK = "network"
 
@@ -55,6 +56,7 @@ function update_network() {
   networkInfoDescription.text(current_network.description)
   rssRecentForks.node().href = `rss/${current_network.id}/forks.xml`
   rssInvalidBlocks.node().href = `rss/${current_network.id}/invalid.xml`
+  rssLaggingNodes.node().href = `rss/${current_network.id}/lagging.xml`
 }
 
 function set_initial_network() {
