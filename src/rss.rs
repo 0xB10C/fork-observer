@@ -7,6 +7,8 @@ use std::convert::Infallible;
 
 use crate::types::{Caches, ChainTipStatus, Fork, NetworkJson, NodeDataJson, TipInfoJson};
 
+const THREASHOLD_NODE_LAGGING: u64 = 3; // blocks
+
 pub fn with_rss_base_url(
     base_url: String,
 ) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
@@ -158,6 +160,94 @@ pub async fn forks_response(
                     link: format!("{}?network={}", base_url.clone(), network_id),
                     href: format!("{}/rss/{}/forks.xml", base_url, network_id),
                     items: cache.forks.iter().map(|f| f.clone().into()).collect(),
+                },
+            };
+
+            Ok(Response::builder()
+                .header("content-type", "application/rss+xml")
+                .body(feed.to_string()))
+        }
+        None => Ok(Ok(response_unknown_network(network_infos))),
+    }
+}
+
+impl Item {
+    pub fn lagging_node_item(node: &NodeDataJson, height: u64) -> Item {
+        Item {
+            title: format!("Node '{}' is lagging behind", node.name),
+            description: format!(
+                "The node's active tip is on height {}, while other nodes consider a block with a height at least {} blocks higher their active tip. The node might still be synchronizing with the network or stuck.",
+                height,
+                THREASHOLD_NODE_LAGGING,
+            ),
+            guid: format!("lagging-node-{}-on-{}", node.name, height),
+        }
+    }
+}
+
+pub async fn lagging_nodes_response(
+    network_id: u32,
+    caches: Caches,
+    network_infos: Vec<NetworkJson>,
+    base_url: String,
+) -> Result<impl warp::Reply, Infallible> {
+    let caches_locked = caches.lock().await;
+    match caches_locked.get(&network_id) {
+        Some(cache) => {
+            let mut network_name = "";
+            if let Some(network) = network_infos
+                .iter()
+                .filter(|net| net.id == network_id)
+                .collect::<Vec<&NetworkJson>>()
+                .first()
+            {
+                network_name = &network.name;
+            }
+
+            let mut lagging_nodes: Vec<Item> = vec![];
+            if cache.node_data.len() > 1 {
+                let nodes_with_active_height: Vec<(&NodeDataJson, u64)> = cache
+                    .node_data
+                    .iter()
+                    .map(|(_, node)| {
+                        (
+                            node,
+                            node.tips
+                                .iter()
+                                .filter(|tip| tip.status == "active".to_string())
+                                .last()
+                                .unwrap_or(&TipInfoJson {
+                                    height: 0,
+                                    status: "active".to_string(),
+                                    hash: "dummy".to_string(),
+                                })
+                                .height,
+                        )
+                    })
+                    .collect();
+                let max_height: u64 = *nodes_with_active_height
+                    .iter()
+                    .map(|(_, height)| height)
+                    .max()
+                    .unwrap_or(&0);
+                for (node, height) in nodes_with_active_height.iter() {
+                    if height + THREASHOLD_NODE_LAGGING < max_height {
+                        lagging_nodes.push(Item::lagging_node_item(node, *height));
+                    }
+                }
+            }
+
+            let feed = Feed {
+                channel: Channel {
+                    title: format!("Lagging nodes on {}", network_name),
+                    description: format!(
+                        "List of nodes that are more than 3 blocks behind the chain tip on the {} network.",
+                        network_name
+                    )
+                    .to_string(),
+                    link: format!("{}?network={}", base_url.clone(), network_id),
+                    href: format!("{}/rss/{}/lagging.xml", base_url, network_id),
+                    items: lagging_nodes,
                 },
             };
 

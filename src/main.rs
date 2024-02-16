@@ -532,6 +532,13 @@ async fn main() -> Result<(), MainError> {
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and_then(rss::invalid_blocks_response);
 
+    let lagging_nodes_rss = warp::get()
+        .and(warp::path!("rss" / u32 / "lagging.xml"))
+        .and(api::with_caches(caches.clone()))
+        .and(api::with_networks(network_infos.clone()))
+        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and_then(rss::lagging_nodes_response);
+
     let networks_json = warp::get()
         .and(warp::path!("api" / "networks.json"))
         .and(api::with_networks(network_infos))
@@ -560,6 +567,7 @@ async fn main() -> Result<(), MainError> {
         .or(networks_json)
         .or(change_sse)
         .or(forks_rss)
+        .or(lagging_nodes_rss)
         .or(invalid_blocks_rss);
 
     warp::serve(routes).run(config.address).await;
