@@ -111,6 +111,7 @@ pub enum ConfigError {
     NoBtcdRpcAuth,
     NoNetworks,
     UnknownImplementation,
+    DuplicateNodeId,
     TomlError(toml::de::Error),
     ReadError(io::Error),
     AddrError(AddrParseError),
@@ -124,6 +125,7 @@ impl fmt::Display for ConfigError {
             ConfigError::NoBtcdRpcAuth => write!(f, "no values for rpc_user and rpc_password"),
             ConfigError::NoNetworks => write!(f, "no networks defined in the configuration"),
             ConfigError::UnknownImplementation => write!(f, "the node implementation defined in the config is not supported"),
+            ConfigError::DuplicateNodeId => write!(f, "a node id has been used multiple times in the same network"),
             ConfigError::TomlError(e) => write!(f, "the TOML in the configuration file could not be parsed: {}", e),
             ConfigError::ReadError(e) => write!(f, "the configuration file could not be read: {}", e),
             ConfigError::AddrError(e) => write!(f, "the address could not be parsed: {}", e),
@@ -142,6 +144,7 @@ impl error::Error for ConfigError {
             ConfigError::TomlError(ref e) => Some(e),
             ConfigError::ReadError(ref e) => Some(e),
             ConfigError::AddrError(ref e) => Some(e),
+            ConfigError::DuplicateNodeId => None,
         }
     }
 }

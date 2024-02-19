@@ -188,9 +188,22 @@ pub fn load_config() -> Result<Config, ConfigError> {
     let mut networks: Vec<Network> = vec![];
     for toml_network in toml_config.networks.iter() {
         let mut nodes: Vec<BoxedSyncSendNode> = vec![];
+        let mut node_ids: Vec<u32> = vec![];
         for toml_node in toml_network.nodes.iter() {
             match parse_toml_node(toml_node) {
-                Ok(node) => nodes.push(node),
+                Ok(node) => {
+                    if !node_ids.contains(&node.info().id) {
+                        node_ids.push(node.info().id);
+                        nodes.push(node);
+                    } else {
+                        error!(
+                            "Duplicate node id {}: The node {} could not be loaded.",
+                            node.info().id,
+                            node.info()
+                        );
+                        return Err(ConfigError::DuplicateNodeId);
+                    }
+                }
                 Err(e) => {
                     error!("Error while parsing a node configuration: {}", toml_node);
                     return Err(e);
