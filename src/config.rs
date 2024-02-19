@@ -190,6 +190,7 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
     let toml_config: TomlConfig = toml::from_str(config_str)?;
 
     let mut networks: Vec<Network> = vec![];
+    let mut network_ids: Vec<u32> = vec![];
     for toml_network in toml_config.networks.iter() {
         let mut nodes: Vec<BoxedSyncSendNode> = vec![];
         let mut node_ids: Vec<u32> = vec![];
@@ -215,7 +216,18 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
             }
         }
         match parse_toml_network(toml_network, nodes) {
-            Ok(network) => networks.push(network),
+            Ok(network) => {
+                if !network_ids.contains(&network.id) {
+                    network_ids.push(network.id);
+                    networks.push(network);
+                } else {
+                    error!(
+                        "Duplicate network id {}: The network {} could not be loaded.",
+                        network.id, network.name
+                    );
+                    return Err(ConfigError::DuplicateNetworkId);
+                }
+            }
             Err(e) => {
                 error!(
                     "Error while parsing a network configuration: {:?}",
@@ -343,6 +355,55 @@ mod tests {
                 rpc_port = 0
                 rpc_user = ""
                 rpc_password = ""
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node B"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        ) {
+            // test OK, as we expect this to error
+        } else {
+            panic!("Test did not error!");
+        }
+    }
+
+    #[test]
+    fn error_on_duplicate_network_id_test() {
+        if let Err(ConfigError::DuplicateNetworkId) = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node B"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
 
                 [[networks.nodes]]
                 id = 0
