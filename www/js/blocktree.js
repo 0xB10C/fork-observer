@@ -236,7 +236,7 @@ function draw() {
                       <span class="col-2">version</span><span class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</span>
                       <span class="col-2">nonce</span><span class="col-4 font-monospace">0x${d.data.data.nonce.toString(16)}</span>
                       <span class="col-2">bits</span><span class="col-4 font-monospace">0x${d.data.data.bits.toString(16)}</span>
-                      <span class="col-2">miner</span><span class="col-4 font-monospace">${d.data.data.miner}</span>
+                      ${ d.data.data.miner != "" ? '<span class="col-2">miner</span><span class="col-4 font-monospace">' + d.data.data.miner + '</span>' : '' }
                     </div>
                     <div class="row"><span class="col">${status_text}</span></div>
                   </div>
