@@ -216,20 +216,21 @@ function draw() {
             .attr("class", "card m-0 p-0 border")
         let headerDiv = card.append("xhtml:div").attr("class", "card-header border")
         headerDiv.append()
-          .html(`<span>Header at height ${d.data.data.height}</span>`)
+          .html(`<span>Header at height <span style="cursor: pointer" onClick='window.prompt("height:", "${d.data.data.height}")'>${d.data.data.height}</span></span>`)
         headerDiv.append()
           .style("float", "right")
           .html(`<button class="btn btn-close"></button>`)
           .on("click", (c, d) => onBlockDescriptionCloseClick(c, d));
+      
         card.append("div")
           .attr("class", "card-body")
           .html(`
               <div class="container">
                 <div class="row small">
                   <div class="col small">
-                    <div class="row"><span class="col-2">hash</span><span class="col-10 font-monospace small">${d.data.data.hash}</span></div>
-                    <div class="row"><span class="col-2">previous</span><span class="col-10 font-monospace small">${d.data.data.prev_blockhash}</span></div>
-                    <div class="row"><span class="col-2">merkleroot</span><span class="col-10 font-monospace small">${d.data.data.merkle_root}</span></div>
+                    <div class="row" style="cursor: pointer" onClick='window.prompt("hash:", "${d.data.data.hash}")'><span class="col-2">hash</span><span class="col-10 font-monospace small">${d.data.data.hash}</span></div>
+                    <div class="row" style="cursor: pointer" onClick='window.prompt("previous hash:", "${d.data.data.prev_blockhash}")'><span class="col-2">previous</span><span class="col-10 font-monospace small">${d.data.data.prev_blockhash}</span></div>
+                    <div class="row" style="cursor: pointer" onClick='window.prompt("merkle root:", "${d.data.data.merkle_root}")'><span class="col-2">merkleroot</span><span class="col-10 font-monospace small">${d.data.data.merkle_root}</span></div>
                     <div class="row">
                       <span class="col-2">timestamp</span><span class="col-4">${d.data.data.time}</span>
                       <span class="col-2">version</span><span class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</span>
