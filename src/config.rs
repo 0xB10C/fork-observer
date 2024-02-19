@@ -183,7 +183,11 @@ pub fn load_config() -> Result<Config, ConfigError> {
         env::var(ENVVAR_CONFIG_FILE).unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
     info!("Reading configuration file from {}.", config_file_path);
     let config_string = fs::read_to_string(config_file_path)?;
-    let toml_config: TomlConfig = toml::from_str(&config_string)?;
+    parse_config(&config_string)
+}
+
+fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
+    let toml_config: TomlConfig = toml::from_str(config_str)?;
 
     let mut networks: Vec<Network> = vec![];
     for toml_network in toml_config.networks.iter() {
@@ -293,15 +297,16 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::error::ConfigError;
 
     #[test]
     fn load_example_config() {
-        use crate::config;
         use std::env;
 
         const FILENAME_EXAMPLE_CONFIG: &str = "config.toml.example";
-        env::set_var(config::ENVVAR_CONFIG_FILE, FILENAME_EXAMPLE_CONFIG);
-        let cfg = config::load_config().expect(&format!(
+        env::set_var(ENVVAR_CONFIG_FILE, FILENAME_EXAMPLE_CONFIG);
+        let cfg = load_config().expect(&format!(
             "We should be able to load the {} file.",
             FILENAME_EXAMPLE_CONFIG
         ));
@@ -310,5 +315,48 @@ mod tests {
         assert_eq!(cfg.networks.len(), 2);
         assert_eq!(cfg.query_interval, std::time::Duration::from_secs(15));
         assert_eq!(cfg.networks[0].pool_identification.enable, true);
+    }
+
+    #[test]
+    fn error_on_duplicate_node_id_test() {
+        if let Err(ConfigError::DuplicateNodeId) = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node B"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        ) {
+            // test OK, as we expect this to error
+        } else {
+            panic!("Test did not error!");
+        }
     }
 }
