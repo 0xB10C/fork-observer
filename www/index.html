@@ -20,7 +20,14 @@
           <img src="static/img/logo.svg" width="32" height="32" class="d-inline-block align-top invert" alt="">
           <span>fork-observer</span>
         </a>
-        <select name="network" id="network"></select>
+        <div>
+          <label>
+            Network
+            <select name="network" id="network"></select>
+          </label>
+          <span>|</span>
+          <label>Connection <span id="connection-status" class="small" style="color: gray">⬤</span></label>
+        </div>
       </nav>
     </header>
     <main style="flex: 1;">

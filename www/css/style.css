@@ -123,3 +123,29 @@ text.block-miner {
 .tip-status-color-fill-valid-fork { fill: #3CACB5; color: #3CACB5 }
 .tip-status-color-fill-valid-headers { fill: #FF69B4; color: #FF69B4 }
 .tip-status-color-fill-headers-only { fill: #FF8800; color: #FF8800 }
+
+/* Connection status CSS */ 
+
+#connection-status {
+  animation: pulse infinite 5s;
+  color: gray;
+  vertical-align: text-bottom;
+}
+
+@-webkit-keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  40% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}

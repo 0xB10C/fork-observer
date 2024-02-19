@@ -7,6 +7,7 @@ const nodeInfoRow = d3.select("#node_infos")
 const networkInfoDescription = d3.select("#network_info_description")
 const networkInfoName = d3.select("#network_info_name")
 const footerCustom = d3.select("#footer-custom")
+const connectionStatus = d3.select("#connection-status")
 const rssRecentForks = d3.select("#rss_recent_forks")
 const rssInvalidBlocks = d3.select("#rss_invalid_blocks")
 const rssLaggingNodes = d3.select("#rss_lagging_nodes")
@@ -102,6 +103,19 @@ async function run() {
   await update()
 }
 
+changeSSE.addEventListener('open', () => {
+  connectionStatus.style("color", "green");
+});
+
+changeSSE.addEventListener('error', (e) => {
+  console.error("SSE error", e);
+  connectionStatus.style("color", "red");
+});
+
+changeSSE.addEventListener('close', (e) => {
+  connectionStatus.style("color", "grey");
+});
+
 changeSSE.addEventListener("tip_changed", (e) => {
   let data = JSON.parse(e.data)
   console.debug("server side event: the tip of one of the networks changed: ", data)
@@ -109,8 +123,7 @@ changeSSE.addEventListener("tip_changed", (e) => {
     console.debug("server side event: the tip of the currently displayed network changed: ", data)
     // HACK: wait for 1 second before fetching data
     // this gives the backend time to set the miner
-    delay(1000);
-    update()
+    setTimeout(update, 1000);
   }
 })
 
