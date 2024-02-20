@@ -110,16 +110,34 @@ async fn main() -> Result<(), MainError> {
             },
         ));
 
+        // pupulate cache with available data
         let forks = headertree::recent_forks(&tree, MAX_FORKS_IN_CACHE).await;
         let header_infos_json =
             headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
         {
             let mut locked_caches = caches.lock().await;
+            let node_data: NodeData = network
+                .nodes
+                .iter()
+                .cloned()
+                .map(|n| {
+                    (
+                        n.info().id,
+                        NodeDataJson::new(
+                            n.info(),
+                            &vec![],                     // no chain tips knows yet
+                            VERSION_UNKNOWN.to_string(), // is updated later, when we know it
+                            0,                           // timestamp of last block update
+                            true, // assume the node is reachable, if it isn't we set it to false after the first getchaintips RPC call anyway
+                        ),
+                    )
+                })
+                .collect();
             locked_caches.insert(
                 network.id,
                 Cache {
                     header_infos_json,
-                    node_data: BTreeMap::new(),
+                    node_data,
                     forks,
                 },
             );
@@ -309,6 +327,7 @@ async fn main() -> Result<(), MainError> {
 
                         let forks = headertree::recent_forks(&tree_clone, MAX_FORKS_IN_CACHE).await;
                         {
+                            // update node cache with new state data
                             let mut locked_cache = caches_clone.lock().await;
                             let this_network = locked_cache
                                 .get(&network.id)
