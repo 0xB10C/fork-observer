@@ -11,6 +11,7 @@ const connectionStatus = d3.select("#connection-status")
 const rssRecentForks = d3.select("#rss_recent_forks")
 const rssInvalidBlocks = d3.select("#rss_invalid_blocks")
 const rssLaggingNodes = d3.select("#rss_lagging_nodes")
+const rssUnreachableNodes = d3.select("#rss_unreachable_nodes")
 
 const SEARCH_PARAM_NETWORK = "network"
 
@@ -58,6 +59,7 @@ function update_network() {
   rssRecentForks.node().href = `rss/${current_network.id}/forks.xml`
   rssInvalidBlocks.node().href = `rss/${current_network.id}/invalid.xml`
   rssLaggingNodes.node().href = `rss/${current_network.id}/lagging.xml`
+  rssUnreachableNodes.node().href = `rss/${current_network.id}/unreachable.xml`
 }
 
 function set_initial_network() {
