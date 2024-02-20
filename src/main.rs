@@ -196,7 +196,10 @@ async fn main() -> Result<(), MainError> {
                         continue;
                     };
                     let tips = match node.tips().await {
-                        Ok(tips) => tips,
+                        Ok(tips) => {
+                            node_reachable(&caches_clone, network.id, node.info().id, true).await;
+                            tips
+                        }
                         Err(e) => {
                             error!(
                                 "Could not fetch chaintips from {} on network '{}' (id={}): {:?}",
@@ -205,6 +208,7 @@ async fn main() -> Result<(), MainError> {
                                 network.id,
                                 e
                             );
+                            node_reachable(&caches_clone, network.id, node.info().id, false).await;
                             continue;
                         }
                     };
@@ -594,6 +598,16 @@ async fn main() -> Result<(), MainError> {
     Ok(())
 }
 
+async fn node_reachable(caches: &Caches, network_id: u32, node_id: u32, reachable: bool) {
+    let mut locked_cache = caches.lock().await;
+    locked_cache.entry(network_id).and_modify(|network| {
+        network
+            .node_data
+            .entry(node_id)
+            .and_modify(|e| e.reachable(reachable));
+    });
+}
+
 // Find out for which heights we have tips for. These are
 // interesting to us - we don't want strip them from the tree.
 // This includes tips that aren't from a fork, but rather from
@@ -614,4 +628,56 @@ async fn tip_heights(network_id: u32, caches: &Caches) -> BTreeSet<u64> {
         }
     }
     tip_heights
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::NodeInfo;
+
+    async fn get_test_node_reachable(caches: &Caches, net_id: u32, node_id: u32) -> bool {
+            let locked_caches = caches.lock().await;
+                locked_caches
+                    .get(&net_id)
+                    .expect("network id should be there")
+                    .node_data
+                    .get(&node_id)
+                    .expect("node id should be there")
+                    .reachable
+    }
+
+    #[tokio::test]
+    async fn test_node_reachable() {
+        let network_id: u32 = 0;
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        let node = NodeInfo {
+            id: 0,
+            name: "".to_string(),
+            description: "".to_string(),
+        };
+        {
+            // populate data
+            let mut locked_caches = caches.lock().await;
+            let mut node_data: NodeData = BTreeMap::new();
+            node_data.insert(
+                node.id,
+                NodeDataJson::new(node.clone(), &vec![], "".to_string(), 0, true),
+            );
+            locked_caches.insert(
+                network_id,
+                Cache {
+                    header_infos_json: vec![],
+                    node_data,
+                    forks: vec![],
+                },
+            );
+        }
+        assert_eq!(get_test_node_reachable(&caches, network_id, node.id).await, true);
+
+        node_reachable(&caches, network_id, node.id, false).await;
+        assert_eq!(get_test_node_reachable(&caches, network_id, node.id).await, false);
+        
+        node_reachable(&caches, network_id, node.id, true).await;
+        assert_eq!(get_test_node_reachable(&caches, network_id, node.id).await, true);
+    }
 }

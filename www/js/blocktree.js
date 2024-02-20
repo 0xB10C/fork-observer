@@ -397,6 +397,37 @@ function get_active_hash_or_fake(node) {
   return "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdead"
 }
 
+function ago(timestamp) {
+  const rtf = new Intl.RelativeTimeFormat("en", {
+    style: "narrow",
+    numeric: "always",
+  });
+  const now = new Date()
+  const utc_seconds = (now.getTime() + now.getTimezoneOffset()*60) / 1000;
+  const seconds = timestamp - utc_seconds;
+  if (seconds > -90) {
+    return rtf.format(seconds, "seconds");
+  }
+  const minutes = parseInt(seconds/60);
+  if (minutes > -60) {
+    return rtf.format(minutes, "minutes");
+  }
+  const hours = parseInt(minutes/60);
+  if (hours > -24) {
+    return rtf.format(hours, "hours");
+  }
+  const days = parseInt(hours/60);
+  if (days > -30) {
+    return rtf.format(days, "days");
+  }
+  const months = parseInt(days/31);
+  if (months > -12) {
+    return rtf.format(months, "months");
+  }
+
+  return "a long time ago"
+}
+
 async function draw_nodes() {
   nodeInfoRow.html(null);
   nodeInfoRow.selectAll('.node-info')
@@ -405,32 +436,30 @@ async function draw_nodes() {
     .append("div")
       .attr("class", "row-cols-auto px-1")
       .html(d => `
-      <div class="col border rounded node-info my-1" style="min-height: 10rem; width: 16rem;">
-        <div class="m-2">
-          <h5 class="card-title py-0 my-0">
-            <span class="d-inline-block text-truncate" style="max-width: 15rem;">
-              <img class="invert" src="static/img/node.svg" height=28 alt="Node symbol">
-              ${d.name}
-            </span>
-          </h5>
-          <span>
-            ${node_description_summary(d.description)}
+      <div class="col border rounded node-info" style="min-height: 8rem; width: 16rem;">
+        <h5 class="card-title py-0 mt-1 mb-0">
+          <span class="mx-2 mt-1 d-inline-block text-truncate" style="max-width: 15rem;">
+            <img class="invert" src="static/img/node.svg" height=28 alt="Node symbol">
+            ${d.name}
           </span>
+        </h5>
+        <div class="px-2 small">
+          ${d.reachable ? "": "<span class='badge text-bg-danger'>RPC unreachable</span>"}
+          <span class='badge text-bg-secondary small'>${d.version.replaceAll("/", "").replaceAll("Satoshi:", "")}</span>
+          <span class="badge text-bg-secondary small">tip changed ${ago(d.last_changed_timestamp)}</span>
         </div>
+        
         <div class="px-2">
-          <span class="small">version: ${d.version}
-        </div>
-        <div class="px-2">
-          <span class="small">changed: ${new Date(d.last_changed_timestamp * 1000).toLocaleString()}
+          ${node_description_summary(d.description)}
         </div>
         <div class="px-2" style="background-color: hsl(${parseInt(get_active_height_or_0(d) * 90, 10) % 360}, 50%, 75%)">
           <span class="small text-color-dark"> height: ${get_active_height_or_0(d)}
         </div>
-        <div class="px-2" style="background-color: hsl(${(parseInt(get_active_hash_or_fake(d).substring(58), 16) + 120) % 360}, 50%, 75%)">
+        <div class="px-2 rounded-bottom" style="background-color: hsl(${(parseInt(get_active_hash_or_fake(d).substring(58), 16) + 120) % 360}, 50%, 75%)">
           <details>
             <summary style="list-style: none;">
               <span class="small text-color-dark">
-                tip: …${get_active_hash_or_fake(d).substring(54, 64)}
+                tip hash: …${get_active_hash_or_fake(d).substring(54, 64)}
               </span>
             </summary>
             <span class="small text-color-dark">
