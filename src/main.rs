@@ -304,6 +304,7 @@ async fn main() -> Result<(), MainError> {
                             &relevant_tips,
                             version_info.clone(),
                             last_change_timestamp,
+                            true, // here, the node was reachable
                         );
 
                         let forks = headertree::recent_forks(&tree_clone, MAX_FORKS_IN_CACHE).await;
