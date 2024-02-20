@@ -144,6 +144,8 @@ pub struct NodeDataJson {
     pub last_changed_timestamp: u64,
     /// The node subversion as advertised by the node on the network.
     pub version: String,
+    /// If the last getchaintips RPC reached the node.
+    pub reachable: bool,
 }
 
 impl NodeDataJson {
@@ -152,6 +154,7 @@ impl NodeDataJson {
         tips: &Vec<ChainTip>,
         version: String,
         last_changed_timestamp: u64,
+        reachable: bool,
     ) -> Self {
         NodeDataJson {
             id: info.id,
@@ -160,6 +163,7 @@ impl NodeDataJson {
             tips: tips.iter().map(TipInfoJson::new).collect(),
             last_changed_timestamp,
             version,
+            reachable,
         }
     }
 }
