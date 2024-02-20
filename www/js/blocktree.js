@@ -381,11 +381,26 @@ function node_description_summary(description) {
   return description
 }
 
+function get_active_height_or_0(node) {
+  let active_tips = node.tips.filter(tip => tip.status == "active")
+  if (active_tips.length > 0) {
+    return active_tips[0].height
+  }
+  return 0
+}
+
+function get_active_hash_or_fake(node) {
+  let active_tips = node.tips.filter(tip => tip.status == "active")
+  if (active_tips.length > 0) {
+    return active_tips[0].hash
+  }
+  return "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdead"
+}
 
 async function draw_nodes() {
   nodeInfoRow.html(null);
   nodeInfoRow.selectAll('.node-info')
-    .data(state_data.nodes.sort((a, b) => a.tips.filter(tip => tip.status == "active")[0].height - b.tips.filter(tip => tip.status == "active")[0].height))
+    .data(state_data.nodes.sort((a, b) => get_active_height_or_0(a) - get_active_height_or_0(b)))
     .enter()
     .append("div")
       .attr("class", "row-cols-auto px-1")
@@ -406,20 +421,20 @@ async function draw_nodes() {
           <span class="small">version: ${d.version}
         </div>
         <div class="px-2">
-          <span class="small">changed: ${new Date(d.last_changed_timestamp * 1000).toLocaleTimeString()}
+          <span class="small">changed: ${new Date(d.last_changed_timestamp * 1000).toLocaleString()}
         </div>
-        <div class="px-2" style="background-color: hsl(${parseInt(d.tips.filter(tip => tip.status == "active")[0].height * 90, 10) % 360}, 50%, 75%)">
-          <span class="small text-color-dark"> height: ${d.tips.filter(tip => tip.status == "active")[0].height}
+        <div class="px-2" style="background-color: hsl(${parseInt(get_active_height_or_0(d) * 90, 10) % 360}, 50%, 75%)">
+          <span class="small text-color-dark"> height: ${get_active_height_or_0(d)}
         </div>
-        <div class="px-2" style="background-color: hsl(${parseInt(d.tips.filter(tip => tip.status == "active")[0].hash.substring(58), 16) % 360}, 50%, 75%)">
+        <div class="px-2" style="background-color: hsl(${(parseInt(get_active_hash_or_fake(d).substring(58), 16) + 120) % 360}, 50%, 75%)">
           <details>
             <summary style="list-style: none;">
               <span class="small text-color-dark">
-                tip: …${d.tips.filter(tip => tip.status == "active")[0].hash.substring(54, 64)}
+                tip: …${get_active_hash_or_fake(d).substring(54, 64)}
               </span>
             </summary>
             <span class="small text-color-dark">
-              ${d.tips.filter(tip => tip.status == "active")[0].hash}
+              ${get_active_hash_or_fake(d)}
             </span>
           </details>
         </div>
