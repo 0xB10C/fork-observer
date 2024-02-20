@@ -183,6 +183,17 @@ impl Item {
             guid: format!("lagging-node-{}-on-{}", node.name, height),
         }
     }
+
+    pub fn unreachable_node_item(node: &NodeDataJson) -> Item {
+        Item {
+            title: format!("Node '{}' (id={}) is unreachable", node.name, node.id),
+            description: format!(
+                "The RPC server of this node is not reachable. The node might be offline or there might be other networking issues. The nodes tip data was last updated at timestamp {} (zero indicates never).",
+                node.last_changed_timestamp,
+            ),
+            guid: format!("unreachable-node-{}-last-{}", node.id, node.last_changed_timestamp),
+        }
+    }
 }
 
 pub async fn lagging_nodes_response(
@@ -312,6 +323,57 @@ pub async fn invalid_blocks_response(
                         .iter()
                         .map(|(tipinfo, nodes)| (*tipinfo, *nodes).into())
                         .collect::<Vec<Item>>(),
+                },
+            };
+
+            return Ok(Response::builder()
+                .header("content-type", "application/rss+xml")
+                .body(feed.to_string()));
+        }
+        None => Ok(Ok(response_unknown_network(network_infos))),
+    }
+}
+
+pub async fn unreachable_nodes_response(
+    network_id: u32,
+    caches: Caches,
+    network_infos: Vec<NetworkJson>,
+    base_url: String,
+) -> Result<impl warp::Reply, Infallible> {
+    let caches_locked = caches.lock().await;
+
+    match caches_locked.get(&network_id) {
+        Some(cache) => {
+            let mut network_name = "";
+            if let Some(network) = network_infos
+                .iter()
+                .filter(|net| net.id == network_id)
+                .collect::<Vec<&NetworkJson>>()
+                .first()
+            {
+                network_name = &network.name;
+            }
+
+            let unreachable_node_items: Vec<Item> = cache
+                .node_data
+                .values()
+                .filter(|node| !node.reachable)
+                .map(|node| Item::unreachable_node_item(node))
+                .collect();
+            let feed = Feed {
+                channel: Channel {
+                    title: format!("Unreachable nodes - {}", network_name),
+                    description: format!(
+                        "Nodes on the {} network that can't be reached",
+                        network_name
+                    ),
+                    link: format!(
+                        "{}?network={}?src=unreachable-nodes",
+                        base_url.clone(),
+                        network_id
+                    ),
+                    href: format!("{}/rss/{}/unreachable.xml", base_url, network_id),
+                    items: unreachable_node_items,
                 },
             };
 

@@ -563,6 +563,13 @@ async fn main() -> Result<(), MainError> {
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and_then(rss::lagging_nodes_response);
 
+    let unreachable_nodes_rss = warp::get()
+        .and(warp::path!("rss" / u32 / "unreachable.xml"))
+        .and(api::with_caches(caches.clone()))
+        .and(api::with_networks(network_infos.clone()))
+        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and_then(rss::unreachable_nodes_response);
+
     let networks_json = warp::get()
         .and(warp::path!("api" / "networks.json"))
         .and(api::with_networks(network_infos))
@@ -592,6 +599,7 @@ async fn main() -> Result<(), MainError> {
         .or(change_sse)
         .or(forks_rss)
         .or(lagging_nodes_rss)
+        .or(unreachable_nodes_rss)
         .or(invalid_blocks_rss);
 
     warp::serve(routes).run(config.address).await;
@@ -636,14 +644,14 @@ mod tests {
     use crate::node::NodeInfo;
 
     async fn get_test_node_reachable(caches: &Caches, net_id: u32, node_id: u32) -> bool {
-            let locked_caches = caches.lock().await;
-                locked_caches
-                    .get(&net_id)
-                    .expect("network id should be there")
-                    .node_data
-                    .get(&node_id)
-                    .expect("node id should be there")
-                    .reachable
+        let locked_caches = caches.lock().await;
+        locked_caches
+            .get(&net_id)
+            .expect("network id should be there")
+            .node_data
+            .get(&node_id)
+            .expect("node id should be there")
+            .reachable
     }
 
     #[tokio::test]
@@ -672,12 +680,21 @@ mod tests {
                 },
             );
         }
-        assert_eq!(get_test_node_reachable(&caches, network_id, node.id).await, true);
+        assert_eq!(
+            get_test_node_reachable(&caches, network_id, node.id).await,
+            true
+        );
 
         node_reachable(&caches, network_id, node.id, false).await;
-        assert_eq!(get_test_node_reachable(&caches, network_id, node.id).await, false);
-        
+        assert_eq!(
+            get_test_node_reachable(&caches, network_id, node.id).await,
+            false
+        );
+
         node_reachable(&caches, network_id, node.id, true).await;
-        assert_eq!(get_test_node_reachable(&caches, network_id, node.id).await, true);
+        assert_eq!(
+            get_test_node_reachable(&caches, network_id, node.id).await,
+            true
+        );
     }
 }
