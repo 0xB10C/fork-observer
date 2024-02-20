@@ -166,6 +166,10 @@ impl NodeDataJson {
             reachable,
         }
     }
+
+    pub fn reachable(&mut self, r: bool) {
+        self.reachable = r;
+    }
 }
 
 #[derive(Serialize, Clone)]
