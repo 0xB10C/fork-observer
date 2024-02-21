@@ -248,14 +248,15 @@ pub struct NodeInfo {
     pub id: u32,
     pub name: String,
     pub description: String,
+    pub implementation: String,
 }
 
 impl fmt::Display for NodeInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "Node(id={}, name='{}', description='{}')",
-            self.id, self.name, self.description
+            "Node(id={}, name='{}', implementation='{}')",
+            self.id, self.name, self.implementation
         )
     }
 }

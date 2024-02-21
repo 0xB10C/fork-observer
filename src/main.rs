@@ -662,6 +662,7 @@ mod tests {
             id: 0,
             name: "".to_string(),
             description: "".to_string(),
+            implementation: "".to_string(),
         };
         {
             // populate data
