@@ -446,7 +446,7 @@ async function draw_nodes() {
         <div class="px-2 small">
           ${d.reachable ? "": "<span class='badge text-bg-danger'>RPC unreachable</span>"}
           <span class='badge text-bg-secondary small'>${d.implementation} ${d.version.replaceAll("/", "").replaceAll("Satoshi:", "").replace("unknown", "(version unknown)")}</span>
-          <span class="badge text-bg-secondary small">tip changed ${ago(d.last_changed_timestamp)}</span>
+          <span class="badge text-bg-secondary small">tip changed <span class="relativeTimestamp" data-timestamp=${d.last_changed_timestamp}>${ago(d.last_changed_timestamp)}</span>
         </div>
         
         <div class="px-2">

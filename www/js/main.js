@@ -103,6 +103,19 @@ async function run() {
   await fetch_networks()
   await fetch_info()
   await update()
+
+  periodicallyRedrawTimestamps()
+}
+
+function periodicallyRedrawTimestamps() {
+  setTimeout(() => {
+    let ts = document.getElementsByClassName("relativeTimestamp");
+    for(t of ts) {
+      let timestamp = parseInt(t.dataset.timestamp)
+      t.innerHTML = ago(timestamp)
+    }
+    periodicallyRedrawTimestamps()
+  }, 10000)
 }
 
 changeSSE.addEventListener('open', () => {
@@ -128,5 +141,6 @@ changeSSE.addEventListener("tip_changed", (e) => {
     setTimeout(update, 1000);
   }
 })
+
 
 run()
