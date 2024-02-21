@@ -436,7 +436,7 @@ async function draw_nodes() {
     .append("div")
       .attr("class", "row-cols-auto px-1")
       .html(d => `
-      <div class="col border rounded node-info" style="min-height: 8rem; width: 16rem;">
+      <div class="col border rounded node-info my-2" style="min-height: 8rem; width: 16rem;">
         <h5 class="card-title py-0 mt-1 mb-0">
           <span class="mx-2 mt-1 d-inline-block text-truncate" style="max-width: 15rem;">
             <img class="invert" src="static/img/node.svg" height=28 alt="Node symbol">
