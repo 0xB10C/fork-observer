@@ -145,6 +145,7 @@ impl FromStr for NodeImplementation {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "bitcoincore" => Ok(NodeImplementation::BitcoinCore),
+            "bitcoin core" => Ok(NodeImplementation::BitcoinCore),
             "core" => Ok(NodeImplementation::BitcoinCore),
             "btcd" => Ok(NodeImplementation::Btcd),
             _ => Err(ConfigError::UnknownImplementation),
@@ -155,7 +156,7 @@ impl FromStr for NodeImplementation {
 impl fmt::Display for NodeImplementation {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            NodeImplementation::BitcoinCore => write!(f, "BitcoinCore"),
+            NodeImplementation::BitcoinCore => write!(f, "Bitcoin Core"),
             NodeImplementation::Btcd => write!(f, "btcd"),
         }
     }
@@ -279,6 +280,7 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
         id: toml_node.id,
         name: toml_node.name.clone(),
         description: toml_node.description.clone(),
+        implementation: implementation.to_string(),
     };
 
     let node: BoxedSyncSendNode = match implementation {

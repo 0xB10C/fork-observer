@@ -139,6 +139,8 @@ pub struct NodeDataJson {
     pub id: u32,
     pub name: String,
     pub description: String,
+    // The implementation of the node
+    pub implementation: String,
     pub tips: Vec<TipInfoJson>,
     /// UTC timestamp when the tip information of the node was last changed.
     pub last_changed_timestamp: u64,
@@ -160,6 +162,7 @@ impl NodeDataJson {
             id: info.id,
             name: info.name,
             description: info.description,
+            implementation: info.implementation,
             tips: tips.iter().map(TipInfoJson::new).collect(),
             last_changed_timestamp,
             version,
