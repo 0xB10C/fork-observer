@@ -404,7 +404,7 @@ function ago(timestamp) {
   });
   const now = new Date()
   const utc_seconds = (now.getTime() + now.getTimezoneOffset()*60) / 1000;
-  const seconds = timestamp - utc_seconds;
+  const seconds = parseInt(timestamp - utc_seconds);
   if (seconds > -90) {
     return rtf.format(seconds, "seconds");
   }
