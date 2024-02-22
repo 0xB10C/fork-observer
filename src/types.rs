@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use crate::config::Network;
 use crate::node::NodeInfo;
@@ -9,14 +10,11 @@ use crate::node::NodeInfo;
 use bitcoincore_rpc::bitcoin::blockdata::block::Header;
 use bitcoincore_rpc::bitcoin::BlockHash;
 use bitcoincore_rpc::json::{GetChainTipsResultStatus, GetChainTipsResultTip};
-
-use serde::{Deserialize, Serialize};
-
+use log::warn;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
-
 use rusqlite::Connection;
-
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -24,6 +22,10 @@ pub struct Cache {
     pub header_infos_json: Vec<HeaderInfoJson>,
     pub node_data: NodeData,
     pub forks: Vec<Fork>,
+    /// Since strip_tree and identifying miners runs in parallel,
+    /// the strip_tree result might not contain a miner yet. Keeping
+    /// recent miners here and use + manage them when updating the cache.
+    pub recent_miners: Vec<(String, String)>,
 }
 
 pub type NodeData = BTreeMap<u32, NodeDataJson>;
@@ -98,6 +100,10 @@ impl HeaderInfoJson {
             miner: hi.miner.clone(),
         }
     }
+
+    pub fn update_miner(&mut self, miner: String) {
+        self.miner = miner;
+    }
 }
 
 #[derive(Serialize)]
@@ -111,7 +117,7 @@ pub struct DataJsonResponse {
     pub nodes: Vec<NodeDataJson>,
 }
 
-#[derive(Serialize, Clone, Eq, Hash, PartialEq)]
+#[derive(Serialize, Clone, Eq, Hash, PartialEq, Debug)]
 pub struct TipInfoJson {
     pub hash: String,
     pub status: String,
@@ -134,7 +140,7 @@ impl TipInfoJson {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct NodeDataJson {
     pub id: u32,
     pub name: String,
@@ -172,6 +178,22 @@ impl NodeDataJson {
 
     pub fn reachable(&mut self, r: bool) {
         self.reachable = r;
+    }
+
+    pub fn version(&mut self, v: String) {
+        self.version = v;
+    }
+
+    pub fn tips(&mut self, tips: &[ChainTip]) {
+        self.tips = tips.iter().map(TipInfoJson::new).collect();
+        self.last_changed_timestamp = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
+        {
+            Ok(n) => n.as_secs(),
+            Err(_) => {
+                warn!("SystemTime is before UNIX_EPOCH time. Node last_change_timestamp set to 0.");
+                0u64
+            }
+        };
     }
 }
 

@@ -19,7 +19,7 @@ const DEFAULT_CONFIG: &str = "config.toml";
 const DEFAULT_NODE_IMPL: NodeImplementation = NodeImplementation::BitcoinCore;
 const DEFAULT_USE_REST: bool = true;
 
-type BoxedSyncSendNode = Arc<dyn Node + Send + Sync>;
+pub type BoxedSyncSendNode = Arc<dyn Node + Send + Sync>;
 
 #[derive(Clone, Deserialize, Debug)]
 pub enum PoolIdentificationNetwork {
