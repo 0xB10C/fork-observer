@@ -247,44 +247,19 @@ async fn main() -> Result<(), MainError> {
                         // Keeping tracking of changes:
                         let mut tree_changed = false;
                         if !new_headers.is_empty() {
-                            {
-                                let mut tree_locked = tree_clone.lock().await;
-                                // insert headers to tree
-                                for h in new_headers.clone() {
-                                    if !tree_locked.1.contains_key(&h.header.block_hash()) {
-                                        let idx = tree_locked.0.add_node(h.clone());
-                                        tree_locked.1.insert(h.header.block_hash(), idx);
-                                        tree_changed = true;
-                                    }
-                                }
-                                // connect nodes with edges
-                                for current in new_headers.clone() {
-                                    let idx_current: NodeIndex;
-                                    let idx_prev: NodeIndex;
-                                    {
-                                        idx_current = *tree_locked
-                                            .1
-                                            .get(&current.header.block_hash())
-                                            .expect(
-                                            "current header should be in the map as we just inserted it or it was already present",
-                                        );
-                                        match tree_locked.1.get(&current.header.prev_blockhash) {
-                                            Some(idx) => idx_prev = *idx,
-                                            None => {
-                                                continue; // the tree's root has no previous block, skip it
-                                            }
-                                        }
-                                    }
-                                    tree_locked.0.update_edge(idx_prev, idx_current, false);
-                                }
-                            }
-                            if !new_headers.is_empty() {
-                                match db::write_to_db(&new_headers, db_write, network.id).await {
-                                    Ok(_) => info!("Written {} new headers to database for network '{}' by node {}", new_headers.len(), network.name, node.info()),
-                                    Err(e) => {
-                                        error!("Could not write new headers for network '{}' by node {} to database: {}", network.name, node.info(), e);
-                                        return MainError::Db(e);
-                                    },
+                            tree_changed =
+                                insert_new_headers_into_tree(&tree_clone, &new_headers).await;
+
+                            match db::write_to_db(&new_headers, db_write, network.id).await {
+                                Ok(_) => info!(
+                                    "Written {} headers to database for network '{}' by node {}",
+                                    new_headers.len(),
+                                    network.name,
+                                    node.info()
+                                ),
+                                Err(e) => {
+                                    error!("Could not write new headers for network '{}' by node {} to database: {}", network.name, node.info(), e);
+                                    return MainError::Db(e);
                                 }
                             }
                         }
@@ -797,6 +772,40 @@ async fn load_node_version(node: BoxedSyncSendNode, network: &str) -> String {
         VERSION_UNKNOWN
     );
     return VERSION_UNKNOWN.to_string();
+}
+
+async fn insert_new_headers_into_tree(tree: &Tree, new_headers: &[HeaderInfo]) -> bool {
+    let mut tree_changed: bool = false;
+    let mut tree_locked = tree.lock().await;
+    // insert headers to tree
+    for h in new_headers {
+        if !tree_locked.1.contains_key(&h.header.block_hash()) {
+            let idx = tree_locked.0.add_node(h.clone());
+            tree_locked.1.insert(h.header.block_hash(), idx);
+            tree_changed = true;
+        }
+    }
+    // connect nodes with edges
+    for current in new_headers {
+        let idx_current: NodeIndex;
+        let idx_prev: NodeIndex;
+        {
+            idx_current = *tree_locked
+                    .1
+                    .get(&current.header.block_hash())
+                    .expect(
+                    "current header should be in the map as we just inserted it or it was already present",
+                );
+            match tree_locked.1.get(&current.header.prev_blockhash) {
+                Some(idx) => idx_prev = *idx,
+                None => {
+                    continue; // the tree's root has no previous block, skip it
+                }
+            }
+        }
+        tree_locked.0.update_edge(idx_prev, idx_current, false);
+    }
+    tree_changed
 }
 
 #[cfg(test)]
