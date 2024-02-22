@@ -40,10 +40,7 @@ const VERSION_UNKNOWN: &str = "unknown";
 const MINER_UNKNOWN: &str = "Unknown";
 const MAX_FORKS_IN_CACHE: usize = 50;
 
-#[tokio::main]
-async fn main() -> Result<(), MainError> {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-
+async fn startup() -> Result<(config::Config, Db, Caches), MainError> {
     let config: config::Config = match config::load_config() {
         Ok(config) => {
             info!("Configuration loaded");
@@ -82,6 +79,13 @@ async fn main() -> Result<(), MainError> {
             return Err(e.into());
         }
     };
+    Ok((config, db, caches))
+}
+
+#[tokio::main]
+async fn main() -> Result<(), MainError> {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    let (config, db, caches) = startup().await?;
 
     // A channel to notify about tip changes via ServerSentEvents to clients.
     let (tipchanges_tx, _) = broadcast::channel(16);
