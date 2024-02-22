@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task;
-use tokio::time::{interval, sleep, Duration};
+use tokio::time::{interval, interval_at, sleep, Duration, Instant};
 use tokio_stream::wrappers::BroadcastStream;
 use warp::Filter;
 
@@ -154,7 +154,15 @@ async fn main() -> Result<(), MainError> {
 
         for node in network.nodes.iter().cloned() {
             let network = network.clone();
-            let mut interval = interval(config.query_interval);
+            // Spread query times equally apart to even out network/CPU load
+            let mut interval = interval_at(
+                Instant::now()
+                    + Duration::from_millis(
+                        (config.query_interval.as_millis() / network.nodes.len() as u128) as u64,
+                    )
+                    + Duration::from_secs((network.id % 10) as u64),
+                config.query_interval,
+            );
             let db_write = db.clone();
             let tree_clone = tree.clone();
             let caches_clone = caches.clone();
