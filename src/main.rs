@@ -5,13 +5,13 @@ use bitcoincore_rpc::bitcoin::{BlockHash, Network};
 use bitcoincore_rpc::Error::JsonRpc;
 use env_logger::Env;
 use futures_util::StreamExt;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use petgraph::graph::NodeIndex;
 use rusqlite::Connection;
 use std::cmp::max;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task;
@@ -29,9 +29,12 @@ mod node;
 mod rss;
 mod types;
 
-use types::{Cache, Caches, ChainTip, Db, HeaderInfo, NetworkJson, NodeData, NodeDataJson, Tree};
-
+use crate::config::BoxedSyncSendNode;
 use crate::error::{DbError, MainError};
+use types::{
+    Cache, Caches, ChainTip, Db, Fork, HeaderInfo, HeaderInfoJson, NetworkJson, NodeData,
+    NodeDataJson, Tree,
+};
 
 const VERSION_UNKNOWN: &str = "unknown";
 const MINER_UNKNOWN: &str = "Unknown";
@@ -110,9 +113,9 @@ async fn main() -> Result<(), MainError> {
             },
         ));
 
-        // pupulate cache with available data
+        // populate cache with available data
         let forks = headertree::recent_forks(&tree, MAX_FORKS_IN_CACHE).await;
-        let header_infos_json =
+        let hij =
             headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
         {
             let mut locked_caches = caches.lock().await;
@@ -136,9 +139,10 @@ async fn main() -> Result<(), MainError> {
             locked_caches.insert(
                 network.id,
                 Cache {
-                    header_infos_json,
+                    header_infos_json: hij.clone(),
                     node_data,
                     forks,
+                    recent_miners: vec![],
                 },
             );
         }
@@ -151,53 +155,38 @@ async fn main() -> Result<(), MainError> {
             let caches_clone = caches.clone();
             let tipchanges_tx_cloned = tipchanges_tx.clone();
             let pool_id_tx_clone = pool_id_tx.clone();
-            let mut has_node_info = false;
-            let mut version_info: String = String::default();
-            let mut version_request_tries: u8 = 0;
+
             let mut last_tips: Vec<ChainTip> = vec![];
             task::spawn(async move {
+                // Try to load the node version an update the cache with it.
+                update_cache(
+                    &caches_clone,
+                    network.id,
+                    CacheUpdate::NodeVersion {
+                        node_id: node.info().id,
+                        version: load_node_version(node.clone(), &network.name).await,
+                    },
+                )
+                .await;
+
                 loop {
                     // We specifically wait at the beginning of the loop, as we
                     // are using 'continue' on errors. If we would wait at the end,
                     // we might skip the waiting.
                     interval.tick().await;
-                    if version_info == String::default() {
-                        // The Bitcoin Core version is requested via the getnetworkinfo RPC. This
-                        // RPC exposes sensitive information to the caller, so it might not be
-                        // allowed on the whitelist. We set the version to VERSION_UNKNOWN if we
-                        // can't request it. As Bitcoin Core RPC interface might not be up yet, we
-                        // try to request the version multiple times.
-                        loop {
-                            match node.version().await {
-                                Ok(v) => {
-                                    version_info = v;
-                                    break;
-                                }
-                                Err(e) => match e {
-                                    error::FetchError::BitcoinCoreRPC(JsonRpc(msg)) => {
-                                        if version_request_tries > 5 {
-                                            warn!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}. Using '{}' as version.", node.info(), network.name, network.id, msg, VERSION_UNKNOWN);
-                                            version_info = VERSION_UNKNOWN.to_string();
-                                            break;
-                                        } else {
-                                            warn!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}. Retrying...", node.info(), network.name, network.id, msg);
-                                            version_request_tries += 1;
-                                            interval.tick().await;
-                                        }
-                                    }
-                                    _ => {
-                                        error!("Could not fetch getnetworkinfo from {} on network '{}' (id={}): {:?}.", node.info(), network.name, network.id, e);
-                                        version_info = VERSION_UNKNOWN.to_string();
-                                        break;
-                                    }
-                                },
-                            };
-                        }
-                        continue;
-                    };
                     let tips = match node.tips().await {
                         Ok(tips) => {
-                            node_reachable(&caches_clone, network.id, node.info().id, true).await;
+                            if !is_node_reachable(&caches_clone, network.id, node.info().id).await {
+                                update_cache(
+                                    &caches_clone,
+                                    network.id,
+                                    CacheUpdate::NodeReachability {
+                                        node_id: node.info().id,
+                                        reachable: true,
+                                    },
+                                )
+                                .await;
+                            }
                             tips
                         }
                         Err(e) => {
@@ -208,7 +197,17 @@ async fn main() -> Result<(), MainError> {
                                 network.id,
                                 e
                             );
-                            node_reachable(&caches_clone, network.id, node.info().id, false).await;
+                            if is_node_reachable(&caches_clone, network.id, node.info().id).await {
+                                update_cache(
+                                    &caches_clone,
+                                    network.id,
+                                    CacheUpdate::NodeReachability {
+                                        node_id: node.info().id,
+                                        reachable: false,
+                                    },
+                                )
+                                .await;
+                            }
                             continue;
                         }
                     };
@@ -244,8 +243,10 @@ async fn main() -> Result<(), MainError> {
 
                         last_tips = tips.clone();
                         let db_write = db_write.clone();
-
-                        if !new_headers.is_empty() || !has_node_info {
+                        // We want to avoid stripping the tree (strip_tree()) if it didn't change.
+                        // Keeping tracking of changes:
+                        let mut tree_changed = false;
+                        if !new_headers.is_empty() {
                             {
                                 let mut tree_locked = tree_clone.lock().await;
                                 // insert headers to tree
@@ -253,6 +254,7 @@ async fn main() -> Result<(), MainError> {
                                     if !tree_locked.1.contains_key(&h.header.block_hash()) {
                                         let idx = tree_locked.0.add_node(h.clone());
                                         tree_locked.1.insert(h.header.block_hash(), idx);
+                                        tree_changed = true;
                                     }
                                 }
                                 // connect nodes with edges
@@ -287,75 +289,52 @@ async fn main() -> Result<(), MainError> {
                             }
                         }
 
-                        let mut tip_heights: BTreeSet<u64> =
-                            tip_heights(network.id, &caches_clone).await;
-                        for tip in tips.iter() {
-                            tip_heights.insert(tip.height);
-                        }
-
-                        let header_infos_json = headertree::strip_tree(
-                            &tree_clone,
-                            network.max_interesting_heights,
-                            tip_heights,
+                        // Update node tips in cache
+                        update_cache(
+                            &caches_clone,
+                            network.id,
+                            CacheUpdate::NodeTips {
+                                node_id: node.info().id,
+                                tips: tips.clone(),
+                            },
                         )
                         .await;
 
-                        // only put tips that we also keep headers for in the cache
-                        let min_height = header_infos_json
-                            .iter()
-                            .min_by_key(|h| h.height)
-                            .expect("we should have atleast one header in here")
-                            .height;
-                        let relevant_tips = tips
-                            .iter()
-                            .filter(|t| t.height >= min_height)
-                            .cloned()
-                            .collect();
-
-                        let last_change_timestamp = match SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                        {
-                            Ok(n) => n.as_secs(),
-                            Err(_) => {
-                                warn!("SystemTime is before UNIX_EPOCH time. Node last_change_timestamp set to 0.");
-                                0u64
+                        if tree_changed {
+                            let mut tip_heights: BTreeSet<u64> =
+                                tip_heights(network.id, &caches_clone).await;
+                            for tip in tips.iter() {
+                                tip_heights.insert(tip.height);
                             }
-                        };
-                        let node_info_json = NodeDataJson::new(
-                            node.info(),
-                            &relevant_tips,
-                            version_info.clone(),
-                            last_change_timestamp,
-                            true, // here, the node was reachable
-                        );
+                            let header_infos_json = headertree::strip_tree(
+                                &tree_clone,
+                                network.max_interesting_heights,
+                                tip_heights,
+                            )
+                            .await;
+                            let forks =
+                                headertree::recent_forks(&tree_clone, MAX_FORKS_IN_CACHE).await;
 
-                        let forks = headertree::recent_forks(&tree_clone, MAX_FORKS_IN_CACHE).await;
-                        {
-                            // update node cache with new state data
-                            let mut locked_cache = caches_clone.lock().await;
-                            let this_network = locked_cache
-                                .get(&network.id)
-                                .expect("network should already exist in cache");
-                            let mut node_infos = this_network.node_data.clone();
-                            node_infos.insert(node.info().id, node_info_json);
-                            locked_cache.insert(
+                            update_cache(
+                                &caches_clone,
                                 network.id,
-                                Cache {
+                                CacheUpdate::HeaderTree {
                                     header_infos_json,
-                                    node_data: node_infos,
                                     forks,
                                 },
-                            );
+                            )
+                            .await;
+
+                            match tipchanges_tx_cloned.clone().send(network.id) {
+                                Ok(_) => debug!("Sent a tip_changed notification."),
+                                Err(e) => {
+                                    warn!(
+                                        "Could not send tip_changed update into the channel: {}",
+                                        e
+                                    )
+                                }
+                            };
                         }
-
-                        match tipchanges_tx_cloned.clone().send(network.id) {
-                            Ok(_) => (),
-                            Err(e) => {
-                                warn!("Could not send tip_changed update into the channel: {}", e)
-                            }
-                        };
-
-                        has_node_info = true;
                     }
                 }
             });
@@ -397,7 +376,7 @@ async fn main() -> Result<(), MainError> {
             {
                 if let Err(e) = pool_id_tx_clone.send(header_info.header.block_hash()) {
                     error!(
-                        "Could not block hash into the pool identification channel: {}",
+                        "Could not send block hash into the pool identification channel: {}",
                         e
                     );
                 }
@@ -482,7 +461,12 @@ async fn main() -> Result<(), MainError> {
                     }
                     header_info.update_miner(miner);
 
-                    // write to db and cache
+                    // update in-memory graph
+                    {
+                        let mut tree_locked = tree_clone.lock().await;
+                        tree_locked.0[idx] = header_info.clone();
+                    }
+                    // write to db
                     if let Err(e) = db::update_miner(
                         db_clone2.clone(),
                         &header_info.header.block_hash(),
@@ -497,29 +481,13 @@ async fn main() -> Result<(), MainError> {
                             e
                         );
                     }
-                    {
-                        let mut tree_locked = tree_clone.lock().await;
-                        tree_locked.0[idx] = header_info;
-                    }
-                }
-
-                // update the cache
-                {
-                    let tip_heights: BTreeSet<u64> = tip_heights(network.id, &caches_clone).await;
-
-                    let header_infos_json = headertree::strip_tree(
-                        &tree_clone,
-                        network.max_interesting_heights,
-                        tip_heights,
+                    // update cache
+                    update_cache(
+                        &caches_clone,
+                        network.id,
+                        CacheUpdate::HeaderMiner { header_info },
                     )
                     .await;
-                    let mut locked_cache = caches_clone.lock().await;
-                    let mut cached = locked_cache
-                        .get(&network.id)
-                        .expect("network should already exist in cache")
-                        .clone();
-                    cached.header_infos_json = header_infos_json;
-                    locked_cache.insert(network.id, cached);
                 }
             }
         });
@@ -606,16 +574,6 @@ async fn main() -> Result<(), MainError> {
     Ok(())
 }
 
-async fn node_reachable(caches: &Caches, network_id: u32, node_id: u32, reachable: bool) {
-    let mut locked_cache = caches.lock().await;
-    locked_cache.entry(network_id).and_modify(|network| {
-        network
-            .node_data
-            .entry(node_id)
-            .and_modify(|e| e.reachable(reachable));
-    });
-}
-
 // Find out for which heights we have tips for. These are
 // interesting to us - we don't want strip them from the tree.
 // This includes tips that aren't from a fork, but rather from
@@ -636,6 +594,209 @@ async fn tip_heights(network_id: u32, caches: &Caches) -> BTreeSet<u64> {
         }
     }
     tip_heights
+}
+
+#[derive(Debug)]
+enum CacheUpdate {
+    HeaderMiner {
+        header_info: HeaderInfo,
+    },
+    HeaderTree {
+        header_infos_json: Vec<HeaderInfoJson>,
+        forks: Vec<Fork>,
+    },
+    NodeTips {
+        node_id: u32,
+        tips: Vec<ChainTip>,
+    },
+    NodeReachability {
+        node_id: u32,
+        reachable: bool,
+    },
+    NodeVersion {
+        node_id: u32,
+        version: String,
+    },
+}
+
+impl fmt::Display for CacheUpdate {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            CacheUpdate::HeaderMiner { header_info } => {
+                write!(
+                    f,
+                    "Setting miner of block {} to miner={}",
+                    header_info.header.block_hash(),
+                    header_info.miner
+                )
+            }
+            CacheUpdate::HeaderTree {
+                header_infos_json, ..
+            } => match header_infos_json.last() {
+                Some(last) => {
+                    write!(
+                        f,
+                        "Updating headertree with last header hash={} and miner={}",
+                        last.hash, last.miner
+                    )
+                }
+                None => {
+                    write!(f, "Updating headertree with empty header list")
+                }
+            },
+            CacheUpdate::NodeTips { node_id, .. } => {
+                write!(f, "Update tips of node={}", node_id,)
+            }
+            CacheUpdate::NodeVersion { node_id, version } => {
+                write!(f, "Update node={} version={}", node_id, version)
+            }
+            CacheUpdate::NodeReachability { node_id, reachable } => {
+                write!(f, "Setting node {} to reachable={}", node_id, reachable)
+            }
+        }
+    }
+}
+
+async fn is_node_reachable(caches: &Caches, network_id: u32, node_id: u32) -> bool {
+    let locked_cache = caches.lock().await;
+    locked_cache
+        .get(&network_id)
+        .expect("this network should be in the caches")
+        .node_data
+        .get(&node_id)
+        .expect("this node should be in the network cache")
+        .reachable
+}
+
+async fn update_cache(caches: &Caches, network_id: u32, update: CacheUpdate) {
+    debug!("updating cache with: {}", update);
+    let mut locked_cache = caches.lock().await;
+    let network = locked_cache
+        .get(&network_id)
+        .expect("this network should be in the caches");
+    match update {
+        CacheUpdate::HeaderMiner { header_info } => {
+            let mut old = network.header_infos_json.clone();
+            if let Some(index) = old
+                .iter()
+                .position(|h| h.hash == header_info.header.block_hash().to_string())
+            {
+                old[index].update_miner(header_info.miner.clone());
+            }
+
+            locked_cache.entry(network_id).and_modify(|cache| {
+                cache.header_infos_json = old;
+
+                cache.recent_miners.push((
+                    header_info.header.block_hash().to_string(),
+                    header_info.miner,
+                ));
+                if cache.recent_miners.len() > 5 {
+                    cache.recent_miners.remove(0);
+                }
+            });
+        }
+        CacheUpdate::HeaderTree {
+            header_infos_json,
+            forks,
+        } => {
+            let mut new_header_infos_map: HashMap<String, HeaderInfoJson> = header_infos_json
+                .iter()
+                .map(|h| (h.hash.clone(), h.clone()))
+                .collect();
+            // we might have new miner infos. Make sure to not overwrite headers
+            // that already have a miner.
+            for (hash, miner) in network.recent_miners.iter() {
+                new_header_infos_map.entry(hash.clone()).and_modify(|new| {
+                    new.update_miner(miner.clone());
+                    debug!(
+                        "During CacheUpdate::HeaderTree, updated miner of block {}: {}",
+                        hash, miner
+                    );
+                });
+            }
+
+            locked_cache.entry(network_id).and_modify(|e| {
+                e.header_infos_json = new_header_infos_map
+                    .iter()
+                    .map(|(_, header)| header.clone())
+                    .collect();
+                e.forks = forks;
+            });
+        }
+        CacheUpdate::NodeTips { node_id, tips } => {
+            let min_height = match network.header_infos_json.iter().min_by_key(|h| h.height) {
+                Some(header) => header.height,
+                None => 0,
+            };
+            let relevant_tips: Vec<ChainTip> = tips
+                .iter()
+                .filter(|t| t.height >= min_height)
+                .cloned()
+                .collect();
+
+            locked_cache.entry(network_id).and_modify(|network| {
+                network
+                    .node_data
+                    .entry(node_id)
+                    .and_modify(|e| e.tips(&relevant_tips));
+            });
+        }
+        CacheUpdate::NodeReachability { node_id, reachable } => {
+            locked_cache.entry(network_id).and_modify(|network| {
+                network
+                    .node_data
+                    .entry(node_id)
+                    .and_modify(|e| e.reachable(reachable));
+            });
+        }
+        CacheUpdate::NodeVersion { node_id, version } => {
+            locked_cache.entry(network_id).and_modify(|network| {
+                network
+                    .node_data
+                    .entry(node_id)
+                    .and_modify(|e| e.version(version));
+            });
+        }
+    }
+}
+
+async fn load_node_version(node: BoxedSyncSendNode, network: &str) -> String {
+    // The Bitcoin Core version is requested via the getnetworkinfo RPC. This
+    // RPC exposes sensitive information to the caller, so it might not be
+    // allowed on the whitelist. We set the version to VERSION_UNKNOWN if we
+    // can't request it. As RPC interface might not be up yet, we
+    // try to request the version multiple times.
+    let mut interval = interval(Duration::from_secs(10));
+    for _ in 0..5 {
+        match node.version().await {
+            Ok(version) => {
+                return version;
+            }
+            Err(e) => match e {
+                error::FetchError::BitcoinCoreRPC(JsonRpc(msg)) => {
+                    warn!("Could not fetch getnetworkinfo from node='{}' on network '{}': {:?}. Retrying...", node.info().name, network, msg);
+                }
+                _ => {
+                    error!(
+                        "Could not load version from node='{}' on network='{}': {:?}",
+                        node.info().name,
+                        network,
+                        e
+                    );
+                    return VERSION_UNKNOWN.to_string();
+                }
+            },
+        };
+        interval.tick().await;
+    }
+    warn!(
+        "Could not load version from node='{}' on network='{}'. Using '{}' as version.",
+        node.info().name,
+        network,
+        VERSION_UNKNOWN
+    );
+    return VERSION_UNKNOWN.to_string();
 }
 
 #[cfg(test)]
@@ -678,6 +839,7 @@ mod tests {
                     header_infos_json: vec![],
                     node_data,
                     forks: vec![],
+                    recent_miners: vec![],
                 },
             );
         }
@@ -686,13 +848,29 @@ mod tests {
             true
         );
 
-        node_reachable(&caches, network_id, node.id, false).await;
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::NodeReachability {
+                node_id: node.id,
+                reachable: false,
+            },
+        )
+        .await;
         assert_eq!(
             get_test_node_reachable(&caches, network_id, node.id).await,
             false
         );
 
-        node_reachable(&caches, network_id, node.id, true).await;
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::NodeReachability {
+                node_id: node.id,
+                reachable: true,
+            },
+        )
+        .await;
         assert_eq!(
             get_test_node_reachable(&caches, network_id, node.id).await,
             true

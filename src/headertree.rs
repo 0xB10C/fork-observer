@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-use petgraph::graph::NodeIndex;
-use petgraph::visit::{Dfs, EdgeRef};
-
 use crate::types::{Fork, HeaderInfoJson, Tree};
 
-use log::{info, warn};
+use log::{debug, warn};
+use petgraph::graph::NodeIndex;
+use petgraph::visit::{Dfs, EdgeRef};
 
 pub async fn sorted_interesting_heights(
     tree: &Tree,
@@ -58,9 +57,9 @@ pub async fn sorted_interesting_heights(
     interesting_heights = interesting_heights_set
         .iter()
         .map(|h| *h)
-        .rev() // reversing: ascending -> desescending
+        .rev() // reversing: ascending -> descending
         .take(max_interesting_heights) // taking the 'last' max_interesting_heights
-        .rev() // reversing: desescending -> ascending
+        .rev() // reversing: descending -> ascending
         .collect();
 
     // To be sure, sort again.
@@ -94,10 +93,10 @@ pub async fn strip_tree(
         |_, edge| Some(edge),
     );
 
-    // We now have muliple sub header trees. To reconnect them
+    // We now have multiple sub header trees. To reconnect them
     // we figure out the starts of these chains (roots) and sort
     // them by height. We can't assume they are sorted when as we
-    // added data from mulitple nodes to the tree.
+    // added data from multiple nodes to the tree.
 
     let mut roots: Vec<NodeIndex> = striped_tree
         .externals(petgraph::Direction::Incoming)
@@ -110,7 +109,7 @@ pub async fn strip_tree(
 
     let mut prev_header_to_connect_to: Option<NodeIndex> = None;
     for root in roots.iter() {
-        // If we have apprev_header_to_connect_to, then connect
+        // If we have a prev_header_to_connect_to, then connect
         // the current root to it.
         if let Some(prev_idx) = prev_header_to_connect_to {
             striped_tree.add_edge(prev_idx, *root, &false);
@@ -134,7 +133,7 @@ pub async fn strip_tree(
         }
     }
 
-    info!(
+    debug!(
         "done collapsing tree: roots={}, tips={}",
         striped_tree
             .externals(petgraph::Direction::Incoming)
@@ -174,7 +173,7 @@ pub async fn recent_forks(tree: &Tree, how_many: usize) -> Vec<Fork> {
     let tree = &tree_locked.0;
 
     let mut forks: Vec<Fork> = vec![];
-    // it could be, that we have mutliple roots. To be safe, do this for all
+    // it could be, that we have multiple roots. To be safe, do this for all
     // roots.
     tree.externals(petgraph::Direction::Incoming)
         .for_each(|root| {
