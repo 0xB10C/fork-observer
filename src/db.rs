@@ -6,7 +6,7 @@ use petgraph::graph::NodeIndex;
 use bitcoincore_rpc::bitcoin;
 use bitcoincore_rpc::bitcoin::BlockHash;
 
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::error::DbError;
 use crate::types::{Db, HeaderInfo, TreeInfo};
@@ -55,7 +55,7 @@ pub async fn write_to_db(
 ) -> Result<(), DbError> {
     let mut db_locked = db.lock().await;
     let tx = db_locked.transaction()?;
-    info!(
+    debug!(
         "inserting {} headers from network {} into the database..",
         new_headers.len(),
         network
@@ -75,7 +75,7 @@ pub async fn write_to_db(
         )?;
     }
     tx.commit()?;
-    info!(
+    debug!(
         "done inserting {} headers from network {} into the database",
         new_headers.len(),
         network
