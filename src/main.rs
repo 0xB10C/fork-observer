@@ -82,6 +82,40 @@ async fn startup() -> Result<(config::Config, Db, Caches), MainError> {
     Ok((config, db, caches))
 }
 
+async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Caches) {
+    let forks = headertree::recent_forks(&tree, MAX_FORKS_IN_CACHE).await;
+    let hij = headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
+    {
+        let mut locked_caches = caches.lock().await;
+        let node_data: NodeData = network
+            .nodes
+            .iter()
+            .cloned()
+            .map(|n| {
+                (
+                    n.info().id,
+                    NodeDataJson::new(
+                        n.info(),
+                        &vec![],                     // no chain tips knows yet
+                        VERSION_UNKNOWN.to_string(), // is updated later, when we know it
+                        0,                           // timestamp of last block update
+                        true, // assume the node is reachable, if it isn't we set it to false after the first getchaintips RPC call anyway
+                    ),
+                )
+            })
+            .collect();
+        locked_caches.insert(
+            network.id,
+            Cache {
+                header_infos_json: hij.clone(),
+                node_data,
+                forks,
+                recent_miners: vec![],
+            },
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -89,7 +123,6 @@ async fn main() -> Result<(), MainError> {
 
     // A channel to notify about tip changes via ServerSentEvents to clients.
     let (tipchanges_tx, _) = broadcast::channel(16);
-
     let network_infos: Vec<NetworkJson> = config.networks.iter().map(NetworkJson::new).collect();
     let db_clone = db.clone();
 
@@ -117,39 +150,7 @@ async fn main() -> Result<(), MainError> {
             },
         ));
 
-        // populate cache with available data
-        let forks = headertree::recent_forks(&tree, MAX_FORKS_IN_CACHE).await;
-        let hij =
-            headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
-        {
-            let mut locked_caches = caches.lock().await;
-            let node_data: NodeData = network
-                .nodes
-                .iter()
-                .cloned()
-                .map(|n| {
-                    (
-                        n.info().id,
-                        NodeDataJson::new(
-                            n.info(),
-                            &vec![],                     // no chain tips knows yet
-                            VERSION_UNKNOWN.to_string(), // is updated later, when we know it
-                            0,                           // timestamp of last block update
-                            true, // assume the node is reachable, if it isn't we set it to false after the first getchaintips RPC call anyway
-                        ),
-                    )
-                })
-                .collect();
-            locked_caches.insert(
-                network.id,
-                Cache {
-                    header_infos_json: hij.clone(),
-                    node_data,
-                    forks,
-                    recent_miners: vec![],
-                },
-            );
-        }
+        populate_cache(&network, &tree, &caches).await;
 
         for node in network.nodes.iter().cloned() {
             let network = network.clone();
