@@ -308,7 +308,7 @@ async fn main() -> Result<(), MainError> {
                             match tipchanges_tx_cloned.clone().send(network.id) {
                                 Ok(_) => debug!("Sent a tip_changed notification."),
                                 Err(e) => {
-                                    warn!(
+                                    debug!(
                                         "Could not send tip_changed update into the channel: {}",
                                         e
                                     )
