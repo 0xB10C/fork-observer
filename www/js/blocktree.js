@@ -446,11 +446,13 @@ async function draw_nodes() {
         <div class="px-2 small">
           ${d.reachable ? "": "<span class='badge text-bg-danger'>RPC unreachable</span>"}
           <span class='badge text-bg-secondary small'>${d.implementation} ${d.version.replaceAll("/", "").replaceAll("Satoshi:", "").replace("unknown", "(version unknown)")}</span>
-          <span class="badge text-bg-secondary small">tip changed <span class="relativeTimestamp" data-timestamp=${d.last_changed_timestamp}>${ago(d.last_changed_timestamp)}</span>
         </div>
         
         <div class="px-2">
           ${node_description_summary(d.description)}
+        </div>
+        <div class="px-2">
+          <span class="small">tip changed <span class="relativeTimestamp" data-timestamp=${d.last_changed_timestamp}>${ago(d.last_changed_timestamp)}</span>
         </div>
         <div class="px-2" style="background-color: hsl(${parseInt(get_active_height_or_0(d) * 90, 10) % 360}, 50%, 75%)">
           <span class="small text-color-dark"> height: ${get_active_height_or_0(d)}
