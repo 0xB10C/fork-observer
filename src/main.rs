@@ -487,6 +487,9 @@ async fn main() -> Result<(), MainError> {
     let index_html = warp::get()
         .and(warp::path::end())
         .and(warp::fs::file(config.www_path.join("index.html")));
+    let fullscreen_html = warp::get()
+        .and(warp::path!("fullscreen"))
+        .and(warp::fs::file(config.www_path.join("fullscreen.html")));
 
     let info_json = warp::get()
         .and(warp::path!("api" / "info.json"))
@@ -549,6 +552,7 @@ async fn main() -> Result<(), MainError> {
 
     let routes = www_dir
         .or(index_html)
+        .or(fullscreen_html)
         .or(data_json)
         .or(info_json)
         .or(networks_json)
