@@ -30,8 +30,7 @@ const status_to_color = {
   "headers-only": "yellow",
 }
 
-function draw() {
-  data = state_data
+function preprocess_data(data) {  
   let header_infos = data.header_infos;
   let tip_infos = [];
   let node_infos = data.nodes;
@@ -92,7 +91,15 @@ function draw() {
 
   // assigns the data to a hierarchy using parent-child relationships
   // and maps the node data to the tree layout
-  var root_node = treemap(d3.hierarchy(treeData));
+  const root_node = treemap(d3.hierarchy(treeData));
+  const max_height = Math.max(...header_infos.map(d => d.height))
+
+  return [root_node, max_height, htoi]
+}
+
+function draw() {
+  let data = state_data
+  const [root_node, max_height, htoi] = preprocess_data(data)
 
   var svg = d3
     .select("#drawing-area")
@@ -308,7 +315,6 @@ function draw() {
 
   let offset_x = 0;
   let offset_y = 0;
-  let max_height = Math.max(...header_infos.map(d => d.height))
   let max_height_tip = root_node.leaves().filter(d => d.data.data.height == max_height)[0]
   if (max_height_tip !== undefined) {
     offset_x = o.x(max_height_tip, htoi);
