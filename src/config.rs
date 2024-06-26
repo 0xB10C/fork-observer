@@ -26,6 +26,7 @@ pub enum PoolIdentificationNetwork {
     Mainnet,
     Testnet,
     Signet,
+    Regtest,
 }
 
 impl PoolIdentificationNetwork {
@@ -34,6 +35,7 @@ impl PoolIdentificationNetwork {
             PoolIdentificationNetwork::Mainnet => BitcoinNetwork::Bitcoin,
             PoolIdentificationNetwork::Testnet => BitcoinNetwork::Testnet,
             PoolIdentificationNetwork::Signet => BitcoinNetwork::Signet,
+            PoolIdentificationNetwork::Regtest => BitcoinNetwork::Regtest,
         }
     }
 }
