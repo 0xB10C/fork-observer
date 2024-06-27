@@ -106,12 +106,12 @@ text.block-miner {
   stroke: var(--text-color);
 }
 
-.node-indicator {
+.node-tip-status-indicator {
  stroke: var(--node-indicatior-stroke);
  stroke-width: 1px;
 }
 
-.node-indicator text {
+.node-tip-status-indicator text {
  stroke-width: 0px;
  font-size: 14px;
  text-anchor: middle;
