@@ -35,6 +35,8 @@ let svg = d3
     .select("#drawing-area")
     .style("border", "1px solid")
 
+let initialDraw = true
+
 // enables zoom and panning
 const zoom = d3.zoom().scaleExtent([0.15, 2]).on( "zoom", e => g.attr("transform", e.transform) )
 svg.call(zoom)
@@ -119,7 +121,17 @@ function draw() {
     .join("path")
       .attr("class", "link link-block-block")
       .attr("d", o.linkDir(htoi))
-      .attr("stroke-dasharray", d => d.target.data.data.height - d.source.data.data.height == 1 ? "0" : "4 5")
+      .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
+  
+  links
+    .filter(d => d.target.data.data.height == max_height)
+    .attr("stroke-dashoffset", (d, x, y) => y[x].getTotalLength())
+    .attr("stroke-opacity", 1)
+    .transition(d3.transition().duration(300))
+    .attr("stroke-dashoffset", 0)
+    .attr("stroke-opacity", 0.2)
+    .transition(d3.transition().duration(300))
+    .attr("stroke-opacity", 1)
 
   links
     .filter(d => d.target.data.data.height - d.source.data.data.height != 1)
@@ -136,10 +148,6 @@ function draw() {
     .text("hidden")
     .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
     .attr("dy", "1em")
-
-  const t = d3.transition()
-    .duration(7500)
-    .ease(d3.easeExpIn);
 
   // adds each block as a group
   let blocks = g
@@ -161,19 +169,10 @@ function draw() {
     let block_child_group = blocks.append("g")
       .attr("class", "block-child-group")
 
-    block_child_group.insert("rect")
-      .filter(d => d.data.data.height != max_height)
+    let block_backgrounds = block_child_group.insert("rect")
       .attr("rx", 5)
       .attr("fill", "white")
-      .attr("transform", d => "translate("+ (-BLOCK_SIZE)/2  +", " + (-BLOCK_SIZE)/2 + ")")
-      .attr("height", d => BLOCK_SIZE)
-      .attr("width", d => BLOCK_SIZE)
-
-    block_child_group.insert("rect")
-      .filter(d => d.data.data.height == max_height)
-      .attr("rx", 5)
-      .attr("fill", "white")
-      .transition(d3.transition().duration(1000))
+    block_backgrounds.filter(d => d.data.data.height != max_height || initialDraw)
       .attr("transform", d => "translate("+ (-BLOCK_SIZE)/2  +", " + (-BLOCK_SIZE)/2 + ")")
       .attr("height", d => BLOCK_SIZE)
       .attr("width", d => BLOCK_SIZE)
@@ -189,12 +188,6 @@ function draw() {
     .attr("class", "block-text")
     .text(d => d.data.data.height);
 
-  height_text
-    .filter(d => d.data.data.height == max_height)
-    .style("font-size", "0px")
-    .transition(d3.transition().duration(600))
-    .style("font-size", "10px")
-
   // miner next to the block
   let pool_text = block_child_group
     .insert("text")
@@ -203,12 +196,29 @@ function draw() {
     .attr("class", "block-miner")
     .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
 
-  pool_text
-    .filter(d => d.data.data.height == max_height)
-    .style("opacity", 0)
-    .transition(d3.transition().delay(400).duration(600))
-    .style("opacity", 1)
+  if (!initialDraw) {
+    block_backgrounds
+      .filter(d => d.data.data.height == max_height)
+      .attr("height", d => BLOCK_SIZE/10)
+      .attr("width", d => BLOCK_SIZE/10)
+      .transition(d3.transition().duration(600))
+      .attr("transform", d => "translate("+ (-BLOCK_SIZE)/2  +", " + (-BLOCK_SIZE)/2 + ")")
+      .attr("height", d => BLOCK_SIZE)
+      .attr("width", d => BLOCK_SIZE)
 
+    pool_text
+      .filter(d => d.data.data.height == max_height)
+      .style("opacity", 0)
+      .transition(d3.transition().duration(600))
+      .style("opacity", 1)
+
+    height_text
+      .filter(d => d.data.data.height == max_height)
+      .style("font-size", "0px")
+      .transition(d3.transition().duration(600))
+      .style("font-size", "10px")
+  }
+  
   var node_groups = block_child_group
     .filter(d => d.data.data.status != "in-chain")
     .append("g")
@@ -246,7 +256,8 @@ function draw() {
 
   zoom.scaleBy(svg, 1);
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
-  zoom.translateTo(svg.transition(d3.transition().duration(750)), offset_x, offset_y, [(svgSize.width)/2, (svgSize.height)/2])
+  zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, [(svgSize.width)/2, (svgSize.height)/2])
+  initialDraw = false
 }
 
 // recursivly collapses linear branches of blocks longer than x,
@@ -295,8 +306,7 @@ function gen_treemap(o, tips, unique_heights) {
 }
 
 function onBlockClick(c, d) {
-  let parentElement = d3.select(c.target.parentElement)
-
+  let parentElement = d3.select(c.target.parentElement.parentElement)
   // The on-click listener of the block propagates to the appened description elements.
   // To prevent adding a second description element of the block we return early if the
   // parentElement is not the block.
