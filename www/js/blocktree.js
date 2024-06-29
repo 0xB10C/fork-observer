@@ -122,20 +122,31 @@ function draw() {
       .attr("class", "link link-block-block")
       .attr("d", o.linkDir(htoi))
       .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
-  
-  links
-    .filter(d => d.target.data.data.height == max_height)
-    .attr("stroke-dashoffset", (d, x, y) => y[x].getTotalLength())
-    .attr("stroke-opacity", 1)
-    .transition(d3.transition().duration(300))
-    .attr("stroke-dashoffset", 0)
-    .attr("stroke-opacity", 0.2)
-    .transition(d3.transition().duration(300))
-    .attr("stroke-opacity", 1)
 
-  links
-    .filter(d => d.target.data.data.height - d.source.data.data.height != 1)
-    .append("text")
+  if (!initialDraw) {
+    links
+      .filter(d => d.target.data.data.height == max_height)
+      .attr("stroke-dashoffset", (d, x, y) => y[x].getTotalLength())
+      .attr("stroke-opacity", 1)
+      .transition(d3.transition().duration(300))
+      .attr("stroke-dashoffset", 0)
+      .attr("stroke-opacity", 0.2)
+      .transition(d3.transition().duration(300))
+      .attr("stroke-opacity", 1)
+  }
+
+  let hiddenBlockTexts = g
+    .selectAll(".text-blocks-not-shown")
+    .data(root_node.links().filter(d => d.target.data.data.height - d.source.data.data.height != 1), d => d.source.data.data.hash + d.target.data.data.hash)
+    .join(
+      enter => enter.append("text"),
+      update => {
+        // HACK: removes the hidden block text. Not sure why the text is still there
+        update.selectAll("tspan").remove()
+        return update
+      },
+      exit => exit.remove()
+    )
     .attr("class", "text-blocks-not-shown")
     .style("text-anchor", o.hidden_blocks_text.anchor)
     .style("font-size", "12px")
@@ -152,7 +163,7 @@ function draw() {
   // adds each block as a group
   let blocks = g
     .selectAll(".block")
-    .data(root_node.descendants())
+    .data(root_node.descendants(), d => d.data.data.hash + d.data.data.height)
     .join(
       enter => enter.append("g").classed("block-new", true),
       update => {
@@ -254,6 +265,9 @@ function draw() {
     offset_y = o.y(max_height_tip, htoi);
   }
 
+  // raise the blocks to make sure they are drawn over the links
+  blocks.raise()
+ 
   zoom.scaleBy(svg, 1);
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
   zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, [(svgSize.width)/2, (svgSize.height)/2])
