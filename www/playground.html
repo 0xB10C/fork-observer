@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta name="color-scheme" content="dark light">
+  <meta charset="utf-8">
+  <title>fork-observer</title>
+  <meta name="author" content="">
+  <meta name="description" content="">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="static/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-0evHe/X+R7YkIZDRvuzKMRqM+OrBnVFBL6DOitfPri4tjfHxaWutUpFmBp4vmVor">
+  <link href="static/css/style.css" rel="stylesheet">
+</head>
+
+<body>
+  <div class="container-fluid" style="display: flex; flex-direction: column; min-height: 100vh;">
+    <main style="flex: 1;">
+      <div style="display: flex; flex-direction: column;">
+        <svg style="width: 1080px; height: 1920px;" id="drawing-area"></svg>
+        <div>
+          <label>Orientation <select name="orientation" id="orientation"></select></label>
+          <button id="load" type="button" class="btn btn-outline-primary">load</button>
+          <button id="play" type="button" class="btn btn-outline-primary">play</button>
+          <div class="form-floating">
+            <textarea class="form-control" placeholder="{}" id="stateInput" style="height: 100px"></textarea>
+            <label for="stateInput">JSON state input</label>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+
+<script src="static/js/d3.v7.min.js"></script>
+<script src="static/js/blocktree.js"></script>
+<script src="static/js/main.js"></script>
+
+<script>
+  // playground code
+  const loadButton = d3.select("#load")
+  const playButton = d3.select("#play")
+  const stateInput = d3.select("#stateInput")
+ 
+  loadButton.on("click", async function() {
+    state_data = JSON.parse(stateInput.node().value)
+    await draw()
+  })
+  
+  playButton.on("click", async function() {
+    play()
+  })
+
+  let id = 0;
+  let height = 0;
+
+  function mineBlock(pool, fork) {
+      let prev_id = id;
+      let newHeight = height + 1;
+      if (fork) {
+        prev_id = id - 1;
+        newHeight = height;
+      }
+      state_data["header_infos"].push({id: id+1, prev_id: prev_id, height: newHeight, hash: id, miner: pool})
+      id+=1;
+      if (!fork) {
+        height+=1;
+      }
+  }
+
+  function play() {
+    id = 1;
+    height = 45335;
+  
+    state_data = {
+      header_infos: [
+        {id: 1, "prev_id": null, height: 0, hash: "a", miner: "SN"},
+      ],
+      nodes: [],
+    }
+    mineBlock("Pool A", false)
+    mineBlock("Pool B", false)
+    draw()
+
+    // under my recent posts about "which pool mines on what block during a fork" I've noticed a bit of confusion about the mining pool game theory during forks.
+    setTimeout(() => {
+      mineBlock("Pool C")
+      draw()
+    }, 4000);
+
+    setTimeout(() => {
+      mineBlock("Pool B")
+      draw()
+    }, 8000);
+
+
+    // most of the time, mining pools just
+
+    setTimeout(() => {
+      mineBlock("Pool A")
+      draw()
+    }, 10500);
+    
+    // extend the blockchain by building a block on top of
+    
+    setTimeout(() => {
+      mineBlock("Pool C")
+      draw()
+    }, 13500);
+    
+    // the current chain tip.
+    // however, if two pools find a block at roughly
+
+    setTimeout(() => {
+      mineBlock("Pool A")
+      mineBlock("Pool B", true)
+      draw()
+    }, 16500);
+    
+    // the same time, it can happen that the chain briefly forks (or splits).
+
+    setTimeout(() => {
+      pool_data["B"] = { height: height+1, name: "Pool B", prev_hash: id-1 }
+      draw()
+    }, 25000);
+    
+    setTimeout(() => {
+      pool_data = {}
+      mineBlock("Pool B")
+      draw()
+    }, 45000);
+
+    
+    setTimeout(() => {
+      pool_data = {}
+      state_data["header_infos"].pop()
+      draw()
+    }, 47500);
+
+    setTimeout(() => {
+      pool_data = {}
+      height -= 1;
+      id -= 1;
+      mineBlock("Pool A")
+      draw()
+    }, 48000);
+
+    
+    setTimeout(() => {
+      play()
+    }, 60000);
+  }
+  
+
+</script>
+
+</html>
