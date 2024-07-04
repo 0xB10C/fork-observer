@@ -9,7 +9,7 @@ const orientations = {
     x: (d, _) => d.x,
     y: (d, htoi) => -htoi[d.data.data.height] * NODE_SIZE,
     linkDir: (htoi) => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
-    hidden_blocks_text: {offset_x: -45, offset_y: 0, anchor: "left"},
+    hidden_blocks_text: {offset_x: -15, offset_y: 0, anchor: "left"},
     block_text_rotate: -90,
   },
   "left-to-right": {
@@ -28,6 +28,10 @@ const status_to_color = {
   "valid-headers": "red",
   "headers-only": "yellow",
 }
+
+// node status indicator
+const indicator_radius = 8
+const indicator_margin = 1
 
 let o = orientations["left-to-right"];
 
@@ -113,135 +117,169 @@ function preprocess_data(data) {
 
 function draw() {
   let data = state_data
-  const [root_node, max_height, htoi] = preprocess_data(data)
+  
+  // nothing to draw if there are no headers
+  if (data.header_infos.length == 0) {
+    return
+  }
+
+  const [root_node, max_height, htoi] = preprocess_data(data, pool_data)
 
   let links = g
     .selectAll(".link-block-block")
-    .data(root_node.links())
-    .join("path")
-      .attr("class", "link link-block-block")
-      .attr("d", o.linkDir(htoi))
-      .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
-
-  if (!initialDraw) {
-    links
-      .filter(d => d.target.data.data.height == max_height)
-      .attr("stroke-dashoffset", (d, x, y) => y[x].getTotalLength())
-      .attr("stroke-opacity", 1)
-      .transition(d3.transition().duration(300))
-      .attr("stroke-dashoffset", 0)
-      .attr("stroke-opacity", 0.2)
-      .transition(d3.transition().duration(300))
-      .attr("stroke-opacity", 1)
-  }
+    .data(root_node.links(), d => `${d.source.data.data.hash}-${d.target.data.data.hash}`)
+    .join(
+      enter => {
+        enter.append("path")
+          .attr("class", "link link-block-block")
+          .attr("d", o.linkDir(htoi))
+          .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
+          .attr("fill", "transparent")
+          .attr("stroke-dashoffset", (d, x, y) => y[x].getTotalLength())
+          .attr("stroke-opacity", 1)
+          .classed("being-mined", d => d.target.data.data.status == "mining")
+          .transition(d3.transition().duration(300))
+          .attr("stroke-dashoffset", 0)
+          .attr("stroke-opacity", 0.2)
+          .transition(d3.transition().duration(300))
+          .attr("stroke-opacity", 1)
+      },
+      update => {
+        update
+          .transition(d3.transition().duration(600))
+          .attr("d", o.linkDir(htoi))
+          .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
+          .attr("stroke-dashoffset", 0)
+          .attr("stroke-opacity", 1)
+      }
+    )
 
   let hiddenBlockTexts = g
     .selectAll(".text-blocks-not-shown")
     .data(root_node.links().filter(d => d.target.data.data.height - d.source.data.data.height != 1), d => d.source.data.data.hash + d.target.data.data.hash)
     .join(
-      enter => enter.append("text"),
-      update => {
-        // HACK: removes the hidden block text. Not sure why the text is still there
-        update.selectAll("tspan").remove()
-        return update
+      enter => {
+        let blocksNotShown = enter.append("text")
+          .attr("class", "text-blocks-not-shown")
+          .style("text-anchor", o.hidden_blocks_text.anchor)
+          .style("font-size", "12px")
+          .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
+          .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y )
+        
+        blocksNotShown.append("tspan")
+          .text(d => (d.target.data.data.height - d.source.data.data.height -1) + " blocks hidden")
+          .attr("dy", ".3em")
+          .attr("transform", d => `rotate(${o.block_text_rotate}, ${o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x},${o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y})`)
+        return blocksNotShown
       },
-      exit => exit.remove()
+      update => {
+        update
+          .transition(d3.transition().duration(600))
+          .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
+          .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y )
+          .attr("transform", d => `rotate(${o.block_text_rotate}, ${o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x},${o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y})`)
+      }
     )
-    .attr("class", "text-blocks-not-shown")
-    .style("text-anchor", o.hidden_blocks_text.anchor)
-    .style("font-size", "12px")
-    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
-    .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y )
-  .append("tspan")
-    .text(d => (d.target.data.data.height - d.source.data.data.height -1) + " blocks")
-    .attr("dy", ".3em")
-  .append("tspan")
-    .text("hidden")
-    .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
-    .attr("dy", "1em")
 
   // adds each block as a group
   let blocks = g
     .selectAll(".block")
-    .data(root_node.descendants(), d => d.data.data.hash + d.data.data.height)
+    .data(root_node.descendants(), d => `${d.data.data.hash}-${d.data.data.height}`)
     .join(
-      enter => enter.append("g").classed("block-new", true),
+      enter => {
+        let newBlocks = enter.append("g")
+          .classed("block", true)
+          .attr("id", d => "block-" + d.data.data.height + "-" + d.data.data.hash)
+          .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
+          .attr("x", d => o.x(d, htoi))
+          .attr("y", d => o.y(d, htoi))
+          .on("click", (c, d) => onBlockClick(c, d))
+        
+        let block_child_group = newBlocks.append("g")
+          .attr("class", "block-child-group")
+
+        let block_backgrounds = block_child_group.insert("rect")
+          .attr("rx", 5)
+          .attr("fill", "white")
+          .attr("stroke", "lightgray")
+          .attr("stroke-opacity", d => d.data.data.status == "mining" ? 0.2 : 1)
+          .classed("being-mined", d => d.data.data.status == "mining")
+          
+        block_backgrounds.filter(d => d.data.data.height != max_height || initialDraw)
+          .attr("x", -BLOCK_SIZE/2)
+          .attr("y", -BLOCK_SIZE/2)
+          .attr("height", d => BLOCK_SIZE)
+          .attr("width", d => BLOCK_SIZE)
+        
+        let height_text = block_child_group
+          .insert("text")
+          .attr("dy", ".35em")
+          .attr("class", "block-text")
+          .text(d => d.data.data.height);
+        
+        let pool_text = block_child_group
+          .insert("text")
+          .classed("block-pool-name", true)
+          .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
+          .attr("dy", "4em")
+          .classed("block-miner", true)
+          .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
+     
+        if (!initialDraw) {
+          block_backgrounds
+            .filter(d => d.data.data.height == max_height)
+            .attr("transform", "scale(0.1)")
+            .attr("height", d => BLOCK_SIZE)
+            .attr("width", d => BLOCK_SIZE)
+            .transition(d3.transition().duration(600))
+            .attr("x", -BLOCK_SIZE/2)
+            .attr("y", -BLOCK_SIZE/2)
+            .attr("transform", "scale(1)")
+
+          pool_text
+            .filter(d => d.data.data.height == max_height)
+            .style("opacity", 0)
+            .transition(d3.transition().duration(600))
+            .style("opacity", 1)
+
+          height_text
+            .filter(d => d.data.data.height == max_height)
+            .style("font-size", "0px")
+            .transition(d3.transition().duration(600))
+            .style("font-size", "10px")
+        }
+      
+        return newBlocks
+      },
       update => {
-        // HACK: removes the old block metadata. Not sure why the metadata is still there
-        update.selectAll(".block-child-group").remove()
+        update
+          .transition(d3.transition().duration(600))
+          .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
+        update.selectAll(".block-pool-name")
+          .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
+        update.selectAll(".node-indicator")
+           .filter(d => d.status == "in-chain")
+           .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
+           .append("text")
+           .text("abcd")
+
+        update.raise()
         return update
       }
-    )
-    .classed("block", true)
-    .attr("id", d => "block-" + d.data.data.height + "-" + d.data.data.hash)
+    );
+
+  let node_groups = g
+    .selectAll(".node-tip-status-indicator")
+    .data(root_node.descendants().filter(d => d.data.data.status != "in-chain" && d.data.data.status != "mining"))
+    .join("g")
+    .classed("node-tip-status-indicator", true)
     .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
-    .on("click", (c, d) => onBlockClick(c, d))
 
-    let block_child_group = blocks.append("g")
-      .attr("class", "block-child-group")
-
-    let block_backgrounds = block_child_group.insert("rect")
-      .attr("rx", 5)
-      .attr("fill", "white")
-    block_backgrounds.filter(d => d.data.data.height != max_height || initialDraw)
-      .attr("transform", d => "translate("+ (-BLOCK_SIZE)/2  +", " + (-BLOCK_SIZE)/2 + ")")
-      .attr("height", d => BLOCK_SIZE)
-      .attr("width", d => BLOCK_SIZE)
-
-  block_child_group
-    .append('path')
-    .attr("class", "link link-block-description") // when modifying, check if there is a depedency on this class name.
-
-  // height in the block
-  let height_text = block_child_group
-    .insert("text")
-    .attr("dy", ".35em")
-    .attr("class", "block-text")
-    .text(d => d.data.data.height);
-
-  // miner next to the block
-  let pool_text = block_child_group
-    .insert("text")
-    .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
-    .attr("dy", "4em")
-    .attr("class", "block-miner")
-    .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
-
-  if (!initialDraw) {
-    block_backgrounds
-      .filter(d => d.data.data.height == max_height)
-      .attr("height", d => BLOCK_SIZE/10)
-      .attr("width", d => BLOCK_SIZE/10)
-      .transition(d3.transition().duration(600))
-      .attr("transform", d => "translate("+ (-BLOCK_SIZE)/2  +", " + (-BLOCK_SIZE)/2 + ")")
-      .attr("height", d => BLOCK_SIZE)
-      .attr("width", d => BLOCK_SIZE)
-
-    pool_text
-      .filter(d => d.data.data.height == max_height)
-      .style("opacity", 0)
-      .transition(d3.transition().duration(600))
-      .style("opacity", 1)
-
-    height_text
-      .filter(d => d.data.data.height == max_height)
-      .style("font-size", "0px")
-      .transition(d3.transition().duration(600))
-      .style("font-size", "10px")
-  }
-  
-  var node_groups = block_child_group
-    .filter(d => d.data.data.status != "in-chain")
-    .append("g")
-    .selectAll("g")
+  let indicators = node_groups.selectAll("g")
     .data(d => d.data.data.status)
     .join("g")
-    .attr("class", d => "node-indicator")
 
-  // node status indicator
-  const indicator_radius = 8
-  const indicator_margin = 1
-  node_groups.append("rect")
+  indicators.append("rect")
     .attr("width", indicator_radius*2)
     .attr("height", indicator_radius*2)
     .attr("rx", 1)
@@ -250,11 +288,10 @@ function draw() {
     .attr("x", (d, i) => (BLOCK_SIZE/2) - i * (indicator_radius + indicator_margin) * 2 - indicator_radius)
     .attr("class", d => "tip-status-color-fill-" + d.status)
 
-  node_groups.append("text")
+  indicators.append("text")
     .attr("y", -BLOCK_SIZE/2)
     .attr("dx", (d, i) => (BLOCK_SIZE/2) - i * (indicator_radius + indicator_margin) * 2)
     .attr("dy", ".35em")
-    .attr("class", "node-indicator")
     .text(d => d.count)
 
   let offset_x = 0;
@@ -267,7 +304,8 @@ function draw() {
 
   // raise the blocks to make sure they are drawn over the links
   blocks.raise()
- 
+  node_groups.raise()
+
   zoom.scaleBy(svg, 1);
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
   zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, [(svgSize.width)/2, (svgSize.height)/2])
