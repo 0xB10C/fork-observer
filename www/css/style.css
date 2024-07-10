@@ -8,6 +8,8 @@
   --block-description-link-color: gray;
   --block-description-bg: #f8f9fa;
   --block-miner-color: rgb(122, 122, 122);
+  --block-being-mined1: #f0f0f0;
+  --block-being-mined2: #ccc;
   --node-indicatior-stroke: black;
 }
 
@@ -22,6 +24,8 @@
     --block-description-bg: #f8f9fa;
     --node-indicatior-stroke: black;
     --block-miner-color: rgb(172, 172, 172);
+    --block-being-mined1: #777;
+    --block-being-mined2: #ccc;
   }
   svg.invert, img.invert, .btn-close {
     -webkit-filter: invert(100%); /* safari 6.0 - 9.0 */
@@ -39,6 +43,8 @@
   --block-description-bg: #f8f9fa;
   --node-indicatior-stroke: black;
   --block-miner-color: rgb(172, 172, 172);
+  --block-being-mined1: #777;
+  --block-being-mined2: #ccc;
   svg.invert, img.invert, .btn-close {
     -webkit-filter: invert(100%); /* safari 6.0 - 9.0 */
     filter: invert(100%);
@@ -124,15 +130,49 @@ text.block-miner {
 .tip-status-color-fill-valid-headers { fill: #FF69B4; color: #FF69B4 }
 .tip-status-color-fill-headers-only { fill: #FF8800; color: #FF8800 }
 
+path.being-mined {
+  stroke-opacity: 0.1;
+  animation: grow-link infinite 2s;
+}
+
+@-webkit-keyframes grow-link {
+  0% {
+    stroke-dashoffset: -100;
+  }
+  100% {
+    stroke-dashoffset: 100;
+  }
+}
+
+rect.being-mined {
+  animation: pulse-block infinite 2s;
+}
+
+@-webkit-keyframes pulse-block {
+  0% {
+    fill: var(--block-being-mined2);
+  }
+  50% {
+    fill: var(--block-being-mined1);
+    x: -22.5px;
+    y: -22.5px;
+    width: 45px;
+    height: 45px;
+  }
+  100% {
+    fill: var(--block-being-mined2);
+  }
+}
+
 /* Connection status CSS */ 
 
 #connection-status {
-  animation: pulse infinite 5s;
+  animation: shortpulse infinite 5s;
   color: gray;
   vertical-align: text-bottom;
 }
 
-@-webkit-keyframes pulse {
+@-webkit-keyframes shortpulse {
   0% {
     opacity: 1;
   }

@@ -21,6 +21,8 @@ const PAGE_NAME = "fork-observer"
 var state_selected_network_id = 0
 var state_networks = []
 var state_data = {}
+var pool_data = {}
+const socket = new WebSocket("wss://stratum.miningpool.observer/jobs");
 
 async function fetch_info() {
   console.debug("called fetch_info()")
@@ -103,6 +105,24 @@ async function run() {
   await fetch_networks()
   await fetch_info()
   await update()
+
+  socket.addEventListener("message", (event) => {
+    job = JSON.parse(event.data);
+    // try to figure out if we need to redraw.
+    // We only want to redraw when the set of blocks being mined on changes.
+    let old_state = Object.values(pool_data).reduce(
+      (acc, cur) => acc.add(`${cur.height}-${cur.prev_hash}`),
+      new Set()
+    )
+    pool_data[job["pool_name"]] = {name: job["pool_name"], height: job["height"], prev_hash: job["prev_hash"]}
+    let new_state = Object.values(pool_data).reduce(
+      (acc, cur) => acc.add(`${cur.height}-${cur.prev_hash}`),
+      new Set()
+    )
+    if (old_state.symmetricDifference(new_state).size != 0) {
+      draw()
+    }
+  });
 
   periodicallyRedrawTimestamps()
 }

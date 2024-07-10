@@ -48,11 +48,11 @@ svg.call(zoom)
 let g = svg
     .append("g")
 
-function preprocess_data(data) {  
+function preprocess_data(data, pools) {  
   let header_infos = data.header_infos;
   let tip_infos = [];
   let node_infos = data.nodes;
-
+  
   hash_to_tipstatus = {}
   node_infos.forEach(node => {
     node.tips.forEach(tip => {
@@ -67,11 +67,44 @@ function preprocess_data(data) {
     });
   });
 
+  let max_header_id = 0;
+  let hash_to_id = {};
   header_infos.forEach(header_info => {
     let status = hash_to_tipstatus[header_info.hash];
     header_info.status = status == undefined? "in-chain" : Object.values(status)
     header_info.is_tip = status != undefined
+    hash_to_id[header_info.hash] = header_info.id; 
+    if (max_header_id < header_info.id) {
+      max_header_id = header_info.id;
+    }
   })
+
+  // append "fake" header infos to header_infos for blocks that are being mined on
+  let to_be_mined_blocks = {}
+  Object.values(pools).forEach(pool => {
+    if (hash_to_id.hasOwnProperty(pool.prev_hash)) {
+      if (!to_be_mined_blocks.hasOwnProperty(pool.prev_hash)) {
+        to_be_mined_blocks[pool.prev_hash] = {
+          hash: "this block is being mined",
+          height: pool.height,
+          id: "mining-on-top-of-" + hash_to_id[pool.prev_hash],
+          prev_id: hash_to_id[pool.prev_hash],
+          prev_blockhash: pool.prev_hash,
+          status: "mining",
+          is_tip: false,
+          miner: "",
+          merkle_root: "",
+          time: 0,
+          version: 0,
+          nonce: 0,
+          bits: 0,
+          pools: new Set(),
+        }
+      }
+      to_be_mined_blocks[pool.prev_hash].pools.add(pool.name)
+    }
+  });
+  header_infos = header_infos.concat(Object.values(to_be_mined_blocks));
 
   var treeData = d3
     .stratify()
@@ -404,7 +437,7 @@ function onBlockClick(c, d) {
 
     let status_text = "";
     // block description: tip status for nodes
-    if (d.data.data.status != "in-chain") {
+    if (d.data.data.status != "in-chain" && d.data.data.status != "mining") {
       d.data.data.status.reverse().forEach(status => {
         status_text += `<span class="text-monospace tip-status-color-fill-${status.status}">▆ </span>`
         status_text += `<span>${status.count}x ${status.status}: ${status.nodes.map(n => n.name).join(", ")}`
