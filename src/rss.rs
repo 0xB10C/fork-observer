@@ -176,9 +176,10 @@ impl Item {
         Item {
             title: format!("Node '{}' is lagging behind", node.name),
             description: format!(
-                "The node's active tip is on height {}, while other nodes consider a block with a height at least {} blocks higher their active tip. The node might still be synchronizing with the network or stuck.",
+                "The node's active tip is on height {}, while other nodes consider a block with a height at least {} blocks higher their active tip. The node might still be synchronizing with the network or stuck. Node version: {}",
                 height,
                 THREASHOLD_NODE_LAGGING,
+                node.version,
             ),
             guid: format!("lagging-node-{}-on-{}", node.name, height),
         }
@@ -188,8 +189,9 @@ impl Item {
         Item {
             title: format!("Node '{}' (id={}) is unreachable", node.name, node.id),
             description: format!(
-                "The RPC server of this node is not reachable. The node might be offline or there might be other networking issues. The nodes tip data was last updated at timestamp {} (zero indicates never).",
+                "The RPC server of this node is not reachable. The node might be offline or there might be other networking issues. The nodes tip data was last updated at timestamp {} (zero indicates never). Node version: {}",
                 node.last_changed_timestamp,
+                node.version,
             ),
             guid: format!("unreachable-node-{}-last-{}", node.id, node.last_changed_timestamp),
         }
