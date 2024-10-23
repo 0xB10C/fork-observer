@@ -460,19 +460,12 @@ function onBlockClick(c, d) {
   }
 }
 
-// If nessecary, return a <details> <summary> of the description
-function node_description_summary(description) {
-  if (description.length > 20) {
-    return `
-      <details>
-        <summary>
-          <span>description</span>
-        </summary>
-        <span>${description}</span>
-      </details>
-    `
-  }
-  return description
+function node_description(description) {
+  return `
+    <p class="mb-0 text-truncate" onclick="this.style.whiteSpace = 'normal'">
+      <span>${description}</span>
+    </p>   
+  `
 }
 
 function get_active_height_or_0(node) {
@@ -543,7 +536,7 @@ async function draw_nodes() {
         </div>
         
         <div class="px-2">
-          ${node_description_summary(d.description)}
+          ${node_description(d.description)}
         </div>
         <div class="px-2">
           <span class="small">tip changed <span class="relativeTimestamp" data-timestamp=${d.last_changed_timestamp}>${ago(d.last_changed_timestamp)}</span>
