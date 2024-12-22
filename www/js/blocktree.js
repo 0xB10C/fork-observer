@@ -233,8 +233,8 @@ function draw() {
 
         let block_backgrounds = block_child_group.insert("rect")
           .attr("rx", 5)
-          .attr("fill", "white")
-          .attr("stroke", "lightgray")
+          .attr("fill", d => d.data.data.miner == "Pool A" ? "#a16748" : (d.data.data.miner == "Pool B" ? "#4894a1" : "white") )
+          .attr("stroke", d => d.data.data.miner == "Pool A" ? "#a16748" : (d.data.data.miner == "Pool B" ? "#4894a1" : "lightgray"))
           .attr("stroke-opacity", d => d.data.data.status == "mining" ? 0.2 : 1)
           .classed("being-mined", d => d.data.data.status == "mining")
           
@@ -254,7 +254,7 @@ function draw() {
           .insert("text")
           .classed("block-pool-name", true)
           .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
-          .attr("dy", "4em")
+          .attr("dy", "3em")
           .classed("block-miner", true)
           .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
      

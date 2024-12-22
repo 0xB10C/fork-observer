@@ -96,7 +96,7 @@ text.block-text {
 text.block-miner {
  fill: var(--block-miner-color);
  text-anchor: middle;
- font-size: 10px;
+ font-size: 14px;
 }
 
 .block {

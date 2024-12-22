@@ -22,7 +22,7 @@ var state_selected_network_id = 0
 var state_networks = []
 var state_data = {}
 var pool_data = {}
-const socket = new WebSocket("wss://stratum.miningpool.observer/jobs");
+// const socket = new WebSocket("wss://stratum.miningpool.observer/jobs");
 
 async function fetch_info() {
   console.debug("called fetch_info()")
