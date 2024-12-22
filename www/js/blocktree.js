@@ -33,6 +33,8 @@ const status_to_color = {
 const indicator_radius = 8
 const indicator_margin = 1
 
+const MAX_TARGET = BigInt("0x00000000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
+
 let o = orientations["left-to-right"];
 
 let svg = d3
@@ -47,6 +49,19 @@ svg.call(zoom)
 
 let g = svg
     .append("g")
+
+function decode_compact_nbits(nbits) {
+  const exponent = nbits >> 24; // First byte is the exponent
+  const coefficient = nbits & 0xFFFFFF; // Last 3 bytes are the coefficient
+  // Shift the coefficient by (exponent - 3) bytes to get the actual target
+  return BigInt(coefficient) << (8n * (BigInt(exponent) - 3n));
+}
+
+function calculate_difficulty(nbits) {
+  const target = decode_compact_nbits(nbits);
+  const difficulty = MAX_TARGET / target;
+  return difficulty;
+}
 
 function preprocess_data(data) {  
   let header_infos = data.header_infos;
@@ -448,6 +463,7 @@ function onBlockClick(c, d) {
                   <span class="col-2">version</span><span class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</span>
                   <span class="col-2">nonce</span><span class="col-4 font-monospace">0x${d.data.data.nonce.toString(16)}</span>
                   <span class="col-2">bits</span><span class="col-4 font-monospace">0x${d.data.data.bits.toString(16)}</span>
+                  <span class="col-2">difficulty</span><span class="col-4 font-monospace">${calculate_difficulty(d.data.data.bits)}</span>
                   ${ d.data.data.miner != "" ? '<span class="col-2">miner</span><span class="col-4 font-monospace">' + d.data.data.miner + '</span>' : '' }
                 </div>
                 <div class="row"><span class="col">${status_text}</span></div>
