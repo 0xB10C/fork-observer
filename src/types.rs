@@ -80,6 +80,10 @@ pub struct HeaderInfoJson {
     pub merkle_root: String,
     pub time: u32,
     pub bits: u32,
+    // we don't need this to be a float (header.difficulty_float() returns an f64)
+    // as the exact precision isn't too important for us. It would also require us
+    // to implement Eq for HeaderInfoJson ourself.
+    pub difficulty_int: u64,
     pub nonce: u32,
     pub miner: String,
 }
@@ -96,6 +100,7 @@ impl HeaderInfoJson {
             merkle_root: hi.header.merkle_root.to_string(),
             time: hi.header.time,
             bits: hi.header.bits.to_consensus(),
+            difficulty_int: hi.header.difficulty_float() as u64,
             nonce: hi.header.nonce,
             miner: hi.miner.clone(),
         }
