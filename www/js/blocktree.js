@@ -1,6 +1,7 @@
 const NODE_SIZE = 100
 const MAX_USIZE = 18446744073709551615;
 const BLOCK_SIZE = 50
+const MIN_DIFFICULTY = 1
 
 const orientationSelect = d3.select("#orientation")
 
@@ -201,7 +202,8 @@ function draw() {
         let block_backgrounds = block_child_group.insert("rect")
           .attr("rx", 5)
           .attr("fill", "white")
-          .attr("stroke", "lightgray")
+          .attr("stroke", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? "darksalmon" : "lightgray")
+          .attr("stroke-width", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? 3 : 1)
           .attr("stroke-opacity", d => d.data.data.status == "mining" ? 0.2 : 1)
           .classed("being-mined", d => d.data.data.status == "mining")
           
