@@ -315,6 +315,9 @@ function draw() {
   zoom.scaleBy(svg, 1);
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
   zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, [(svgSize.width)/2, (svgSize.height)/2])
+  
+  svg.select("#legend").attr("x", svg.node().clientWidth - 150 - 10)
+  
   initialDraw = false
 }
 
