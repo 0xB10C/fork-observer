@@ -65,9 +65,18 @@
           </details>
         </p>
         <div>
-          <label>Orientation <select name="orientation" id="orientation"></select></label>
+          <label>orientation <select name="orientation" id="orientation"></select></label>
         </div>
-        <svg style="flex:1; flex-basis: 75vh; height:75vh;" class="border" id="drawing-area"></svg>
+        <svg style="flex:1; flex-basis: 75vh; height:75vh;" class="border" id="drawing-area">
+          <foreignobject id="legend" x="0" y="5" width="150" height="300" style="text-align: right;">
+            <label>tip status</label><br>
+            <span class="tip-status-color-background-active legend-item"><abbr title="This is the tip of the active main chain, which is certainly valid">active</abbr></span><br>
+            <span class="tip-status-color-background-valid-fork legend-item"><abbr title="This branch is not part of the active chain, but is fully validated">valid-fork</abbr></span><br>
+            <span class="tip-status-color-background-valid-headers legend-item"><abbr title="All blocks are available for this branch, but they were never fully validated">valid-headers</abbr></span><br>
+            <span class="tip-status-color-background-headers-only legend-item"><abbr title="Not all blocks for this branch are available, but the headers are valid">headers-only</abbr></span><br>
+            <span class="tip-status-color-background-invalid legend-item"><abbr title="This branch contains at least one invalid block">invalid</abbr></span><br>
+          </foreignobject>
+        </svg>
       </div>
     </main>
     <hr>

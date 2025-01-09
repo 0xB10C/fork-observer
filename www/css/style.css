@@ -9,6 +9,12 @@
   --block-description-bg: #f8f9fa;
   --block-miner-color: rgb(122, 122, 122);
   --node-indicatior-stroke: black;
+
+  --tip-status-color-active: #79FF00;
+  --tip-status-color-invalid: #CC203B;
+  --tip-status-color-valid-fork: #3CACB5;
+  --tip-status-color-valid-headers: #FF69B4;
+  --tip-status-color-headers-only: #FF8800;
 }
 
 /* automatic dark mode */
@@ -22,6 +28,12 @@
     --block-description-bg: #f8f9fa;
     --node-indicatior-stroke: black;
     --block-miner-color: rgb(172, 172, 172);
+
+    --tip-status-color-active: #79FF00;
+    --tip-status-color-invalid: #CC203B;
+    --tip-status-color-valid-fork: #3CACB5;
+    --tip-status-color-valid-headers: #FF69B4;
+    --tip-status-color-headers-only: #FF8800;
   }
   svg.invert, img.invert, .btn-close {
     -webkit-filter: invert(100%); /* safari 6.0 - 9.0 */
@@ -39,6 +51,12 @@
   --block-description-bg: #f8f9fa;
   --node-indicatior-stroke: black;
   --block-miner-color: rgb(172, 172, 172);
+
+  --tip-status-color-active: #79FF00;
+  --tip-status-color-invalid: #CC203B;
+  --tip-status-color-valid-fork: #3CACB5;
+  --tip-status-color-valid-headers: #FF69B4;
+  --tip-status-color-headers-only: #FF8800;
   svg.invert, img.invert, .btn-close {
     -webkit-filter: invert(100%); /* safari 6.0 - 9.0 */
     filter: invert(100%);
@@ -118,13 +136,25 @@ text.block-miner {
  fill: black;
 }
 
-.tip-status-color-fill-active { fill: #79FF00; color: #79FF00 }
-.tip-status-color-fill-invalid { fill: #CC203B; color: #CC203B }
-.tip-status-color-fill-valid-fork { fill: #3CACB5; color: #3CACB5 }
-.tip-status-color-fill-valid-headers { fill: #FF69B4; color: #FF69B4 }
-.tip-status-color-fill-headers-only { fill: #FF8800; color: #FF8800 }
+/* For the legend */ 
+.legend-item {
+  color: black;
+  padding: 2px 5px;
+  border-radius: 5px;
+}
 
-/* Connection status CSS */ 
+.tip-status-color-background-active { background-color: var(--tip-status-color-active); }
+.tip-status-color-background-invalid { background-color: var(--tip-status-color-invalid); color: }
+.tip-status-color-background-valid-fork { background-color: var(--tip-status-color-valid-fork); }
+.tip-status-color-background-valid-headers { background-color: var(--tip-status-color-valid-headers); }
+.tip-status-color-background-headers-only { background-color: var(--tip-status-color-headers-only); }
+
+
+.tip-status-color-fill-active { fill: var(--tip-status-color-active); color: var(--tip-status-color-active); }
+.tip-status-color-fill-invalid { fill: var(--tip-status-color-invalid); color: var(--tip-status-color-invalid); }
+.tip-status-color-fill-valid-fork { fill: var(--tip-status-color-valid-fork); color: var(--tip-status-color-valid-fork); }
+.tip-status-color-fill-valid-headers { fill: var(--tip-status-color-valid-headers); color: var(--tip-status-color-valid-headers); }
+.tip-status-color-fill-headers-only { fill: var(--tip-status-color-headers-only); color: var(--tip-status-color-headers-only); }
 
 #connection-status {
   animation: pulse infinite 5s;
