@@ -21,6 +21,7 @@ const PAGE_NAME = "fork-observer"
 var state_selected_network_id = 0
 var state_networks = []
 var state_data = {}
+var update_scheduled = false
 
 async function fetch_info() {
   console.debug("called fetch_info()")
@@ -93,6 +94,7 @@ networkSelect.on("input", async function() {
 
 async function update() {
   console.debug("called update()")
+  update_scheduled = false
   await fetch_data()
   await draw_nodes()
   await draw()
@@ -131,14 +133,19 @@ changeSSE.addEventListener('close', (e) => {
   connectionStatus.style("color", "grey");
 });
 
-changeSSE.addEventListener("tip_changed", (e) => {
+changeSSE.addEventListener("cache_changed", (e) => {
   let data = JSON.parse(e.data)
-  console.debug("server side event: the tip of one of the networks changed: ", data)
+  console.debug("server side event: the data for one of the networks changed: ", data)
   if(data.network_id == state_selected_network_id) {
-    console.debug("server side event: the tip of the currently displayed network changed: ", data)
-    // HACK: wait for 1 second before fetching data
-    // this gives the backend time to set the miner
-    setTimeout(update, 1000);
+    console.debug("server side event: the data for current network changed: ", data)
+    if (!update_scheduled) {
+      // wait for 500ms before fetching data
+      // this avoid fetching data in rapid succession when a new block is found
+      setTimeout(update, 500);
+      update_scheduled = true;
+    } else {
+      console.debug("server side event: update for the current network already sheduled: ", data)
+    }
   }
 })
 

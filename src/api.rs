@@ -36,7 +36,7 @@ pub fn data_changed_sse(
     network_id: u32,
 ) -> Result<Event, bitcoincore_rpc::jsonrpc::serde_json::Error> {
     warp::sse::Event::default()
-        .event("tip_changed")
+        .event("cache_changed")
         .json_data(DataChanged { network_id })
 }
 
