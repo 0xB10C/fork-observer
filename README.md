@@ -56,3 +56,21 @@ rpcwhitelist=forkobserver:getchaintips,getblockheader,getblockhash,getblock
 
 [rpcauth.py]: https://github.com/bitcoin/bitcoin/tree/master/share/rpcauth
 [online version]: https://jlopp.github.io/bitcoin-core-rpc-auth-generator/
+
+## Connecting to an Esplora REST API
+
+Block explorers like blockstream.info and mempool.space are based on [esplora].
+While they don't offer a `getchaintips`-like API endpoint, it can be useful to
+know which blocks these explores consider to be the tip. A esplora backend can,
+for example, be configured using the following "node" configuration.
+
+```toml
+[[networks.nodes]]
+id = 2
+name = "mempool.space"
+description = "mempool.space REST API"
+rpc_host = "https://mempool.space/api"
+implementation = "esplora"
+```
+
+[esplora]: https://github.com/Blockstream/esplora
