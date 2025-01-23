@@ -121,8 +121,9 @@ async fn main() -> Result<(), MainError> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let (config, db, caches) = startup().await?;
 
-    // A channel to notify about tip changes via ServerSentEvents to clients.
-    let (tipchanges_tx, _) = broadcast::channel(16);
+    // A channel to notify about changes via ServerSentEvents to clients.
+    let (cache_changed_tx, _) = broadcast::channel(16);
+    let cache_changed_tx_warp = cache_changed_tx.clone();
     let network_infos: Vec<NetworkJson> = config.networks.iter().map(NetworkJson::new).collect();
     let db_clone = db.clone();
 
@@ -166,7 +167,7 @@ async fn main() -> Result<(), MainError> {
             let db_write = db.clone();
             let tree_clone = tree.clone();
             let caches_clone = caches.clone();
-            let tipchanges_tx_cloned = tipchanges_tx.clone();
+            let cache_changed_tx_cloned = cache_changed_tx.clone();
             let pool_id_tx_clone = pool_id_tx.clone();
 
             let mut last_tips: Vec<ChainTip> = vec![];
@@ -179,6 +180,7 @@ async fn main() -> Result<(), MainError> {
                         node_id: node.info().id,
                         version: load_node_version(node.clone(), &network.name).await,
                     },
+                    &cache_changed_tx_cloned,
                 )
                 .await;
 
@@ -197,6 +199,7 @@ async fn main() -> Result<(), MainError> {
                                         node_id: node.info().id,
                                         reachable: true,
                                     },
+                                    &cache_changed_tx_cloned,
                                 )
                                 .await;
                             }
@@ -218,6 +221,7 @@ async fn main() -> Result<(), MainError> {
                                         node_id: node.info().id,
                                         reachable: false,
                                     },
+                                    &cache_changed_tx_cloned,
                                 )
                                 .await;
                             }
@@ -285,6 +289,7 @@ async fn main() -> Result<(), MainError> {
                                 node_id: node.info().id,
                                 tips: tips.clone(),
                             },
+                            &cache_changed_tx_cloned,
                         )
                         .await;
 
@@ -310,18 +315,9 @@ async fn main() -> Result<(), MainError> {
                                     header_infos_json,
                                     forks,
                                 },
+                                &cache_changed_tx_cloned,
                             )
                             .await;
-
-                            match tipchanges_tx_cloned.clone().send(network.id) {
-                                Ok(_) => debug!("Sent a tip_changed notification."),
-                                Err(e) => {
-                                    debug!(
-                                        "Could not send tip_changed update into the channel: {}",
-                                        e
-                                    )
-                                }
-                            };
                         }
                     }
                 }
@@ -377,6 +373,7 @@ async fn main() -> Result<(), MainError> {
         let db_clone2 = db_clone.clone();
         let caches_clone = caches.clone();
         let network_clone = network.clone();
+        let cache_changed_tx_clone = cache_changed_tx.clone();
         task::spawn(async move {
             let pool_identification_network = match network.pool_identification.network {
                 Some(ref network) => network.to_network(),
@@ -474,6 +471,7 @@ async fn main() -> Result<(), MainError> {
                         &caches_clone,
                         network.id,
                         CacheUpdate::HeaderMiner { header_info },
+                        &cache_changed_tx_clone,
                     )
                     .await;
                 }
@@ -537,8 +535,8 @@ async fn main() -> Result<(), MainError> {
     let change_sse = warp::path!("api" / "changes")
         .and(warp::get())
         .map(move || {
-            let tipchanges_rx = tipchanges_tx.clone().subscribe();
-            let broadcast_stream = BroadcastStream::new(tipchanges_rx);
+            let changes_tx = cache_changed_tx_warp.subscribe();
+            let broadcast_stream = BroadcastStream::new(changes_tx);
             let event_stream = broadcast_stream.map(move |d| match d {
                 Ok(d) => api::data_changed_sse(d),
                 Err(e) => {
@@ -660,7 +658,12 @@ async fn is_node_reachable(caches: &Caches, network_id: u32, node_id: u32) -> bo
         .reachable
 }
 
-async fn update_cache(caches: &Caches, network_id: u32, update: CacheUpdate) {
+async fn update_cache(
+    caches: &Caches,
+    network_id: u32,
+    update: CacheUpdate,
+    cache_changed_tx: &tokio::sync::broadcast::Sender<u32>,
+) {
     debug!("updating cache with: {}", update);
     let mut locked_cache = caches.lock().await;
     let network = locked_cache
@@ -751,6 +754,19 @@ async fn update_cache(caches: &Caches, network_id: u32, update: CacheUpdate) {
             });
         }
     }
+
+    match cache_changed_tx.send(network_id) {
+        Ok(_) => debug!(
+            "Sent a cache_changed notification for network={}.",
+            network_id,
+        ),
+        Err(e) => {
+            debug!(
+                "Could not send cache_changed into the channel for network={}: {}",
+                network_id, e
+            )
+        }
+    };
 }
 
 async fn load_node_version(node: BoxedSyncSendNode, network: &str) -> String {
@@ -844,6 +860,7 @@ mod tests {
     #[tokio::test]
     async fn test_node_reachable() {
         let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
         let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
         let node = NodeInfo {
             id: 0,
@@ -881,6 +898,7 @@ mod tests {
                 node_id: node.id,
                 reachable: false,
             },
+            &dummy_sender,
         )
         .await;
         assert_eq!(
@@ -895,6 +913,7 @@ mod tests {
                 node_id: node.id,
                 reachable: true,
             },
+            &dummy_sender,
         )
         .await;
         assert_eq!(
