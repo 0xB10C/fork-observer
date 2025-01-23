@@ -16,7 +16,7 @@ use crate::node::{BitcoinCoreNode, BtcdNode, Node, NodeInfo};
 
 pub const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
-const DEFAULT_NODE_IMPL: NodeImplementation = NodeImplementation::BitcoinCore;
+const DEFAULT_BACKEND: Backend = Backend::BitcoinCore;
 const DEFAULT_USE_REST: bool = true;
 
 pub type BoxedSyncSendNode = Arc<dyn Node + Send + Sync>;
@@ -136,30 +136,30 @@ impl fmt::Display for TomlNode {
 }
 
 #[derive(Hash, Clone)]
-pub enum NodeImplementation {
+pub enum Backend {
     BitcoinCore,
     Btcd,
 }
 
-impl FromStr for NodeImplementation {
+impl FromStr for Backend {
     type Err = ConfigError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "bitcoincore" => Ok(NodeImplementation::BitcoinCore),
-            "bitcoin core" => Ok(NodeImplementation::BitcoinCore),
-            "core" => Ok(NodeImplementation::BitcoinCore),
-            "btcd" => Ok(NodeImplementation::Btcd),
+            "bitcoincore" => Ok(Backend::BitcoinCore),
+            "bitcoin core" => Ok(Backend::BitcoinCore),
+            "core" => Ok(Backend::BitcoinCore),
+            "btcd" => Ok(Backend::Btcd),
             _ => Err(ConfigError::UnknownImplementation),
         }
     }
 }
 
-impl fmt::Display for NodeImplementation {
+impl fmt::Display for Backend {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            NodeImplementation::BitcoinCore => write!(f, "Bitcoin Core"),
-            NodeImplementation::Btcd => write!(f, "btcd"),
+            Backend::BitcoinCore => write!(f, "Bitcoin Core"),
+            Backend::Btcd => write!(f, "btcd"),
         }
     }
 }
@@ -275,8 +275,8 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
     let implementation = toml_node
         .implementation
         .as_ref()
-        .unwrap_or(&DEFAULT_NODE_IMPL.to_string())
-        .parse::<NodeImplementation>()?;
+        .unwrap_or(&DEFAULT_BACKEND.to_string())
+        .parse::<Backend>()?;
 
     let node_info = NodeInfo {
         id: toml_node.id,
@@ -286,13 +286,13 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
     };
 
     let node: BoxedSyncSendNode = match implementation {
-        NodeImplementation::BitcoinCore => Arc::new(BitcoinCoreNode::new(
+        Backend::BitcoinCore => Arc::new(BitcoinCoreNode::new(
             node_info,
             format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
             parse_rpc_auth(toml_node)?,
             toml_node.use_rest.unwrap_or(DEFAULT_USE_REST),
         )),
-        NodeImplementation::Btcd => {
+        Backend::Btcd => {
             if toml_node.rpc_user.is_none() || toml_node.rpc_password.is_none() {
                 return Err(ConfigError::NoBtcdRpcAuth);
             }
