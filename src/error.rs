@@ -11,6 +11,7 @@ pub enum FetchError {
     BitcoinCoreRPC(bitcoincore_rpc::Error),
     BitcoinCoreREST(String),
     BtcdRPC(JsonRPCError),
+    EsploraREST(EsploraRESTError),
     MinReq(minreq::Error),
     DataError(String),
 }
@@ -22,6 +23,7 @@ impl fmt::Display for FetchError {
             FetchError::BitcoinCoreRPC(e) => write!(f, "Bitcoin Core RPC Error: {}", e),
             FetchError::BtcdRPC(e) => write!(f, "btcd Error: {}", e),
             FetchError::BitcoinCoreREST(e) => write!(f, "Bitcoin Core REST Error: {}", e),
+            FetchError::EsploraREST(e) => write!(f, "Esplora REST Error: {}", e),
             FetchError::MinReq(e) => write!(f, "MinReq HTTP GET request error: {:?}", e),
             FetchError::DataError(e) => write!(f, "Invalid data response error {}", e),
         }
@@ -34,6 +36,7 @@ impl error::Error for FetchError {
             FetchError::TokioJoin(ref e) => Some(e),
             FetchError::BitcoinCoreRPC(ref e) => Some(e),
             FetchError::BtcdRPC(ref e) => Some(e),
+            FetchError::EsploraREST(ref e) => Some(e),
             FetchError::BitcoinCoreREST(_) => None,
             FetchError::MinReq(ref e) => Some(e),
             FetchError::DataError(_) => None,
@@ -212,6 +215,30 @@ impl From<FetchError> for MainError {
 impl From<ConfigError> for MainError {
     fn from(e: ConfigError) -> Self {
         MainError::Config(e)
+    }
+}
+
+#[derive(Debug)]
+pub enum EsploraRESTError {
+    Http(String),
+    NotImplemented,
+}
+
+impl fmt::Display for EsploraRESTError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            EsploraRESTError::Http(s) => write!(f, "HTTP error: {}", s),
+            EsploraRESTError::NotImplemented => write!(f, "Not implemented"),
+        }
+    }
+}
+
+impl error::Error for EsploraRESTError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match *self {
+            EsploraRESTError::Http(_) => None,
+            EsploraRESTError::NotImplemented => None,
+        }
     }
 }
 

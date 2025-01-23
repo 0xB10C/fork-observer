@@ -1,8 +1,9 @@
-use crate::error::{FetchError, JsonRPCError};
+use crate::error::{EsploraRESTError, FetchError, JsonRPCError};
 use crate::types::{ChainTip, ChainTipStatus, HeaderInfo, Tree};
 use async_trait::async_trait;
 use bitcoincore_rpc::bitcoin;
 use bitcoincore_rpc::bitcoin::blockdata::block::Header;
+use bitcoincore_rpc::bitcoin::hex::FromHex;
 use bitcoincore_rpc::bitcoin::{BlockHash, Transaction};
 use bitcoincore_rpc::Auth;
 use bitcoincore_rpc::Client;
@@ -10,6 +11,7 @@ use bitcoincore_rpc::RpcApi;
 use log::{debug, error};
 use std::cmp::max;
 use std::fmt;
+use std::str::FromStr;
 use tokio::task;
 
 const BTCD_USE_REST: bool = false;
@@ -456,6 +458,205 @@ impl Node for BtcdNode {
         {
             Ok(tips) => Ok(tips),
             Err(error) => Err(FetchError::BtcdRPC(error)),
+        }
+    }
+}
+
+#[derive(Hash, Clone)]
+pub struct Esplora {
+    info: NodeInfo,
+    api_url: String,
+}
+
+impl Esplora {
+    pub fn new(info: NodeInfo, api_url: String) -> Self {
+        Esplora { info, api_url }
+    }
+}
+
+#[async_trait]
+impl Node for Esplora {
+    fn info(&self) -> NodeInfo {
+        self.info.clone()
+    }
+
+    fn use_rest(&self) -> bool {
+        BTCD_USE_REST
+    }
+
+    fn rpc_url(&self) -> String {
+        self.api_url.clone()
+    }
+
+    async fn version(&self) -> Result<String, FetchError> {
+        Err(FetchError::EsploraREST(EsploraRESTError::NotImplemented))
+    }
+
+    async fn block_header(&self, hash: &BlockHash) -> Result<Header, FetchError> {
+        let url = format!("{}/block/{}/header", self.api_url, hash);
+
+        let res = minreq::get(url.clone())
+            .with_header("content-type", "plain/text")
+            .with_timeout(8)
+            .send()?;
+
+        match res.status_code {
+            200 => {
+                let header_str = res.as_str()?;
+                match Vec::from_hex(header_str) {
+                    Ok(header_bytes) => match bitcoin::consensus::deserialize(&header_bytes) {
+                        Ok(header) => Ok(header),
+                        Err(e) => Err(FetchError::DataError(format!(
+                            "Can't deserialize block header '{}': {}",
+                            header_str, e
+                        ))),
+                    },
+                    Err(e) => Err(FetchError::DataError(format!(
+                        "Can't hex decode block header '{}': {}",
+                        header_str, e
+                    ))),
+                }
+            }
+            _ => {
+                return Err(FetchError::EsploraREST(EsploraRESTError::Http(format!(
+                    "HTTP request to {} failed: {} {}: {}",
+                    url,
+                    res.status_code,
+                    res.reason_phrase,
+                    res.as_str()?
+                ))));
+            }
+        }
+    }
+
+    async fn coinbase(&self, hash: &BlockHash) -> Result<Transaction, FetchError> {
+        let url = format!("{}/block/{}/txid/0", self.api_url, hash);
+
+        let res = minreq::get(url.clone())
+            .with_header("content-type", "plain/text")
+            .with_timeout(8)
+            .send()?;
+
+        match res.status_code {
+            200 => {
+                let url = format!("{}/tx/{}/hex", self.api_url, res.as_str()?);
+                let coinbase_hex = res.as_str()?;
+                let res = minreq::get(url.clone())
+                    .with_header("content-type", "plain/text")
+                    .with_timeout(8)
+                    .send()?;
+
+                match res.status_code {
+                    200 => match Vec::from_hex(coinbase_hex) {
+                        Ok(coinbase_bytes) => {
+                            match bitcoin::consensus::deserialize(&coinbase_bytes) {
+                                Ok(tx) => Ok(tx),
+                                Err(e) => Err(FetchError::DataError(format!(
+                                    "Can't deserialize coinbase transaction '{}': {}",
+                                    coinbase_hex, e
+                                ))),
+                            }
+                        }
+                        Err(e) => Err(FetchError::DataError(format!(
+                            "Can't hex decode coinbase transaction '{}': {}",
+                            coinbase_hex, e
+                        ))),
+                    },
+                    _ => {
+                        return Err(FetchError::EsploraREST(EsploraRESTError::Http(format!(
+                            "HTTP request to {} failed: {} {}: {}",
+                            url,
+                            res.status_code,
+                            res.reason_phrase,
+                            res.as_str()?
+                        ))));
+                    }
+                }
+            }
+            _ => {
+                return Err(FetchError::EsploraREST(EsploraRESTError::Http(format!(
+                    "HTTP request to {} failed: {} {}: {}",
+                    url,
+                    res.status_code,
+                    res.reason_phrase,
+                    res.as_str()?
+                ))));
+            }
+        }
+    }
+
+    async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
+        let url = format!("{}/block-height/{}", self.api_url, height);
+
+        let res = minreq::get(url.clone())
+            .with_header("content-type", "plain/text")
+            .with_timeout(8)
+            .send()?;
+
+        match res.status_code {
+            200 => {
+                let hash_str = res.as_str()?;
+                match BlockHash::from_str(hash_str) {
+                    Ok(hash) => Ok(hash),
+                    Err(e) => Err(FetchError::DataError(format!(
+                        "Invalid block hash '{}': {}",
+                        hash_str, e
+                    ))),
+                }
+            }
+            _ => {
+                return Err(FetchError::EsploraREST(EsploraRESTError::Http(format!(
+                    "HTTP request to {} failed: {} {}: {}",
+                    url,
+                    res.status_code,
+                    res.reason_phrase,
+                    res.as_str()?
+                ))));
+            }
+        }
+    }
+
+    async fn tips(&self) -> Result<Vec<ChainTip>, FetchError> {
+        // https://mempool.space/api/blocks/tip/height
+        // The Esplora API doesn't have an endpoint similar to getchaintips.
+        // However, we can get the active tip and "fake" a getchaintips result.
+        // This only properly works with at least one other Bitcoin Core or btcd
+        // backend for the same network.
+        let url = format!("{}/blocks/tip/height", self.api_url);
+
+        let res = minreq::get(url.clone())
+            .with_header("content-type", "plain/text")
+            .with_timeout(8)
+            .send()?;
+
+        match res.status_code {
+            200 => {
+                let height_str = res.as_str()?;
+                match height_str.parse::<u64>() {
+                    Ok(height) => {
+                        let hash = self.block_hash(height).await?;
+                        Ok(vec![ChainTip {
+                            height,
+                            hash: hash.to_string(),
+                            branchlen: 0,
+                            status: ChainTipStatus::Active,
+                        }])
+                    }
+                    Err(e) => Err(FetchError::DataError(format!(
+                        "Invalid block height '{}': {}",
+                        height_str, e
+                    ))),
+                }
+            }
+            _ => {
+                return Err(FetchError::EsploraREST(EsploraRESTError::Http(format!(
+                    "HTTP request to {} failed: {} {}: {}",
+                    url,
+                    res.status_code,
+                    res.reason_phrase,
+                    res.as_str()?
+                ))));
+            }
         }
     }
 }

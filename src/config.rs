@@ -12,12 +12,13 @@ use log::{error, info};
 use serde::Deserialize;
 
 use crate::error::ConfigError;
-use crate::node::{BitcoinCoreNode, BtcdNode, Node, NodeInfo};
+use crate::node::{BitcoinCoreNode, BtcdNode, Esplora, Node, NodeInfo};
 
 pub const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
 const DEFAULT_BACKEND: Backend = Backend::BitcoinCore;
 const DEFAULT_USE_REST: bool = true;
+const DEFAULT_RPC_PORT: u16 = 8332;
 
 pub type BoxedSyncSendNode = Arc<dyn Node + Send + Sync>;
 
@@ -110,7 +111,7 @@ struct TomlNode {
     description: String,
     name: String,
     rpc_host: String,
-    rpc_port: u16,
+    rpc_port: Option<u16>,
     rpc_cookie_file: Option<PathBuf>,
     rpc_user: Option<String>,
     rpc_password: Option<String>,
@@ -126,7 +127,7 @@ impl fmt::Display for TomlNode {
             self.description,
             self.name,
             self.rpc_host,
-            self.rpc_port,
+            self.rpc_port.unwrap_or(DEFAULT_RPC_PORT),
             self.rpc_user.as_ref().unwrap_or(&"".to_string()),
             self.rpc_cookie_file,
             self.use_rest.unwrap_or(DEFAULT_USE_REST),
@@ -139,6 +140,8 @@ impl fmt::Display for TomlNode {
 pub enum Backend {
     BitcoinCore,
     Btcd,
+    // An esplora based backend.
+    Esplora,
 }
 
 impl FromStr for Backend {
@@ -150,6 +153,7 @@ impl FromStr for Backend {
             "bitcoin core" => Ok(Backend::BitcoinCore),
             "core" => Ok(Backend::BitcoinCore),
             "btcd" => Ok(Backend::Btcd),
+            "esplora" => Ok(Backend::Esplora),
             _ => Err(ConfigError::UnknownImplementation),
         }
     }
@@ -160,6 +164,7 @@ impl fmt::Display for Backend {
         match self {
             Backend::BitcoinCore => write!(f, "Bitcoin Core"),
             Backend::Btcd => write!(f, "btcd"),
+            Backend::Esplora => write!(f, "esplora"),
         }
     }
 }
@@ -288,7 +293,11 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
     let node: BoxedSyncSendNode = match implementation {
         Backend::BitcoinCore => Arc::new(BitcoinCoreNode::new(
             node_info,
-            format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
+            format!(
+                "{}:{}",
+                toml_node.rpc_host,
+                toml_node.rpc_port.unwrap_or(DEFAULT_RPC_PORT)
+            ),
             parse_rpc_auth(toml_node)?,
             toml_node.use_rest.unwrap_or(DEFAULT_USE_REST),
         )),
@@ -299,7 +308,11 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
 
             Arc::new(BtcdNode::new(
                 node_info,
-                format!("{}:{}", toml_node.rpc_host, toml_node.rpc_port),
+                format!(
+                    "{}:{}",
+                    toml_node.rpc_host,
+                    toml_node.rpc_port.unwrap_or(DEFAULT_RPC_PORT)
+                ),
                 toml_node.rpc_user.clone().expect("a rpc_user for btcd"),
                 toml_node
                     .rpc_password
@@ -307,6 +320,7 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
                     .expect("a rpc_password for btcd"),
             ))
         }
+        Backend::Esplora => Arc::new(Esplora::new(node_info, toml_node.rpc_host.clone())),
     };
     Ok(node)
 }
@@ -422,6 +436,46 @@ mod tests {
             // test OK, as we expect this to error
         } else {
             panic!("Test did not error!");
+        }
+    }
+
+    #[test]
+    fn esplora_backend_test() {
+        match parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 123
+                name = "Esplora Node"
+                description = "A test explora node"
+                rpc_host = "https://esplora.example.org/api"
+                implementation = "esplora"
+        "#,
+        ) {
+            Ok(config) => {
+                let network = &config.networks[0];
+                let node: &BoxedSyncSendNode = &network.nodes[0];
+                let node_info = node.info();
+                assert_eq!(node_info.name, "Esplora Node");
+                assert_eq!(node_info.id, 123);
+                assert_eq!(node_info.implementation, "esplora");
+            }
+            Err(e) => {
+                panic!("Esplora backend config invalid: {}", e);
+            }
         }
     }
 }
