@@ -207,7 +207,7 @@ pub struct DataChanged {
     pub network_id: u32,
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChainTipStatus {
     #[serde(rename = "active")]
     Active,
@@ -260,7 +260,7 @@ impl fmt::Display for ChainTipStatus {
     }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChainTip {
     pub height: u64,
     pub hash: String,
