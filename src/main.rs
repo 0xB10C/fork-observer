@@ -189,7 +189,7 @@ async fn main() -> Result<(), MainError> {
                     // are using 'continue' on errors. If we would wait at the end,
                     // we might skip the waiting.
                     interval.tick().await;
-                    let tips = match node.tips().await {
+                    let mut tips = match node.tips().await {
                         Ok(tips) => {
                             if !is_node_reachable(&caches_clone, network.id, node.info().id).await {
                                 update_cache(
@@ -228,6 +228,11 @@ async fn main() -> Result<(), MainError> {
                             continue;
                         }
                     };
+
+                    // For example, btcd doesn't gurantee the order of the chain
+                    // tips returned. This means, while they are equal, the order
+                    // can differ and we will treat them as unequal.
+                    tips.sort();
 
                     if last_tips != tips {
                         let (new_headers, miners_needed): (Vec<HeaderInfo>, Vec<BlockHash>) =
