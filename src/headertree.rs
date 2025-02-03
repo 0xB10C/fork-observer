@@ -164,6 +164,9 @@ pub async fn strip_tree(
         ));
     }
 
+    // Sorting the headers by id helps debugging the API response.
+    headers.sort_by_key(|h| h.id);
+
     headers
 }
 
