@@ -815,7 +815,8 @@ async fn load_node_version(node: BoxedSyncSendNode, network: &str) -> String {
 async fn insert_new_headers_into_tree(tree: &Tree, new_headers: &[HeaderInfo]) -> bool {
     let mut tree_changed: bool = false;
     let mut tree_locked = tree.lock().await;
-    // insert headers to tree
+    // insert new headers to tree. We first insert all headers we know about
+    // and only connect them to parent headers afterwards (see below).
     for h in new_headers {
         if !tree_locked.1.contains_key(&h.header.block_hash()) {
             let idx = tree_locked.0.add_node(h.clone());
@@ -823,25 +824,25 @@ async fn insert_new_headers_into_tree(tree: &Tree, new_headers: &[HeaderInfo]) -
             tree_changed = true;
         }
     }
-    // connect nodes with edges
-    for current in new_headers {
-        let idx_current: NodeIndex;
+    // connect a header with it's parent header by the prev_hash
+    for new in new_headers {
+        let idx_new: NodeIndex;
         let idx_prev: NodeIndex;
         {
-            idx_current = *tree_locked
+            idx_new = *tree_locked
                     .1
-                    .get(&current.header.block_hash())
+                    .get(&new.header.block_hash())
                     .expect(
-                    "current header should be in the map as we just inserted it or it was already present",
+                    "the new header should be in the map as we just inserted it or it was already present",
                 );
-            match tree_locked.1.get(&current.header.prev_blockhash) {
+            match tree_locked.1.get(&new.header.prev_blockhash) {
                 Some(idx) => idx_prev = *idx,
                 None => {
                     continue; // the tree's root has no previous block, skip it
                 }
             }
         }
-        tree_locked.0.update_edge(idx_prev, idx_current, false);
+        tree_locked.0.update_edge(idx_prev, idx_new, false);
     }
     tree_changed
 }
