@@ -1,4 +1,4 @@
-FROM rust:alpine3.18 as builder
+FROM rust:1-alpine AS builder
 
 WORKDIR /app
 RUN apk add musl-dev
@@ -15,4 +15,4 @@ WORKDIR /app
 COPY --from=builder /usr/local/cargo/bin/fork-observer /usr/local/bin/
 COPY --from=builder /app/www ./www/
 
-CMD /usr/local/bin/fork-observer
+CMD ["/usr/local/bin/fork-observer"]
