@@ -8,7 +8,7 @@ use bitcoincore_rpc::bitcoin;
 use bitcoincore_rpc::bitcoin::blockdata::block::Header;
 use bitcoincore_rpc::bitcoin::Block;
 
-use base64;
+use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -211,7 +211,10 @@ fn request(
     );
 
     let res = minreq::post(url.clone())
-        .with_header("Authorization", format!("Basic {}", base64::encode(&token)))
+        .with_header(
+            "Authorization",
+            format!("Basic {}", BASE64_STANDARD.encode(&token)),
+        )
         .with_header("content-type", "plain/text")
         .with_json(&jsonrpc_request)?
         .with_timeout(8)
