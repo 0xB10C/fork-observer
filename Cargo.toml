@@ -26,7 +26,7 @@ petgraph = { version = "0.6.2", features = ["serde-1"] }
 
 base64 = "0.13.1"
 
-async-trait = "0.1.58"
+async-trait = "0.1.88"
 bitcoin-pool-identification = "0.3.7"
 
 [features]
