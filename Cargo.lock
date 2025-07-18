@@ -410,7 +410,7 @@ name = "fork-observer"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.13.1",
+ "base64 0.21.7",
  "bitcoin-pool-identification",
  "bitcoincore-rpc",
  "env_logger",

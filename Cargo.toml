@@ -24,7 +24,7 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures-util = "0.3"
 petgraph = { version = "0.8.2", features = ["serde-1"] }
 
-base64 = "0.13.1"
+base64 = "0.21.7"
 
 async-trait = "0.1.88"
 bitcoin-pool-identification = "0.3.7"
