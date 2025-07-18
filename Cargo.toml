@@ -9,7 +9,7 @@ edition = "2018"
 
 bitcoincore-rpc = "0.19.0"
 warp = "0.3"
-toml = "0.5"
+toml = "0.9"
 
 serde = "1.0.127"
 serde_json = "1"
