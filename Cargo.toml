@@ -22,7 +22,7 @@ tokio = { version = "1.46", features = [ "rt-multi-thread", "time", "sync", "mac
 minreq = { version = "2.6.0", features = ["json-using-serde", "https"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures-util = "0.3"
-petgraph = { version = "0.6.2", features = ["serde-1"] }
+petgraph = { version = "0.8.2", features = ["serde-1"] }
 
 base64 = "0.13.1"
 
