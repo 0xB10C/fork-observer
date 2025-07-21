@@ -797,12 +797,11 @@ dependencies = [
 
 [[package]]
 name = "minreq"
-version = "2.11.0"
+version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb3371dfc7b772c540da1380123674a8e20583aca99907087d990ca58cf44203"
+checksum = "84885312a86831bff4a3cb04a1e54a3f698407e3274c83249313f194d3e0b678"
 dependencies = [
  "log",
- "once_cell",
  "rustls",
  "rustls-webpki",
  "serde",
