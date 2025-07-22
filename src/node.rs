@@ -8,25 +8,55 @@ use bitcoincore_rpc::bitcoin::{BlockHash, Transaction};
 use bitcoincore_rpc::Auth;
 use bitcoincore_rpc::Client;
 use bitcoincore_rpc::RpcApi;
+use electrum_client::{
+    Client as ElectrumClient, ConfigBuilder as ElectrumClientConfigBuilder, ElectrumApi,
+};
 use log::{debug, error};
 use std::cmp::max;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::OnceLock;
+use std::thread::sleep;
+use std::time::Duration;
 use tokio::task;
 
-const BTCD_USE_REST: bool = false;
 const DEFAULT_EMPTY_MINER: &str = "";
+
+/// Some data sources only support fetching headers by height, and some only by hash.
+/// We set this for every implementation and choose accordingly when fetching.
+#[derive(Debug, PartialEq)]
+pub enum HeaderFetchType {
+    Height,
+    Hash,
+}
+
+pub struct Capabilities {
+    /// The value set here indicates if we can use the BlockHash to to fetch headers or can only
+    /// fetch via the block height. The latter one can only be used for headers in the
+    /// active chain.
+    header_fetch_type: HeaderFetchType,
+    batch_header_fetch: bool,
+}
 
 #[async_trait]
 pub trait Node: Sync {
     fn info(&self) -> NodeInfo;
-    fn use_rest(&self) -> bool;
+    /// Returns information about the capabilities the data source has.
+    fn capabilities(&self) -> Capabilities;
     fn rpc_url(&self) -> String;
     async fn version(&self) -> Result<String, FetchError>;
-    async fn block_header(&self, hash: &BlockHash) -> Result<Header, FetchError>;
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError>;
+    async fn block_header_height(&self, height: u64) -> Result<Header, FetchError>;
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError>;
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError>;
-    async fn coinbase(&self, hash: &BlockHash) -> Result<Transaction, FetchError>;
+    async fn coinbase(&self, hash: &BlockHash, height: u64) -> Result<Transaction, FetchError>;
+    /// Fetches a batch of successive headers from the active chain.
+    async fn batch_header_fetch(
+        &self,
+        start_hash: BlockHash,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<Header>, FetchError>;
 
     async fn new_headers(
         &self,
@@ -81,62 +111,75 @@ pub trait Node: Sync {
         const STEP_SIZE: i64 = 2000;
         let mut query_height: i64 = active_tip.height as i64;
         loop {
-            if self.use_rest() {
-                // We want to either start to query blocks at the `min_fork_height` or
-                // the `tip height - STEP_SIZE + 1` which ever is larger.
-                // (+ 1 as we would otherwise not query the tip)
-                let rest_query_height = max(min_fork_height as i64, query_height - STEP_SIZE + 1);
-                let mut already_knew_a_header = false;
-                // get the header hash for a header STEP_SIZE away from query_height
-                let header_hash = self.block_hash(rest_query_height as u64).await?;
+            match self.capabilities().batch_header_fetch {
+                true => {
+                    // We want to either start to query blocks at the `min_fork_height` or
+                    // the `tip height - STEP_SIZE + 1` which ever is larger.
+                    // (+ 1 as we would otherwise not query the tip)
+                    let start_height = max(min_fork_height as i64, query_height - STEP_SIZE + 1);
+                    let mut already_knew_a_header = false;
+                    // get the header hash for a header STEP_SIZE away from query_height
+                    let header_hash = self.block_hash(start_height as u64).await?;
 
-                // get STEP_SIZE headers
-                let headers = self
-                    .active_chain_headers_rest(STEP_SIZE as u64, header_hash)
-                    .await?;
+                    // get STEP_SIZE headers
+                    let headers = self
+                        .batch_header_fetch(header_hash, start_height as u64, STEP_SIZE as u64)
+                        .await?;
 
-                // zip heights and headers up and to iterate through them by descending height
-                // newest first
-                for height_header_pair in headers
-                    .iter()
-                    .zip(rest_query_height..rest_query_height + headers.len() as i64)
-                {
-                    let locked_tree = tree.lock().await;
-                    if !locked_tree
-                        .1
-                        .contains_key(&height_header_pair.0.block_hash())
+                    // zip heights and headers up and to iterate through them by descending height
+                    // newest first
+                    for height_header_pair in headers
+                        .iter()
+                        .zip(start_height..start_height + headers.len() as i64)
                     {
-                        new_headers.push(HeaderInfo {
-                            header: *height_header_pair.0,
-                            height: height_header_pair.1 as u64,
-                            miner: DEFAULT_EMPTY_MINER.to_string(),
-                        });
-                    } else {
-                        already_knew_a_header = true;
+                        let locked_tree = tree.lock().await;
+                        if !locked_tree
+                            .1
+                            .contains_key(&height_header_pair.0.block_hash())
+                        {
+                            new_headers.push(HeaderInfo {
+                                header: *height_header_pair.0,
+                                height: height_header_pair.1 as u64,
+                                miner: DEFAULT_EMPTY_MINER.to_string(),
+                            });
+                        } else {
+                            already_knew_a_header = true;
+                        }
                     }
-                }
 
-                if already_knew_a_header {
-                    break;
-                }
-
-                query_height -= STEP_SIZE;
-            } else {
-                // using RPC, not using REST
-                let header_hash = self.block_hash(query_height as u64).await?;
-                {
-                    let locked_tree = tree.lock().await;
-                    if locked_tree.1.contains_key(&header_hash) {
+                    if already_knew_a_header {
                         break;
                     }
+
+                    query_height -= STEP_SIZE;
                 }
-                let header = self.block_header(&header_hash).await?;
-                new_headers.push(HeaderInfo {
-                    height: query_height as u64,
-                    header,
-                    miner: DEFAULT_EMPTY_MINER.to_string(),
-                });
-                query_height -= 1;
+                false => {
+                    // using RPC, not using REST
+                    let header_hash = self.block_hash(query_height as u64).await?;
+                    {
+                        let locked_tree = tree.lock().await;
+                        if locked_tree.1.contains_key(&header_hash) {
+                            break;
+                        }
+                    }
+                    // since we are fetching "active" (i.e. in the main chain) headers,
+                    // we can fetch by block height here too.
+                    let header: Header;
+                    match self.capabilities().header_fetch_type {
+                        HeaderFetchType::Hash => {
+                            header = self.block_header_hash(&header_hash).await?;
+                        }
+                        HeaderFetchType::Height => {
+                            header = self.block_header_height(query_height as u64).await?;
+                        }
+                    }
+                    new_headers.push(HeaderInfo {
+                        height: query_height as u64,
+                        header,
+                        miner: DEFAULT_EMPTY_MINER.to_string(),
+                    });
+                    query_height -= 1;
+                }
             }
 
             if query_height < min_fork_height as i64 {
@@ -154,6 +197,14 @@ pub trait Node: Sync {
         min_fork_height: u64,
     ) -> Result<Vec<HeaderInfo>, FetchError> {
         let mut new_headers: Vec<HeaderInfo> = Vec::new();
+
+        // Since some implementations can't fetch headers by hash (e.g. Electrum),
+        // we can return early from them here. We can only fetch non-active headers
+        // by hash.
+        if self.capabilities().header_fetch_type == HeaderFetchType::Height {
+            return Ok(new_headers);
+        }
+
         for inactive_tip in tips
             .iter()
             .filter(|tip| tip.height - tip.branchlen as u64 > min_fork_height)
@@ -174,8 +225,7 @@ pub trait Node: Sync {
                     next_header, height
                 );
 
-                let header = self.block_header(&next_header).await?;
-
+                let header = self.block_header_hash(&next_header).await?;
                 new_headers.push(HeaderInfo {
                     height,
                     header,
@@ -185,63 +235,6 @@ pub trait Node: Sync {
             }
         }
         Ok(new_headers)
-    }
-
-    async fn active_chain_headers_rest(
-        &self,
-        count: u64,
-        start: BlockHash,
-    ) -> Result<Vec<Header>, FetchError> {
-        assert!(self.use_rest());
-        debug!(
-            "loading active-chain headers starting from {}",
-            start.to_string()
-        );
-
-        let url = format!(
-            "http://{}/rest/headers/{}/{}.bin",
-            self.rpc_url(),
-            count,
-            start
-        );
-        let res = minreq::get(url.clone()).with_timeout(8).send()?;
-
-        if res.status_code != 200 {
-            return Err(FetchError::BitcoinCoreREST(format!(
-                "could not load headers from REST URL ({}): {} {}: {:?}",
-                url,
-                res.status_code,
-                res.reason_phrase,
-                res.as_str(),
-            )));
-        }
-
-        let header_results: Result<
-            Vec<Header>,
-            bitcoincore_rpc::bitcoin::consensus::encode::Error,
-        > = res
-            .as_bytes()
-            .chunks(80)
-            .map(bitcoin::consensus::deserialize::<Header>)
-            .collect();
-
-        let headers = match header_results {
-            Ok(headers) => headers,
-            Err(e) => {
-                return Err(FetchError::BitcoinCoreREST(format!(
-                    "could not deserialize REST header response: {}",
-                    e
-                )))
-            }
-        };
-
-        debug!(
-            "loaded {} active-chain headers starting from {}",
-            headers.len(),
-            start.to_string()
-        );
-
-        Ok(headers)
     }
 }
 
@@ -302,8 +295,11 @@ impl Node for BitcoinCoreNode {
         self.info.clone()
     }
 
-    fn use_rest(&self) -> bool {
-        self.use_rest
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            header_fetch_type: HeaderFetchType::Hash,
+            batch_header_fetch: self.use_rest,
+        }
     }
 
     fn rpc_url(&self) -> String {
@@ -332,7 +328,7 @@ impl Node for BitcoinCoreNode {
         }
     }
 
-    async fn block_header(&self, hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
         let rpc = self.rpc_client()?;
         let hash_clone = hash.clone();
         match task::spawn_blocking(move || rpc.get_block_header(&hash_clone)).await {
@@ -344,7 +340,14 @@ impl Node for BitcoinCoreNode {
         }
     }
 
-    async fn coinbase(&self, hash: &BlockHash) -> Result<Transaction, FetchError> {
+    async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
+        assert_eq!(self.capabilities().header_fetch_type, HeaderFetchType::Hash);
+        Err(FetchError::DataError(
+            "fetch by block height not implemented".to_string(),
+        ))
+    }
+
+    async fn coinbase(&self, hash: &BlockHash, _height: u64) -> Result<Transaction, FetchError> {
         let rpc = self.rpc_client()?;
         let hash_clone = hash.clone();
         match task::spawn_blocking(move || rpc.get_block(&hash_clone)).await {
@@ -369,6 +372,65 @@ impl Node for BitcoinCoreNode {
             },
             Err(e) => Err(e.into()),
         }
+    }
+
+    async fn batch_header_fetch(
+        &self,
+        start_hash: BlockHash,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<Header>, FetchError> {
+        debug!(
+            "loading active-chain headers starting from {} ({})",
+            start_height,
+            start_hash.to_string()
+        );
+
+        let url = format!(
+            "http://{}/rest/headers/{}/{}.bin",
+            self.rpc_url(),
+            count,
+            start_hash
+        );
+        let res = minreq::get(url.clone()).with_timeout(8).send()?;
+
+        if res.status_code != 200 {
+            return Err(FetchError::BitcoinCoreREST(format!(
+                "could not load headers from REST URL ({}): {} {}: {:?}",
+                url,
+                res.status_code,
+                res.reason_phrase,
+                res.as_str(),
+            )));
+        }
+
+        let header_results: Result<
+            Vec<Header>,
+            bitcoincore_rpc::bitcoin::consensus::encode::Error,
+        > = res
+            .as_bytes()
+            .chunks(80)
+            .map(bitcoin::consensus::deserialize::<Header>)
+            .collect();
+
+        let headers = match header_results {
+            Ok(headers) => headers,
+            Err(e) => {
+                return Err(FetchError::BitcoinCoreREST(format!(
+                    "could not deserialize REST header response: {}",
+                    e
+                )))
+            }
+        };
+
+        debug!(
+            "loaded {} active-chain headers starting from {} ({})",
+            headers.len(),
+            start_height,
+            start_hash.to_string()
+        );
+
+        Ok(headers)
     }
 }
 
@@ -397,8 +459,11 @@ impl Node for BtcdNode {
         self.info.clone()
     }
 
-    fn use_rest(&self) -> bool {
-        BTCD_USE_REST
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            header_fetch_type: HeaderFetchType::Hash,
+            batch_header_fetch: false,
+        }
     }
 
     fn rpc_url(&self) -> String {
@@ -409,7 +474,7 @@ impl Node for BtcdNode {
         Err(FetchError::BtcdRPC(JsonRPCError::NotImplemented))
     }
 
-    async fn block_header(&self, hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
         let url = format!("http://{}/", self.rpc_url);
         match crate::jsonrpc::btcd_blockheader(
             url,
@@ -422,7 +487,26 @@ impl Node for BtcdNode {
         }
     }
 
-    async fn coinbase(&self, hash: &BlockHash) -> Result<Transaction, FetchError> {
+    async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
+        assert_eq!(self.capabilities().header_fetch_type, HeaderFetchType::Hash);
+        Err(FetchError::DataError(
+            "fetch by block height not implemented".to_string(),
+        ))
+    }
+
+    async fn batch_header_fetch(
+        &self,
+        _start_hash: BlockHash,
+        _start_height: u64,
+        _count: u64,
+    ) -> Result<Vec<Header>, FetchError> {
+        assert!(self.capabilities().batch_header_fetch);
+        Err(FetchError::DataError(
+            "batch header fetch not implemented".to_string(),
+        ))
+    }
+
+    async fn coinbase(&self, hash: &BlockHash, _height: u64) -> Result<Transaction, FetchError> {
         let url = format!("http://{}/", self.rpc_url);
         match crate::jsonrpc::btcd_block(
             url,
@@ -480,8 +564,11 @@ impl Node for Esplora {
         self.info.clone()
     }
 
-    fn use_rest(&self) -> bool {
-        BTCD_USE_REST
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            header_fetch_type: HeaderFetchType::Hash,
+            batch_header_fetch: false,
+        }
     }
 
     fn rpc_url(&self) -> String {
@@ -492,7 +579,7 @@ impl Node for Esplora {
         Err(FetchError::EsploraREST(EsploraRESTError::NotImplemented))
     }
 
-    async fn block_header(&self, hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
         let url = format!("{}/block/{}/header", self.api_url, hash);
 
         let res = minreq::get(url.clone())
@@ -529,7 +616,14 @@ impl Node for Esplora {
         }
     }
 
-    async fn coinbase(&self, hash: &BlockHash) -> Result<Transaction, FetchError> {
+    async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
+        assert_eq!(self.capabilities().header_fetch_type, HeaderFetchType::Hash);
+        Err(FetchError::DataError(
+            "fetch by block height not implemented".to_string(),
+        ))
+    }
+
+    async fn coinbase(&self, hash: &BlockHash, _height: u64) -> Result<Transaction, FetchError> {
         let url = format!("{}/block/{}/txid/0", self.api_url, hash);
 
         let res = minreq::get(url.clone())
@@ -616,6 +710,18 @@ impl Node for Esplora {
         }
     }
 
+    async fn batch_header_fetch(
+        &self,
+        _start_hash: BlockHash,
+        _start_height: u64,
+        _count: u64,
+    ) -> Result<Vec<Header>, FetchError> {
+        assert!(self.capabilities().batch_header_fetch);
+        Err(FetchError::DataError(
+            "batch header fetch not implemented".to_string(),
+        ))
+    }
+
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError> {
         // https://mempool.space/api/blocks/tip/height
         // The Esplora API doesn't have an endpoint similar to getchaintips.
@@ -658,5 +764,173 @@ impl Node for Esplora {
                 ))));
             }
         }
+    }
+}
+
+pub struct Electrum {
+    info: NodeInfo,
+    url: String,
+    client: OnceLock<ElectrumClient>,
+}
+
+impl Electrum {
+    pub fn new(info: NodeInfo, url: String) -> Self {
+        Electrum {
+            info,
+            url,
+            client: OnceLock::new(),
+        }
+    }
+
+    fn get_client(&self) -> &ElectrumClient {
+        self.client.get_or_init(|| {
+            const ELECTRUM_RECONNECT_DURATION: Duration = Duration::from_secs(60);
+            let config = ElectrumClientConfigBuilder::new()
+                .timeout(Some(10))
+                .retry(2)
+                .validate_domain(false)
+                .build();
+
+            loop {
+                match ElectrumClient::from_config(&self.url, config.clone()) {
+                    Ok(client) => {
+                        log::info!(
+                            "Connected to Electrum server {} ({})",
+                            self.info.name,
+                            self.url
+                        );
+                        return client;
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Could not connect to Electrum server {}. Retrying in {:?}. Error: {}",
+                            self.url,
+                            ELECTRUM_RECONNECT_DURATION,
+                            e
+                        );
+                        sleep(ELECTRUM_RECONNECT_DURATION);
+                    }
+                }
+            }
+        })
+    }
+}
+
+#[async_trait]
+impl Node for Electrum {
+    fn info(&self) -> NodeInfo {
+        self.info.clone()
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            header_fetch_type: HeaderFetchType::Height,
+            batch_header_fetch: true,
+        }
+    }
+
+    fn rpc_url(&self) -> String {
+        return "not used".to_string();
+    }
+
+    async fn version(&self) -> Result<String, FetchError> {
+        let client = self.get_client();
+        let response = client.server_features()?;
+        Ok(response.server_version)
+    }
+
+    async fn block_header_hash(&self, _hash: &BlockHash) -> Result<Header, FetchError> {
+        // hm, no lookup via BlockHash possible I think?
+        return Err(FetchError::DataError(
+            "block_header not implemented".to_string(),
+        ));
+    }
+
+    async fn block_header_height(&self, height: u64) -> Result<Header, FetchError> {
+        let client = self.get_client();
+        let header = client.block_header(height as usize)?;
+        Ok(header)
+    }
+
+    async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
+        let client = self.get_client();
+        let header = client.block_header(height as usize)?;
+        Ok(header.block_hash())
+    }
+
+    async fn tips(&self) -> Result<Vec<ChainTip>, FetchError> {
+        let client = self.get_client();
+
+        // Check if we got a header notification since we checked last time.
+        let mut last_header_notification = None;
+        loop {
+            match client.block_headers_pop() {
+                Ok(option) => match option {
+                    Some(notification) => last_header_notification = Some(notification),
+                    None => break,
+                },
+                Err(e) => {
+                    log::debug!("could not pop block header notification: {}", e);
+                    break;
+                }
+            }
+        }
+        if let Some(notification) = last_header_notification {
+            return Ok(vec![ChainTip {
+                height: notification.height as u64,
+                hash: notification.header.block_hash().to_string(),
+                branchlen: 0,
+                status: ChainTipStatus::Active,
+            }]);
+        }
+
+        // We don't keep state here about the last block. To return the chain tip
+        // we can subscribe again as this will return the tip. This works,
+        // but it would probably nicer if we'd keep the last header around to avoid
+        // the roundtrip here.
+        match client.block_headers_subscribe() {
+            Ok(response) => Ok(vec![ChainTip {
+                height: response.height as u64,
+                hash: response.header.block_hash().to_string(),
+                branchlen: 0,
+                status: ChainTipStatus::Active,
+            }]),
+            Err(e) => {
+                log::warn!("block headers subscribe error, {:?}", e);
+                Err(FetchError::ElectrumClient(e))
+            }
+        }
+    }
+
+    async fn coinbase(&self, hash: &BlockHash, height: u64) -> Result<Transaction, FetchError> {
+        // We can't fetch the coinbase transaction by block hash (not supported by the electrum protocol).
+        // However, we can fetch the block by height and compare the hash to the expected hash. If these
+        // match (they only match if the block is on the active chain), then we can fetch the coinbase by
+        // height too.
+
+        let hash_electrum = self.block_hash(height).await?;
+
+        if *hash == hash_electrum {
+            let client = self.get_client();
+            let txid = client.txid_from_pos(height as usize, /*coinbase*/ 0)?;
+            return Ok(client.transaction_get(&txid)?);
+        }
+
+        return Err(FetchError::DataError(
+            "Could not fetch coinbase from non-active chain. Not supported by Electrum."
+                .to_string(),
+        ));
+    }
+
+    async fn batch_header_fetch(
+        &self,
+        _start_hash: BlockHash,
+        start_height: u64,
+        count: u64,
+    ) -> Result<Vec<Header>, FetchError> {
+        let client = self.get_client();
+        Ok(client
+            .block_headers(start_height as usize, count as usize)?
+            .headers)
     }
 }

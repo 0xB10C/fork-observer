@@ -1,3 +1,9 @@
+use crate::error::ConfigError;
+use crate::node::{BitcoinCoreNode, BtcdNode, Electrum, Esplora, Node, NodeInfo};
+use bitcoincore_rpc::bitcoin::Network as BitcoinNetwork;
+use bitcoincore_rpc::Auth;
+use log::{error, info};
+use serde::Deserialize;
 use std::hash::Hash;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -5,14 +11,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fmt, fs};
-
-use bitcoincore_rpc::bitcoin::Network as BitcoinNetwork;
-use bitcoincore_rpc::Auth;
-use log::{error, info};
-use serde::Deserialize;
-
-use crate::error::ConfigError;
-use crate::node::{BitcoinCoreNode, BtcdNode, Esplora, Node, NodeInfo};
 
 pub const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
@@ -140,8 +138,10 @@ impl fmt::Display for TomlNode {
 pub enum Backend {
     BitcoinCore,
     Btcd,
-    // An esplora based backend.
+    /// An esplora based backend.
     Esplora,
+    /// An Electrum server as backend.
+    Electrum,
 }
 
 impl FromStr for Backend {
@@ -154,6 +154,7 @@ impl FromStr for Backend {
             "core" => Ok(Backend::BitcoinCore),
             "btcd" => Ok(Backend::Btcd),
             "esplora" => Ok(Backend::Esplora),
+            "electrum" => Ok(Backend::Electrum),
             _ => Err(ConfigError::UnknownImplementation),
         }
     }
@@ -165,6 +166,7 @@ impl fmt::Display for Backend {
             Backend::BitcoinCore => write!(f, "Bitcoin Core"),
             Backend::Btcd => write!(f, "btcd"),
             Backend::Esplora => write!(f, "esplora"),
+            Backend::Electrum => write!(f, "electrum"),
         }
     }
 }
@@ -321,6 +323,14 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
             ))
         }
         Backend::Esplora => Arc::new(Esplora::new(node_info, toml_node.rpc_host.clone())),
+        Backend::Electrum => {
+            let url = format!(
+                "{}:{}",
+                toml_node.rpc_host.clone(),
+                toml_node.rpc_port.clone().unwrap_or(50002).to_string()
+            );
+            Arc::new(Electrum::new(node_info, url))
+        }
     };
     Ok(node)
 }
@@ -476,6 +486,47 @@ mod tests {
             Err(e) => {
                 panic!("Esplora backend config invalid: {}", e);
             }
+        }
+    }
+}
+
+#[test]
+fn esplora_backend_test() {
+    match parse_config(
+        r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 421
+                name = "Electrum"
+                description = "electrum"
+                rpc_host = "tcp://localhost"
+                rpc_port = 1337
+                implementation = "electrum"
+        "#,
+    ) {
+        Ok(config) => {
+            let network = &config.networks[0];
+            let node: &BoxedSyncSendNode = &network.nodes[0];
+            let node_info = node.info();
+            assert_eq!(node_info.name, "Electrum");
+            assert_eq!(node_info.id, 421);
+            assert_eq!(node_info.implementation, "electrum");
+        }
+        Err(e) => {
+            panic!("Electrum backend config invalid: {}", e);
         }
     }
 }

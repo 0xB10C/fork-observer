@@ -61,6 +61,14 @@ max_interesting_heights = 100
     rpc_user = "forkobserver"
     rpc_password = ""
 
+    [[networks.nodes]]
+    id = 3
+    name = "Electrum Emzy"
+    description = "URL electrum.emzy.de:50002"
+    rpc_host = "ssl://electrum.emzy.de"
+    rpc_port = 50002
+    implementation = "electrum"
+
 [[networks]]
 id = 0xFFFFFFFE
 name = "FFFFFFFE testnetwork"
