@@ -420,7 +420,10 @@ async fn main() -> Result<(), MainError> {
 
                     let mut miner = MINER_UNKNOWN.to_string();
                     for node in network_clone.nodes.iter().cloned() {
-                        match node.coinbase(&header_info.header.block_hash()).await {
+                        match node
+                            .coinbase(&header_info.header.block_hash(), header_info.height)
+                            .await
+                        {
                             Ok(coinbase) => {
                                 miner = match coinbase.identify_pool(
                                     pool_identification_network,

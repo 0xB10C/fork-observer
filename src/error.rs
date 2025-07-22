@@ -14,6 +14,7 @@ pub enum FetchError {
     EsploraREST(EsploraRESTError),
     MinReq(minreq::Error),
     DataError(String),
+    ElectrumClient(electrum_client::Error),
 }
 
 impl fmt::Display for FetchError {
@@ -26,6 +27,7 @@ impl fmt::Display for FetchError {
             FetchError::EsploraREST(e) => write!(f, "Esplora REST Error: {}", e),
             FetchError::MinReq(e) => write!(f, "MinReq HTTP GET request error: {:?}", e),
             FetchError::DataError(e) => write!(f, "Invalid data response error {}", e),
+            FetchError::ElectrumClient(e) => write!(f, "Electrum client error {}", e),
         }
     }
 }
@@ -39,6 +41,7 @@ impl error::Error for FetchError {
             FetchError::EsploraREST(ref e) => Some(e),
             FetchError::BitcoinCoreREST(_) => None,
             FetchError::MinReq(ref e) => Some(e),
+            FetchError::ElectrumClient(ref e) => Some(e),
             FetchError::DataError(_) => None,
         }
     }
@@ -59,6 +62,12 @@ impl From<tokio::task::JoinError> for FetchError {
 impl From<bitcoincore_rpc::Error> for FetchError {
     fn from(e: bitcoincore_rpc::Error) -> Self {
         FetchError::BitcoinCoreRPC(e)
+    }
+}
+
+impl From<electrum_client::Error> for FetchError {
+    fn from(e: electrum_client::Error) -> Self {
+        FetchError::ElectrumClient(e)
     }
 }
 

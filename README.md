@@ -74,3 +74,21 @@ implementation = "esplora"
 ```
 
 [esplora]: https://github.com/Blockstream/esplora
+
+
+## Connecting to an Electrum server
+
+The fork-observer tool can connect to public and private Electrum servers.
+While electrum servers don't offer a `getchaintips`-like API endpoint, it can be useful to
+know which blocks Electrum servers consider to be the tip. Supported are both plaintext 
+`tcp://` and encrypted `ssl://` connections.
+
+```toml
+[[networks.nodes]]
+id = 3
+name = "Electrum Emzy"
+description = "URL electrum.emzy.de:50002"
+rpc_host = "ssl://electrum.emzy.de"
+rpc_port = 50002
+implementation = "electrum"
+```
