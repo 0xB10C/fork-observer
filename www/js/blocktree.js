@@ -537,7 +537,7 @@ async function draw_nodes() {
           </span>
         </h5>
         <div class="px-2 small">
-          ${d.reachable ? "": "<span class='badge text-bg-danger'>RPC unreachable</span>"}
+          ${d.reachable ? "": "<span class='badge text-bg-danger'>unreachable</span>"}
           <span class='badge text-bg-secondary small'>${d.implementation} ${d.version.replaceAll("/", "").replaceAll("Satoshi:", "").replace("unknown", "(version unknown)")}</span>
         </div>
         
