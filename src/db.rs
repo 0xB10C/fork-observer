@@ -150,7 +150,7 @@ async fn load_header_infos(db: Db, network: u32) -> Result<Vec<HeaderInfo>, DbEr
         let header_bytes = hex::decode(&header_hex)?;
         let header = bitcoin::consensus::deserialize(&header_bytes)?;
         headers.push(HeaderInfo {
-            height: row.get(0)?,
+            height: row.get::<_, i64>(0)? as u64,
             header,
             miner: row.get(2)?,
         });
