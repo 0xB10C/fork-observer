@@ -17,6 +17,23 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+#[derive(Serialize, Clone, Debug)]
+#[repr(u32)]
+pub enum ActivityType {
+    TipChanged = 0,
+    NodeReachable = 1,
+    NodeUnreachable = 2,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ActivityJson {
+    pub timestamp: String,
+    pub network: u32,
+    pub node_id: u32,
+    pub activity_type: ActivityType,
+    pub activity_data: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Cache {
     pub header_infos_json: Vec<HeaderInfoJson>,
@@ -207,7 +224,7 @@ pub struct DataChanged {
     pub network_id: u32,
 }
 
-#[derive(Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChainTipStatus {
     #[serde(rename = "active")]
     Active,
@@ -260,7 +277,7 @@ impl fmt::Display for ChainTipStatus {
     }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChainTip {
     pub height: u64,
     pub hash: String,

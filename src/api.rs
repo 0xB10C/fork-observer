@@ -3,7 +3,8 @@ use std::convert::Infallible;
 use warp::{sse::Event, Filter};
 
 use crate::types::{
-    Caches, DataChanged, DataJsonResponse, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
+    ActivityJson, Caches, DataChanged, DataJsonResponse, Db, InfoJsonResponse, NetworkJson,
+    NetworksJsonResponse,
 };
 
 pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
@@ -52,4 +53,18 @@ pub fn with_networks(
     networks: Vec<NetworkJson>,
 ) -> impl Filter<Extract = (Vec<NetworkJson>,), Error = Infallible> + Clone {
     warp::any().map(move || networks.clone())
+}
+
+pub async fn activity_response(network: u32, db: Db) -> Result<impl warp::Reply, Infallible> {
+    match crate::db::get_activities(db.clone(), network).await {
+        Ok(activities) => Ok(warp::reply::json(&activities)),
+        Err(e) => {
+            log::error!("Could not get activities from database: {:?}", e);
+            Ok(warp::reply::json(&Vec::<ActivityJson>::new()))
+        }
+    }
+}
+
+pub fn with_db(db: Db) -> impl Filter<Extract = (Db,), Error = Infallible> + Clone {
+    warp::any().map(move || db.clone())
 }

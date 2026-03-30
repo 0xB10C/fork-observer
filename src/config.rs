@@ -76,6 +76,7 @@ struct TomlNetwork {
     max_interesting_heights: usize,
     nodes: Vec<TomlNode>,
     pool_identification: Option<PoolIdentification>,
+    activity_log_enabled: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -115,6 +116,7 @@ struct TomlNode {
     rpc_password: Option<String>,
     use_rest: Option<bool>,
     implementation: Option<String>,
+    activity_log_enabled: Option<bool>,
 }
 
 impl fmt::Display for TomlNode {
@@ -204,8 +206,9 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
     for toml_network in toml_config.networks.iter() {
         let mut nodes: Vec<BoxedSyncSendNode> = vec![];
         let mut node_ids: Vec<u32> = vec![];
+        let network_activity_log = toml_network.activity_log_enabled.unwrap_or(false);
         for toml_node in toml_network.nodes.iter() {
-            match parse_toml_node(toml_node) {
+            match parse_toml_node(toml_node, network_activity_log) {
                 Ok(node) => {
                     if !node_ids.contains(&node.info().id) {
                         node_ids.push(node.info().id);
@@ -278,7 +281,10 @@ fn parse_toml_network(
     })
 }
 
-fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigError> {
+fn parse_toml_node(
+    toml_node: &TomlNode,
+    network_activity_log_enabled: bool,
+) -> Result<BoxedSyncSendNode, ConfigError> {
     let implementation = toml_node
         .implementation
         .as_ref()
@@ -290,6 +296,9 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
         name: toml_node.name.clone(),
         description: toml_node.description.clone(),
         implementation: implementation.to_string(),
+        activity_log_enabled: toml_node
+            .activity_log_enabled
+            .unwrap_or(network_activity_log_enabled),
     };
 
     let node: BoxedSyncSendNode = match implementation {
