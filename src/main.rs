@@ -32,8 +32,8 @@ mod types;
 use crate::config::BoxedSyncSendNode;
 use crate::error::{DbError, MainError};
 use types::{
-    Cache, Caches, ChainTip, Db, Fork, HeaderInfo, HeaderInfoJson, NetworkJson, NodeData,
-    NodeDataJson, Tree,
+    ActivityType, Cache, Caches, ChainTip, Db, Fork, HeaderInfo, HeaderInfoJson, NetworkJson,
+    NodeData, NodeDataJson, Tree,
 };
 
 const VERSION_UNKNOWN: &str = "unknown";
@@ -202,6 +202,23 @@ async fn main() -> Result<(), MainError> {
                                     &cache_changed_tx_cloned,
                                 )
                                 .await;
+
+                                if node.info().activity_log_enabled {
+                                    if let Err(e) = db::log_activity(
+                                        db_write.clone(),
+                                        network.id,
+                                        node.info().id,
+                                        ActivityType::NodeReachable,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        error!(
+                                            "Could not log Node Reachability (true) to db: {:?}",
+                                            e
+                                        );
+                                    }
+                                }
                             }
                             tips
                         }
@@ -224,6 +241,23 @@ async fn main() -> Result<(), MainError> {
                                     &cache_changed_tx_cloned,
                                 )
                                 .await;
+
+                                if node.info().activity_log_enabled {
+                                    if let Err(db_e) = db::log_activity(
+                                        db_write.clone(),
+                                        network.id,
+                                        node.info().id,
+                                        ActivityType::NodeUnreachable,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        error!(
+                                            "Could not log Node Reachability (false) to db: {:?}",
+                                            db_e
+                                        );
+                                    }
+                                }
                             }
                             continue;
                         }
@@ -272,7 +306,8 @@ async fn main() -> Result<(), MainError> {
                             tree_changed =
                                 insert_new_headers_into_tree(&tree_clone, &new_headers).await;
 
-                            match db::write_to_db(&new_headers, db_write, network.id).await {
+                            match db::write_to_db(&new_headers, db_write.clone(), network.id).await
+                            {
                                 Ok(_) => info!(
                                     "Written {} headers to database for network '{}' by node {}",
                                     new_headers.len(),
@@ -297,6 +332,21 @@ async fn main() -> Result<(), MainError> {
                             &cache_changed_tx_cloned,
                         )
                         .await;
+
+                        if node.info().activity_log_enabled {
+                            let data = serde_json::to_string(&tips).unwrap_or_default();
+                            if let Err(db_e) = db::log_activity(
+                                db_write.clone(),
+                                network.id,
+                                node.info().id,
+                                ActivityType::TipChanged,
+                                Some(data),
+                            )
+                            .await
+                            {
+                                error!("Could not log Node Tips changing to db: {:?}", db_e);
+                            }
+                        }
 
                         if tree_changed {
                             let mut tip_heights: BTreeSet<u64> =
@@ -540,6 +590,11 @@ async fn main() -> Result<(), MainError> {
         .and(api::with_networks(network_infos))
         .and_then(api::networks_response);
 
+    let activity_json = warp::get()
+        .and(warp::path!("api" / u32 / "activity.json"))
+        .and(api::with_db(db.clone()))
+        .and_then(api::activity_response);
+
     let change_sse = warp::path!("api" / "changes")
         .and(warp::get())
         .map(move || {
@@ -559,6 +614,7 @@ async fn main() -> Result<(), MainError> {
     let routes = www_dir
         .or(index_html)
         .or(fullscreen_html)
+        .or(activity_json)
         .or(data_json)
         .or(info_json)
         .or(networks_json)
@@ -876,6 +932,7 @@ mod tests {
             name: "".to_string(),
             description: "".to_string(),
             implementation: "".to_string(),
+            activity_log_enabled: false,
         };
         {
             // populate data

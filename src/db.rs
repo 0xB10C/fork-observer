@@ -9,7 +9,7 @@ use bitcoincore_rpc::bitcoin::BlockHash;
 use log::{debug, info, warn};
 
 use crate::error::DbError;
-use crate::types::{Db, HeaderInfo, TreeInfo};
+use crate::types::{ActivityJson, ActivityType, Db, HeaderInfo, TreeInfo};
 
 const SELECT_STMT_HEADER_HEIGHT: &str = "
 SELECT
@@ -43,8 +43,70 @@ WHERE
     hash = ?2;
 ";
 
+const CREATE_STMT_TABLE_ACTIVITY_LOG: &str = "
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    network INT,
+    node_id INT,
+    activity_type INT,
+    specific_activity_id INT
+)
+";
+
+const CREATE_STMT_TABLE_ACTIVITY_TIP_CHANGED: &str = "
+CREATE TABLE IF NOT EXISTS activity_tip_changed (
+    id INTEGER PRIMARY KEY,
+    activity_data TEXT
+)
+";
+
+const CREATE_STMT_TABLE_ACTIVITY_REACHABILITY: &str = "
+CREATE TABLE IF NOT EXISTS activity_reachability (
+    id INTEGER PRIMARY KEY,
+    is_reachable BOOLEAN
+)
+";
+
+const INSERT_STMT_ACTIVITY_TIP_CHANGED: &str = "
+INSERT INTO activity_tip_changed (activity_data) VALUES (?1)
+";
+
+const INSERT_STMT_ACTIVITY_REACHABILITY: &str = "
+INSERT INTO activity_reachability (is_reachable) VALUES (?1)
+";
+
+const INSERT_STMT_ACTIVITY_LOG: &str = "
+INSERT INTO activity_log
+    (network, node_id, activity_type, specific_activity_id)
+    VALUES (?1, ?2, ?3, ?4)
+";
+
+const SELECT_STMT_ACTIVITY_LOG: &str = "
+SELECT
+    a.timestamp,
+    a.network,
+    a.node_id,
+    a.activity_type,
+    t.activity_data as tip_data,
+    r.is_reachable as reachability_data
+FROM
+    activity_log a
+LEFT JOIN activity_tip_changed t ON a.activity_type = 0 AND a.specific_activity_id = t.id
+LEFT JOIN activity_reachability r ON a.activity_type IN (1, 2) AND a.specific_activity_id = r.id
+WHERE
+    a.network = ?1
+ORDER BY
+    a.timestamp DESC
+LIMIT 100
+";
+
 pub async fn setup_db(db: Db) -> Result<(), DbError> {
     db.lock().await.execute(CREATE_STMT_TABLE_HEADERS, [])?;
+    let db_locked = db.lock().await;
+    db_locked.execute(CREATE_STMT_TABLE_ACTIVITY_LOG, [])?;
+    db_locked.execute(CREATE_STMT_TABLE_ACTIVITY_TIP_CHANGED, [])?;
+    db_locked.execute(CREATE_STMT_TABLE_ACTIVITY_REACHABILITY, [])?;
     Ok(())
 }
 
@@ -163,4 +225,82 @@ async fn load_header_infos(db: Db, network: u32) -> Result<Vec<HeaderInfo>, DbEr
     );
 
     Ok(headers)
+}
+
+pub async fn log_activity(
+    db: Db,
+    network: u32,
+    node_id: u32,
+    activity_type: ActivityType,
+    activity_data: Option<String>,
+) -> Result<(), DbError> {
+    let mut db_locked = db.lock().await;
+    let tx = db_locked.transaction()?;
+
+    let specific_id = match activity_type {
+        ActivityType::TipChanged => {
+            if let Some(data) = activity_data {
+                tx.execute(INSERT_STMT_ACTIVITY_TIP_CHANGED, &[&data])?;
+                tx.last_insert_rowid()
+            } else {
+                return Err(DbError::from(rusqlite::Error::InvalidQuery)); // Should have data
+            }
+        }
+        ActivityType::NodeReachable => {
+            tx.execute(INSERT_STMT_ACTIVITY_REACHABILITY, [true])?;
+            tx.last_insert_rowid()
+        }
+        ActivityType::NodeUnreachable => {
+            tx.execute(INSERT_STMT_ACTIVITY_REACHABILITY, [false])?;
+            tx.last_insert_rowid()
+        }
+    };
+
+    tx.execute(
+        INSERT_STMT_ACTIVITY_LOG,
+        &[
+            &network.to_string(),
+            &node_id.to_string(),
+            &(activity_type as u32).to_string(),
+            &specific_id.to_string(),
+        ],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub async fn get_activities(db: Db, network: u32) -> Result<Vec<ActivityJson>, DbError> {
+    let db_locked = db.lock().await;
+    let mut stmt = db_locked.prepare(SELECT_STMT_ACTIVITY_LOG)?;
+
+    let mut activities: Vec<ActivityJson> = vec![];
+
+    let mut rows = stmt.query([network.to_string()])?;
+    while let Some(row) = rows.next()? {
+        let act_type_int: u32 = row.get(3)?;
+        let activity_type = match act_type_int {
+            0 => ActivityType::TipChanged,
+            1 => ActivityType::NodeReachable,
+            2 => ActivityType::NodeUnreachable,
+            _ => continue, // Invalid unknown type in db
+        };
+
+        let activity_data = match activity_type {
+            ActivityType::TipChanged => row.get::<_, Option<String>>(4)?, // tip_data
+            ActivityType::NodeReachable | ActivityType::NodeUnreachable => {
+                let reachable: Option<bool> = row.get(5)?; // reachability_data
+                reachable.map(|r| r.to_string())
+            }
+        };
+
+        activities.push(ActivityJson {
+            timestamp: row.get(0)?,
+            network: row.get(1)?,
+            node_id: row.get(2)?,
+            activity_type,
+            activity_data,
+        });
+    }
+
+    Ok(activities)
 }
