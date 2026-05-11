@@ -28,7 +28,7 @@ base64 = "0.22.1"
 
 async-trait = "0.1.89"
 bitcoin-pool-identification = "0.3.7"
-electrum-client = "0.24.0"
+electrum-client = "0.25.0"
 
 [features]
 
