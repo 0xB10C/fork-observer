@@ -2,13 +2,12 @@ use std::fmt;
 use std::net::AddrParseError;
 use std::{error, io};
 
-use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::hashes::hex::parse::HexToArrayError;
+use corepc_client::bitcoin::hashes::hex::parse::HexToArrayError;
 
 #[derive(Debug)]
 pub enum FetchError {
     TokioJoin(tokio::task::JoinError),
-    BitcoinCoreRPC(bitcoincore_rpc::Error),
+    BitcoinCoreRPC(corepc_client::client_sync::Error),
     BitcoinCoreREST(String),
     BtcdRPC(JsonRPCError),
     EsploraREST(EsploraRESTError),
@@ -59,8 +58,8 @@ impl From<tokio::task::JoinError> for FetchError {
     }
 }
 
-impl From<bitcoincore_rpc::Error> for FetchError {
-    fn from(e: bitcoincore_rpc::Error) -> Self {
+impl From<corepc_client::client_sync::Error> for FetchError {
+    fn from(e: corepc_client::client_sync::Error) -> Self {
         FetchError::BitcoinCoreRPC(e)
     }
 }
@@ -75,7 +74,7 @@ impl From<electrum_client::Error> for FetchError {
 pub enum DbError {
     Rusqlite(rusqlite::Error),
     DecodeHex(hex::FromHexError),
-    BitcoinDeserialize(bitcoin::consensus::encode::Error),
+    BitcoinDeserialize(corepc_client::bitcoin::consensus::encode::Error),
 }
 
 impl fmt::Display for DbError {
@@ -110,8 +109,8 @@ impl From<hex::FromHexError> for DbError {
     }
 }
 
-impl From<bitcoin::consensus::encode::Error> for DbError {
-    fn from(e: bitcoin::consensus::encode::Error) -> Self {
+impl From<corepc_client::bitcoin::consensus::encode::Error> for DbError {
+    fn from(e: corepc_client::bitcoin::consensus::encode::Error) -> Self {
         DbError::BitcoinDeserialize(e)
     }
 }
@@ -259,7 +258,7 @@ pub enum JsonRPCError {
     MinReq(minreq::Error),
     FromHex(hex::FromHexError),
     BitcoinFromHex(HexToArrayError),
-    BitcoinDeserializeError(bitcoin::consensus::encode::Error),
+    BitcoinDeserializeError(corepc_client::bitcoin::consensus::encode::Error),
     NotImplemented,
 }
 
@@ -309,8 +308,8 @@ impl From<hex::FromHexError> for JsonRPCError {
     }
 }
 
-impl From<bitcoin::consensus::encode::Error> for JsonRPCError {
-    fn from(e: bitcoin::consensus::encode::Error) -> Self {
+impl From<corepc_client::bitcoin::consensus::encode::Error> for JsonRPCError {
+    fn from(e: corepc_client::bitcoin::consensus::encode::Error) -> Self {
         JsonRPCError::BitcoinDeserializeError(e)
     }
 }

@@ -1,8 +1,8 @@
 #![cfg_attr(feature = "strict", deny(warnings))]
 
 use bitcoin_pool_identification::{default_data, PoolIdentification};
-use bitcoincore_rpc::bitcoin::{BlockHash, Network};
-use bitcoincore_rpc::Error::JsonRpc;
+use corepc_client::bitcoin::{BlockHash, Network};
+use corepc_client::client_sync::Error::JsonRpc;
 use env_logger::Env;
 use futures_util::StreamExt;
 use log::{debug, error, info, warn};

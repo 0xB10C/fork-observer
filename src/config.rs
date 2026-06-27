@@ -1,7 +1,7 @@
 use crate::error::ConfigError;
 use crate::node::{BitcoinCoreNode, BtcdNode, Electrum, Esplora, Node, NodeInfo};
-use bitcoincore_rpc::bitcoin::Network as BitcoinNetwork;
-use bitcoincore_rpc::Auth;
+use corepc_client::bitcoin::Network as BitcoinNetwork;
+use corepc_client::client_sync::Auth;
 use log::{error, info};
 use serde::Deserialize;
 use std::hash::Hash;
