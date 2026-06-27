@@ -30,7 +30,7 @@ bitcoin-pool-identification = "0.3.7"
 # dependency graph agrees on a single rustls CryptoProvider. corepc-node's
 # downloader (via bitreq) pulls `rustls/ring`; mixing it with aws-lc-rs makes
 # rustls unable to pick a provider and panics when downloading bitcoind in CI.
-electrum-client = { version = "0.24.0", default-features = false, features = ["proxy", "use-rustls-ring"] }
+electrum-client = { version = "0.25.0", default-features = false, features = ["proxy", "use-rustls-ring"] }
 corepc-client = { version = "0.16.0", features = ["client-sync"] }
 
 [dev-dependencies]
