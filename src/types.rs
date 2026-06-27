@@ -7,9 +7,9 @@ use std::time::SystemTime;
 use crate::config::Network;
 use crate::node::NodeInfo;
 
-use bitcoincore_rpc::bitcoin::blockdata::block::Header;
-use bitcoincore_rpc::bitcoin::BlockHash;
-use bitcoincore_rpc::json::{GetChainTipsResultStatus, GetChainTipsResultTip};
+use corepc_client::bitcoin::blockdata::block::Header;
+use corepc_client::bitcoin::BlockHash;
+use corepc_client::types::model::{ChainTips, ChainTipsStatus};
 use log::warn;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
@@ -235,14 +235,14 @@ impl From<String> for ChainTipStatus {
     }
 }
 
-impl From<GetChainTipsResultStatus> for ChainTipStatus {
-    fn from(s: GetChainTipsResultStatus) -> Self {
+impl From<ChainTipsStatus> for ChainTipStatus {
+    fn from(s: ChainTipsStatus) -> Self {
         match s {
-            GetChainTipsResultStatus::Active => ChainTipStatus::Active,
-            GetChainTipsResultStatus::Invalid => ChainTipStatus::Invalid,
-            GetChainTipsResultStatus::HeadersOnly => ChainTipStatus::HeadersOnly,
-            GetChainTipsResultStatus::ValidHeaders => ChainTipStatus::ValidHeaders,
-            GetChainTipsResultStatus::ValidFork => ChainTipStatus::ValidFork,
+            ChainTipsStatus::Active => ChainTipStatus::Active,
+            ChainTipsStatus::Invalid => ChainTipStatus::Invalid,
+            ChainTipsStatus::HeadersOnly => ChainTipStatus::HeadersOnly,
+            ChainTipsStatus::ValidHeaders => ChainTipStatus::ValidHeaders,
+            ChainTipsStatus::ValidFork => ChainTipStatus::ValidFork,
         }
     }
 }
@@ -268,12 +268,12 @@ pub struct ChainTip {
     pub status: ChainTipStatus,
 }
 
-impl From<GetChainTipsResultTip> for ChainTip {
-    fn from(t: GetChainTipsResultTip) -> Self {
+impl From<ChainTips> for ChainTip {
+    fn from(t: ChainTips) -> Self {
         ChainTip {
-            height: t.height,
+            height: t.height as u64,
             hash: t.hash.to_string(),
-            branchlen: t.branch_length,
+            branchlen: t.branch_length as usize,
             status: t.status.into(),
         }
     }

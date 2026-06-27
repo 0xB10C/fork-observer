@@ -4,9 +4,8 @@ use std::str::FromStr;
 use crate::error::JsonRPCError;
 use crate::types::ChainTip;
 
-use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::blockdata::block::Header;
-use bitcoincore_rpc::bitcoin::Block;
+use corepc_client::bitcoin::blockdata::block::Header;
+use corepc_client::bitcoin::Block;
 
 use base64::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -126,7 +125,7 @@ pub fn btcd_blockheader(
 
     let header_bytes = hex::decode(header_hex)?;
 
-    let header: Header = bitcoin::consensus::deserialize(&header_bytes)?;
+    let header: Header = corepc_client::bitcoin::consensus::deserialize(&header_bytes)?;
     return Ok(header);
 }
 
@@ -153,7 +152,7 @@ pub fn btcd_block(
 
     let block_hex = jsonrpc_response.result.unwrap_or_default();
     let block_bytes = hex::decode(block_hex)?;
-    let block: Block = bitcoin::consensus::deserialize(&block_bytes)?;
+    let block: Block = corepc_client::bitcoin::consensus::deserialize(&block_bytes)?;
     Ok(block)
 }
 
@@ -162,7 +161,7 @@ pub fn btcd_blockhash(
     user: String,
     password: String,
     height: u64,
-) -> Result<bitcoin::BlockHash, JsonRPCError> {
+) -> Result<corepc_client::bitcoin::BlockHash, JsonRPCError> {
     const METHOD: &str = "getblockhash";
 
     let res = request(
@@ -186,7 +185,7 @@ pub fn btcd_blockhash(
         )));
     }
 
-    Ok(bitcoin::BlockHash::from_str(&hash_hex)?)
+    Ok(corepc_client::bitcoin::BlockHash::from_str(&hash_hex)?)
 }
 
 fn request(

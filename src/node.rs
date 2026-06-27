@@ -1,13 +1,11 @@
 use crate::error::{EsploraRESTError, FetchError, JsonRPCError};
 use crate::types::{ChainTip, ChainTipStatus, HeaderInfo, Tree};
 use async_trait::async_trait;
-use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::blockdata::block::Header;
-use bitcoincore_rpc::bitcoin::hex::FromHex;
-use bitcoincore_rpc::bitcoin::{BlockHash, Transaction};
-use bitcoincore_rpc::Auth;
-use bitcoincore_rpc::Client;
-use bitcoincore_rpc::RpcApi;
+use corepc_client::bitcoin::blockdata::block::Header;
+use corepc_client::bitcoin::hex::FromHex;
+use corepc_client::bitcoin::{BlockHash, Transaction};
+use corepc_client::client_sync::v31::Client;
+use corepc_client::client_sync::Auth;
 use electrum_client::{
     Client as ElectrumClient, ConfigBuilder as ElectrumClientConfigBuilder, ElectrumApi,
 };
@@ -275,7 +273,7 @@ impl BitcoinCoreNode {
     }
 
     fn rpc_client(&self) -> Result<Client, FetchError> {
-        match Client::new(&self.rpc_url, self.rpc_auth.clone()) {
+        match Client::new_with_auth(&self.rpc_url, self.rpc_auth.clone()) {
             Ok(c) => Ok(c),
             Err(e) => {
                 error!(
@@ -308,36 +306,39 @@ impl Node for BitcoinCoreNode {
 
     async fn version(&self) -> Result<String, FetchError> {
         let rpc = self.rpc_client()?;
-        match task::spawn_blocking(move || rpc.get_network_info()).await {
-            Ok(result) => match result {
-                Ok(result) => Ok(result.subversion),
-                Err(e) => Err(e.into()),
-            },
-            Err(e) => Err(e.into()),
-        }
+        task::spawn_blocking(move || -> Result<String, FetchError> {
+            Ok(rpc
+                .get_network_info()?
+                .into_model()
+                .map_err(|e| FetchError::DataError(e.to_string()))?
+                .subversion)
+        })
+        .await?
     }
 
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
         let rpc = self.rpc_client()?;
-        match task::spawn_blocking(move || rpc.get_block_hash(height)).await {
-            Ok(result) => match result {
-                Ok(result) => Ok(result),
-                Err(e) => Err(e.into()),
-            },
-            Err(e) => Err(e.into()),
-        }
+        task::spawn_blocking(move || -> Result<BlockHash, FetchError> {
+            Ok(rpc
+                .get_block_hash(height)?
+                .into_model()
+                .map_err(|e| FetchError::DataError(e.to_string()))?
+                .0)
+        })
+        .await?
     }
 
     async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
         let rpc = self.rpc_client()?;
         let hash_clone = hash.clone();
-        match task::spawn_blocking(move || rpc.get_block_header(&hash_clone)).await {
-            Ok(result) => match result {
-                Ok(result) => Ok(result),
-                Err(e) => Err(e.into()),
-            },
-            Err(e) => Err(e.into()),
-        }
+        task::spawn_blocking(move || -> Result<Header, FetchError> {
+            Ok(rpc
+                .get_block_header(&hash_clone)?
+                .into_model()
+                .map_err(|e| FetchError::DataError(e.to_string()))?
+                .0)
+        })
+        .await?
     }
 
     async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
@@ -350,7 +351,7 @@ impl Node for BitcoinCoreNode {
     async fn coinbase(&self, hash: &BlockHash, _height: u64) -> Result<Transaction, FetchError> {
         let rpc = self.rpc_client()?;
         let hash_clone = hash.clone();
-        match task::spawn_blocking(move || rpc.get_block(&hash_clone)).await {
+        match task::spawn_blocking(move || rpc.get_block(hash_clone)).await {
             Ok(result) => match result {
                 Ok(result) => Ok(result
                     .txdata
@@ -365,13 +366,17 @@ impl Node for BitcoinCoreNode {
 
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError> {
         let rpc = self.rpc_client()?;
-        match task::spawn_blocking(move || rpc.get_chain_tips()).await {
-            Ok(tips_result) => match tips_result {
-                Ok(tips) => Ok(tips.iter().map(|t| t.clone().into()).collect()),
-                Err(e) => Err(e.into()),
-            },
-            Err(e) => Err(e.into()),
-        }
+        task::spawn_blocking(move || -> Result<Vec<ChainTip>, FetchError> {
+            Ok(rpc
+                .get_chain_tips()?
+                .into_model()
+                .map_err(|e| FetchError::DataError(e.to_string()))?
+                .0
+                .into_iter()
+                .map(|t| t.into())
+                .collect())
+        })
+        .await?
     }
 
     async fn batch_header_fetch(
@@ -404,14 +409,11 @@ impl Node for BitcoinCoreNode {
             )));
         }
 
-        let header_results: Result<
-            Vec<Header>,
-            bitcoincore_rpc::bitcoin::consensus::encode::Error,
-        > = res
-            .as_bytes()
-            .chunks(80)
-            .map(bitcoin::consensus::deserialize::<Header>)
-            .collect();
+        let header_results: Result<Vec<Header>, corepc_client::bitcoin::consensus::encode::Error> =
+            res.as_bytes()
+                .chunks(80)
+                .map(corepc_client::bitcoin::consensus::deserialize::<Header>)
+                .collect();
 
         let headers = match header_results {
             Ok(headers) => headers,
@@ -591,13 +593,15 @@ impl Node for Esplora {
             200 => {
                 let header_str = res.as_str()?;
                 match Vec::from_hex(header_str) {
-                    Ok(header_bytes) => match bitcoin::consensus::deserialize(&header_bytes) {
-                        Ok(header) => Ok(header),
-                        Err(e) => Err(FetchError::DataError(format!(
-                            "Can't deserialize block header '{}': {}",
-                            header_str, e
-                        ))),
-                    },
+                    Ok(header_bytes) => {
+                        match corepc_client::bitcoin::consensus::deserialize(&header_bytes) {
+                            Ok(header) => Ok(header),
+                            Err(e) => Err(FetchError::DataError(format!(
+                                "Can't deserialize block header '{}': {}",
+                                header_str, e
+                            ))),
+                        }
+                    }
                     Err(e) => Err(FetchError::DataError(format!(
                         "Can't hex decode block header '{}': {}",
                         header_str, e
@@ -643,7 +647,7 @@ impl Node for Esplora {
                 match res.status_code {
                     200 => match Vec::from_hex(coinbase_hex) {
                         Ok(coinbase_bytes) => {
-                            match bitcoin::consensus::deserialize(&coinbase_bytes) {
+                            match corepc_client::bitcoin::consensus::deserialize(&coinbase_bytes) {
                                 Ok(tx) => Ok(tx),
                                 Err(e) => Err(FetchError::DataError(format!(
                                     "Can't deserialize coinbase transaction '{}': {}",

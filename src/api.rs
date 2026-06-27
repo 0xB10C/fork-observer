@@ -32,9 +32,7 @@ pub async fn networks_response(
     }))
 }
 
-pub fn data_changed_sse(
-    network_id: u32,
-) -> Result<Event, bitcoincore_rpc::jsonrpc::serde_json::Error> {
+pub fn data_changed_sse(network_id: u32) -> Result<Event, serde_json::Error> {
     warp::sse::Event::default()
         .event("cache_changed")
         .json_data(DataChanged { network_id })

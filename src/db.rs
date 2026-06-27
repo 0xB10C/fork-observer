@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 
-use bitcoincore_rpc::bitcoin;
-use bitcoincore_rpc::bitcoin::BlockHash;
+use corepc_client::bitcoin::BlockHash;
 
 use log::{debug, info, warn};
 
@@ -69,7 +68,7 @@ pub async fn write_to_db(
                 &info.height.to_string(),
                 &network.to_string(),
                 &info.header.block_hash().to_string(),
-                &bitcoin::consensus::encode::serialize_hex(&info.header),
+                &corepc_client::bitcoin::consensus::encode::serialize_hex(&info.header),
                 &info.miner,
             ],
         )?;
@@ -148,7 +147,7 @@ async fn load_header_infos(db: Db, network: u32) -> Result<Vec<HeaderInfo>, DbEr
     while let Some(row) = rows.next()? {
         let header_hex: String = row.get(1)?;
         let header_bytes = hex::decode(&header_hex)?;
-        let header = bitcoin::consensus::deserialize(&header_bytes)?;
+        let header = corepc_client::bitcoin::consensus::deserialize(&header_bytes)?;
         headers.push(HeaderInfo {
             height: row.get::<_, i64>(0)? as u64,
             header,
