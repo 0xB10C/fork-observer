@@ -56,6 +56,18 @@ pub trait Node: Sync {
         count: u64,
     ) -> Result<Vec<Header>, FetchError>;
 
+    /// Blocks until the node's tip likely changed, or until `timeout` elapses,
+    /// whichever comes first. Returning is only a hint to re-fetch tips; callers
+    /// must still call `tips()` and compare. The default implementation simply
+    /// waits out the `timeout` (i.e. preserves the fixed-interval polling
+    /// behaviour). Implementations that support a push/long-poll mechanism (e.g.
+    /// Bitcoin Core's `waitfornewblock`) can override this to return as soon as a
+    /// new block arrives.
+    async fn wait_for_tip_change(&self, timeout: Duration) -> Result<(), FetchError> {
+        tokio::time::sleep(timeout).await;
+        Ok(())
+    }
+
     async fn new_headers(
         &self,
         tips: &Vec<ChainTip>,
@@ -260,15 +272,23 @@ pub struct BitcoinCoreNode {
     rpc_url: String,
     rpc_auth: Auth,
     use_rest: bool,
+    use_waitfornewblock: bool,
 }
 
 impl BitcoinCoreNode {
-    pub fn new(info: NodeInfo, rpc_url: String, rpc_auth: Auth, use_rest: bool) -> Self {
+    pub fn new(
+        info: NodeInfo,
+        rpc_url: String,
+        rpc_auth: Auth,
+        use_rest: bool,
+        use_waitfornewblock: bool,
+    ) -> Self {
         BitcoinCoreNode {
             info,
             rpc_url,
             rpc_auth,
             use_rest,
+            use_waitfornewblock,
         }
     }
 
@@ -375,6 +395,31 @@ impl Node for BitcoinCoreNode {
                 .into_iter()
                 .map(|t| t.into())
                 .collect())
+        })
+        .await?
+    }
+
+    async fn wait_for_tip_change(&self, timeout: Duration) -> Result<(), FetchError> {
+        if !self.use_waitfornewblock {
+            tokio::time::sleep(timeout).await;
+            return Ok(());
+        }
+
+        // The `corepc_client` `Client` has a hardcoded 60s HTTP transport
+        // timeout. We cap the server-side `waitfornewblock` timeout safely below
+        // that: on timeout Bitcoin Core returns the current tip (no error), the
+        // caller sees no tip change and we simply re-issue on the next loop.
+        const MAX_WAIT: Duration = Duration::from_secs(50);
+        let timeout_ms = timeout.min(MAX_WAIT).as_millis() as u64;
+
+        let rpc = self.rpc_client()?;
+        task::spawn_blocking(move || -> Result<(), FetchError> {
+            // `corepc_client`'s `wait_for_new_block()` helper sends no timeout
+            // (i.e. blocks indefinitely), so we issue the raw call with an
+            // explicit timeout in milliseconds instead. We only use the response
+            // as a wake-up signal and re-fetch the tips afterwards.
+            rpc.call::<serde_json::Value>("waitfornewblock", &[timeout_ms.into()])?;
+            Ok(())
         })
         .await?
     }
@@ -965,6 +1010,7 @@ mod bitcoin_core_tests {
             core.rpc_url(),
             Auth::CookieFile(core.params.cookie_file.clone()),
             false, // use_rest
+            true,  // use_waitfornewblock
         )
     }
 
@@ -1090,6 +1136,91 @@ mod bitcoin_core_tests {
         assert_eq!(
             invalid_tip.branchlen, 2,
             "invalid branch (blocks 4 and 5) should have length 2"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_tip_change_wakes_on_new_block() {
+        let core = start_bitcoind();
+        let address = core.client.new_address().expect("new_address failed");
+        // Mine one block so the node has a non-genesis tip to wait past.
+        core.client
+            .generate_to_address(1, &address)
+            .expect("generate_to_address failed");
+
+        let node = node_under_test(&core);
+
+        // Wait for a tip change with a generous timeout while concurrently mining
+        // a new block. `waitfornewblock` should return well before the timeout.
+        let timeout = Duration::from_secs(30);
+        let start = std::time::Instant::now();
+        let (wait_result, _) = tokio::join!(node.wait_for_tip_change(timeout), async {
+            // Give `wait_for_tip_change` a moment to issue waitfornewblock first.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            core.client
+                .generate_to_address(1, &address)
+                .expect("generate_to_address failed");
+        });
+
+        wait_result.expect("wait_for_tip_change should not error");
+        assert!(
+            start.elapsed() < timeout,
+            "wait_for_tip_change should return promptly after a new block, not hit the timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_tip_change_returns_on_timeout() {
+        let core = start_bitcoind();
+        let node = node_under_test(&core);
+
+        // With no new block arriving, `waitfornewblock` returns the current tip
+        // once the timeout elapses - without erroring.
+        let timeout = Duration::from_secs(1);
+        let start = std::time::Instant::now();
+        node.wait_for_tip_change(timeout)
+            .await
+            .expect("wait_for_tip_change should return Ok on timeout");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= timeout,
+            "should wait out the full timeout, waited {:?}",
+            elapsed
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "should return shortly after the timeout, waited {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_tip_change_polling_fallback_when_disabled() {
+        // With `use_waitfornewblock = false` the node must not contact the RPC at
+        // all; it simply waits out the timeout. We therefore point it at an unused
+        // address and still expect a clean, timely return (no bitcoind needed).
+        let info = NodeInfo {
+            id: 0,
+            name: "disabled".to_string(),
+            description: String::new(),
+            implementation: "Bitcoin Core".to_string(),
+        };
+        let node = BitcoinCoreNode::new(
+            info,
+            "127.0.0.1:1".to_string(),
+            Auth::UserPass("user".to_string(), "pass".to_string()),
+            false, // use_rest
+            false, // use_waitfornewblock
+        );
+
+        let timeout = Duration::from_millis(200);
+        let start = std::time::Instant::now();
+        node.wait_for_tip_change(timeout)
+            .await
+            .expect("polling fallback should return Ok");
+        assert!(
+            start.elapsed() >= timeout,
+            "polling fallback should wait out the full timeout"
         );
     }
 }

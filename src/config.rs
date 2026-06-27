@@ -16,6 +16,7 @@ pub const ENVVAR_CONFIG_FILE: &str = "CONFIG_FILE";
 const DEFAULT_CONFIG: &str = "config.toml";
 const DEFAULT_BACKEND: Backend = Backend::BitcoinCore;
 const DEFAULT_USE_REST: bool = true;
+const DEFAULT_USE_WAITFORNEWBLOCK: bool = true;
 const DEFAULT_RPC_PORT: u16 = 8332;
 
 pub type BoxedSyncSendNode = Arc<dyn Node + Send + Sync>;
@@ -114,13 +115,14 @@ struct TomlNode {
     rpc_user: Option<String>,
     rpc_password: Option<String>,
     use_rest: Option<bool>,
+    use_waitfornewblock: Option<bool>,
     implementation: Option<String>,
 }
 
 impl fmt::Display for TomlNode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
-            f,"Node (id={}, description='{}', name='{}', rpc_host='{}', rpc_port={}, rpc_user='{}', rpc_password='***', rpc_cookie_file={:?}, use_rest={}, implementation='{}')",
+            f,"Node (id={}, description='{}', name='{}', rpc_host='{}', rpc_port={}, rpc_user='{}', rpc_password='***', rpc_cookie_file={:?}, use_rest={}, use_waitfornewblock={}, implementation='{}')",
             self.id,
             self.description,
             self.name,
@@ -129,6 +131,7 @@ impl fmt::Display for TomlNode {
             self.rpc_user.as_ref().unwrap_or(&"".to_string()),
             self.rpc_cookie_file,
             self.use_rest.unwrap_or(DEFAULT_USE_REST),
+            self.use_waitfornewblock.unwrap_or(DEFAULT_USE_WAITFORNEWBLOCK),
             self.implementation.as_ref().unwrap_or(&"".to_string()),
         )
     }
@@ -302,6 +305,9 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
             ),
             parse_rpc_auth(toml_node)?,
             toml_node.use_rest.unwrap_or(DEFAULT_USE_REST),
+            toml_node
+                .use_waitfornewblock
+                .unwrap_or(DEFAULT_USE_WAITFORNEWBLOCK),
         )),
         Backend::Btcd => {
             if toml_node.rpc_user.is_none() || toml_node.rpc_password.is_none() {
@@ -355,6 +361,39 @@ mod tests {
         assert_eq!(cfg.networks.len(), 2);
         assert_eq!(cfg.query_interval, std::time::Duration::from_secs(15));
         assert_eq!(cfg.networks[0].pool_identification.enable, true);
+    }
+
+    #[test]
+    fn use_waitfornewblock_parsing() {
+        // Defaults to None (=> DEFAULT_USE_WAITFORNEWBLOCK = true) when omitted.
+        let node: TomlNode = toml::from_str(
+            r#"
+            id = 0
+            name = "n"
+            description = ""
+            rpc_host = "127.0.0.1"
+            "#,
+        )
+        .expect("node without use_waitfornewblock should parse");
+        assert_eq!(node.use_waitfornewblock, None);
+        assert_eq!(
+            node.use_waitfornewblock
+                .unwrap_or(DEFAULT_USE_WAITFORNEWBLOCK),
+            true
+        );
+
+        // Honors an explicit `false`.
+        let node: TomlNode = toml::from_str(
+            r#"
+            id = 0
+            name = "n"
+            description = ""
+            rpc_host = "127.0.0.1"
+            use_waitfornewblock = false
+            "#,
+        )
+        .expect("node with use_waitfornewblock should parse");
+        assert_eq!(node.use_waitfornewblock, Some(false));
     }
 
     #[test]

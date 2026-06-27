@@ -6,7 +6,13 @@ database_path = "example_db_dir"
 # path to the location of the static www files
 www_path = "./www"
 
-# Interval in seconds for checking for new blocks
+# Interval in seconds for checking for new blocks.
+#
+# For Bitcoin Core nodes (unless `use_waitfornewblock = false` is set on the
+# node) this is the *maximum* time between checks: the node reacts to new blocks
+# almost immediately via the `waitfornewblock` RPC long-poll and only falls back
+# to this interval as an upper bound. For all other backends this is the fixed
+# polling interval.
 query_interval = 15
 
 # Webserver listen address
@@ -50,6 +56,11 @@ max_interesting_heights = 100
     rpc_port = 38342
     rpc_user = "forkobserver"
     rpc_password = ""
+    # React to new blocks via Bitcoin Core's `waitfornewblock` RPC long-poll
+    # instead of polling every `query_interval` seconds. Defaults to true. Set
+    # to false if `waitfornewblock` is not on the RPC whitelist, or if a reverse
+    # proxy in front of the node kills long-held connections.
+    # use_waitfornewblock = true
 
     [[networks.nodes]]
     id = 1
