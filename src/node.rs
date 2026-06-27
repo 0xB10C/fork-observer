@@ -938,3 +938,158 @@ impl Node for Electrum {
             .headers)
     }
 }
+
+#[cfg(test)]
+mod bitcoin_core_tests {
+    use super::*;
+    use corepc_node::Node as CoreNode;
+
+    /// Launch a fresh regtest bitcoind for a test.
+    fn start_bitcoind() -> CoreNode {
+        let exe = corepc_node::exe_path()
+            .expect("a bitcoind binary via BITCOIND_EXE or PATH (see shell.nix)");
+        CoreNode::new(exe).expect("failed to launch bitcoind")
+    }
+
+    /// Build the `BitcoinCoreNode` under test, pointed at the given bitcoind
+    /// using cookie-file authentication (mirroring the production config path).
+    fn node_under_test(core: &CoreNode) -> BitcoinCoreNode {
+        let info = NodeInfo {
+            id: 0,
+            name: "test-core".to_string(),
+            description: "regtest node under test".to_string(),
+            implementation: "Bitcoin Core".to_string(),
+        };
+        BitcoinCoreNode::new(
+            info,
+            core.rpc_url(),
+            Auth::CookieFile(core.params.cookie_file.clone()),
+            false, // use_rest
+        )
+    }
+
+    #[tokio::test]
+    async fn version_returns_subversion() {
+        let core = start_bitcoind();
+        let node = node_under_test(&core);
+
+        let version = node.version().await.expect("version RPC failed");
+        assert!(
+            version.contains("Satoshi"),
+            "unexpected subversion string: {}",
+            version
+        );
+    }
+
+    #[tokio::test]
+    async fn chain_data_matches_generated_blocks() {
+        let core = start_bitcoind();
+        let address = core.client.new_address().expect("new_address failed");
+        core.client
+            .generate_to_address(5, &address)
+            .expect("generate_to_address failed");
+
+        let node = node_under_test(&core);
+
+        // getchaintips: exactly one active tip at the height we generated to.
+        let tips = node.tips().await.expect("tips RPC failed");
+        let active: Vec<&ChainTip> = tips
+            .iter()
+            .filter(|t| t.status == ChainTipStatus::Active)
+            .collect();
+        assert_eq!(active.len(), 1, "expected exactly one active chain tip");
+        assert_eq!(active[0].height, 5, "active tip at unexpected height");
+
+        // getblockhash + getblockheader: the header hashes back to the same hash.
+        let hash = node.block_hash(3).await.expect("block_hash RPC failed");
+        let header = node
+            .block_header_hash(&hash)
+            .await
+            .expect("block_header RPC failed");
+        assert_eq!(
+            header.block_hash(),
+            hash,
+            "header does not hash to its hash"
+        );
+
+        // getblock: the first transaction is the coinbase.
+        let coinbase = node.coinbase(&hash, 3).await.expect("coinbase RPC failed");
+        assert!(
+            coinbase.is_coinbase(),
+            "first transaction in block should be the coinbase"
+        );
+    }
+
+    #[tokio::test]
+    async fn reorg_is_reflected_in_chaintips() {
+        let core = start_bitcoind();
+        let address = core.client.new_address().expect("new_address failed");
+        core.client
+            .generate_to_address(5, &address)
+            .expect("generate_to_address failed");
+
+        let node = node_under_test(&core);
+
+        // Before the reorg there is a single active tip at height 5.
+        let tips_before = node.tips().await.expect("tips RPC failed");
+        let active_before: Vec<&ChainTip> = tips_before
+            .iter()
+            .filter(|t| t.status == ChainTipStatus::Active)
+            .collect();
+        assert_eq!(active_before.len(), 1, "expected exactly one active tip");
+        assert_eq!(active_before[0].height, 5);
+        let original_tip_hash = active_before[0].hash.clone();
+
+        // Invalidate the block at height 4. This rolls the active chain back to
+        // height 3 and turns the old blocks 4..5 into an invalid branch.
+        let invalidate_at = node.block_hash(4).await.expect("block_hash RPC failed");
+        core.client
+            .invalidate_block(invalidate_at)
+            .expect("invalidateblock failed");
+
+        // Mine a new, longer branch from height 3 so the active chain switches
+        // to it and overtakes the invalidated branch (a short reorg). A fresh
+        // address makes the coinbase (and thus the blocks) differ from the
+        // invalidated ones, which would otherwise be reproduced identically and
+        // rejected as already-known-invalid blocks.
+        let new_branch_address = core.client.new_address().expect("new_address failed");
+        core.client
+            .generate_to_address(4, &new_branch_address)
+            .expect("generate_to_address failed");
+
+        let tips_after = node.tips().await.expect("tips RPC failed");
+
+        // The active tip now sits on the new, longer branch (height 7).
+        let active_after: Vec<&ChainTip> = tips_after
+            .iter()
+            .filter(|t| t.status == ChainTipStatus::Active)
+            .collect();
+        assert_eq!(active_after.len(), 1, "expected exactly one active tip");
+        assert_eq!(
+            active_after[0].height, 7,
+            "active tip should be on the new, longer branch"
+        );
+        assert_ne!(
+            active_after[0].hash, original_tip_hash,
+            "active tip should have changed after the reorg"
+        );
+
+        // The old branch is now reported as an invalid chain tip.
+        let invalid_tip = tips_after
+            .iter()
+            .find(|t| t.status == ChainTipStatus::Invalid)
+            .expect("expected an invalid chain tip after invalidateblock");
+        assert_eq!(
+            invalid_tip.hash, original_tip_hash,
+            "invalid tip should be the previously active tip"
+        );
+        assert_eq!(
+            invalid_tip.height, 5,
+            "invalid tip should keep the old branch height"
+        );
+        assert_eq!(
+            invalid_tip.branchlen, 2,
+            "invalid branch (blocks 4 and 5) should have length 2"
+        );
+    }
+}
