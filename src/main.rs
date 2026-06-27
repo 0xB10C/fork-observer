@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task;
-use tokio::time::{interval, interval_at, sleep, Duration, Instant};
+use tokio::time::{interval, sleep, Duration};
 use tokio_stream::wrappers::BroadcastStream;
 use warp::Filter;
 
@@ -155,15 +155,13 @@ async fn main() -> Result<(), MainError> {
 
         for node in network.nodes.iter().cloned() {
             let network = network.clone();
-            // Spread query times equally apart to even out network/CPU load
-            let mut interval = interval_at(
-                Instant::now()
-                    + Duration::from_millis(
-                        (config.query_interval.as_millis() / network.nodes.len() as u128) as u64,
-                    )
-                    + Duration::from_secs((network.id % 10) as u64),
-                config.query_interval,
-            );
+            let query_interval = config.query_interval;
+            // Spread the initial query times apart to even out network/CPU load
+            // on startup. Afterwards each node waits for its own tip changes (via
+            // `wait_for_tip_change`), so the load naturally spreads out.
+            let initial_stagger = Duration::from_millis(
+                (query_interval.as_millis() / network.nodes.len() as u128) as u64,
+            ) + Duration::from_secs((network.id % 10) as u64);
             let db_write = db.clone();
             let tree_clone = tree.clone();
             let caches_clone = caches.clone();
@@ -184,11 +182,29 @@ async fn main() -> Result<(), MainError> {
                 )
                 .await;
 
+                let mut first_iteration = true;
                 loop {
                     // We specifically wait at the beginning of the loop, as we
                     // are using 'continue' on errors. If we would wait at the end,
                     // we might skip the waiting.
-                    interval.tick().await;
+                    if first_iteration {
+                        // Fetch immediately on startup (after a small stagger) so
+                        // we catch up on headers we missed while we were down.
+                        sleep(initial_stagger).await;
+                        first_iteration = false;
+                    } else if let Err(e) = node.wait_for_tip_change(query_interval).await {
+                        // `wait_for_tip_change` failed (e.g. `waitfornewblock` is
+                        // not whitelisted on the node). Fall back to a fixed-delay
+                        // poll so we don't busy-loop.
+                        debug!(
+                            "wait_for_tip_change failed for {} on network '{}' (id={}): {} - falling back to polling",
+                            node.info(),
+                            network.name,
+                            network.id,
+                            e
+                        );
+                        sleep(query_interval).await;
+                    }
                     let mut tips = match node.tips().await {
                         Ok(tips) => {
                             if !is_node_reachable(&caches_clone, network.id, node.info().id).await {
