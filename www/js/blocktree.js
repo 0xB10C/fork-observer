@@ -49,7 +49,7 @@ svg.call(zoom)
 let g = svg
     .append("g")
 
-function preprocess_data(data) {  
+function preprocess_data(data) {
   let header_infos = data.header_infos;
   let tip_infos = [];
   let node_infos = data.nodes;
@@ -109,8 +109,14 @@ function preprocess_data(data) {
   let treemap = gen_treemap(o, tip_infos.length, unique_heights);
 
   // assigns the data to a hierarchy using parent-child relationships
-  // and maps the node data to the tree layout
-  const root_node = treemap(d3.hierarchy(treeData));
+  // and maps the node data to the tree layout. Make sure the headers
+  // and forks are sorted deterministically. This means, they don't
+  // change on redraws, which is nicer.
+  const root_node = treemap(
+    d3.hierarchy(treeData).sort((a, b) =>
+      d3.ascending(a.data.data.height, b.data.data.height) ||
+      d3.ascending(a.data.data.hash, b.data.data.hash))
+  )
   const max_height = Math.max(...header_infos.map(d => d.height))
 
   return [root_node, max_height, htoi]
@@ -118,7 +124,7 @@ function preprocess_data(data) {
 
 function draw() {
   let data = state_data
-  
+
   // nothing to draw if there are no headers
   if (data.header_infos.length == 0) {
     return
@@ -167,7 +173,7 @@ function draw() {
           .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
           .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y )
           .attr("transform", d => `rotate(${o.block_text_rotate}, ${o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x},${o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y})`)
-        
+
         blocksNotShown.append("tspan")
           .text(d => (d.target.data.data.height - d.source.data.data.height -1) + " blocks hidden")
           .attr("dy", ".3em")
@@ -195,7 +201,7 @@ function draw() {
           .attr("x", d => o.x(d, htoi))
           .attr("y", d => o.y(d, htoi))
           .on("click", (c, d) => onBlockClick(c, d))
-        
+
         let block_child_group = newBlocks.append("g")
           .attr("class", "block-child-group")
 
@@ -206,19 +212,19 @@ function draw() {
           .attr("stroke-width", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? 3 : 1)
           .attr("stroke-opacity", d => d.data.data.status == "mining" ? 0.2 : 1)
           .classed("being-mined", d => d.data.data.status == "mining")
-          
+
         block_backgrounds.filter(d => d.data.data.height != max_height || initialDraw)
           .attr("x", -BLOCK_SIZE/2)
           .attr("y", -BLOCK_SIZE/2)
           .attr("height", d => BLOCK_SIZE)
           .attr("width", d => BLOCK_SIZE)
-        
+
         let height_text = block_child_group
           .insert("text")
           .attr("dy", ".35em")
           .attr("class", "block-text")
           .text(d => d.data.data.height);
-        
+
         let pool_text = block_child_group
           .insert("text")
           .classed("block-pool-name", true)
@@ -230,7 +236,7 @@ function draw() {
         newBlocks
           .append('path')
           .attr("class", "link link-block-description") // when modifying, check if there is a depedency on this class name.
-     
+
         if (!initialDraw) {
           block_backgrounds
             .filter(d => d.data.data.height == max_height)
@@ -254,7 +260,7 @@ function draw() {
             .transition(d3.transition().duration(600))
             .style("font-size", "10px")
         }
-      
+
         return newBlocks
       },
       update => {
@@ -315,9 +321,9 @@ function draw() {
   zoom.scaleBy(svg, 1);
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
   zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, [(svgSize.width)/2, (svgSize.height)/2])
-  
+
   svg.select("#legend").attr("x", svg.node().clientWidth - 150 - 10)
-  
+
   initialDraw = false
 }
 
@@ -438,7 +444,7 @@ function onBlockClick(c, d) {
       .style("float", "right")
       .html(`<button class="btn btn-close"></button>`)
       .on("click", (c, d) => onBlockDescriptionCloseClick(c, d));
-  
+
     card.append("div")
       .attr("class", "card-body")
       .html(`
@@ -470,7 +476,7 @@ function node_description(description) {
   return `
     <p class="mb-0 text-truncate" onclick="this.style.whiteSpace = 'normal'">
       <span>${description}</span>
-    </p>   
+    </p>
   `
 }
 
@@ -540,7 +546,7 @@ async function draw_nodes() {
           ${d.reachable ? "": "<span class='badge text-bg-danger'>unreachable</span>"}
           <span class='badge text-bg-secondary small'>${d.implementation} ${d.version.replaceAll("/", "").replaceAll("Satoshi:", "").replace("unknown", "(version unknown)")}</span>
         </div>
-        
+
         <div class="px-2">
           ${node_description(d.description)}
         </div>
