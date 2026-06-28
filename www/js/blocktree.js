@@ -297,23 +297,31 @@ function draw() {
     .classed("node-tip-status-indicator", true)
     .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
 
-  let indicators = node_groups.selectAll("g")
+  // build the rect + text once per indicator on enter, otherwise every redraw
+  // would append another copy to the existing indicator groups
+  let indicators = node_groups.selectAll("g.tip-status-indicator")
     .data(d => d.data.data.status)
-    .join("g")
+    .join(enter => {
+      let group = enter.append("g").attr("class", "tip-status-indicator")
+      group.append("rect")
+        .attr("width", indicator_radius*2)
+        .attr("height", indicator_radius*2)
+        .attr("rx", 1)
+        .attr("r", indicator_radius)
+        .attr("y", -BLOCK_SIZE/2 - indicator_radius)
+      group.append("text")
+        .attr("y", -BLOCK_SIZE/2)
+        .attr("dy", ".35em")
+      return group
+    })
 
-  indicators.append("rect")
-    .attr("width", indicator_radius*2)
-    .attr("height", indicator_radius*2)
-    .attr("rx", 1)
-    .attr("r", indicator_radius)
-    .attr("y", -BLOCK_SIZE/2 - indicator_radius)
+  // refresh the parts that depend on the (possibly changed) status data
+  indicators.select("rect")
     .attr("x", (d, i) => (BLOCK_SIZE/2) - i * (indicator_radius + indicator_margin) * 2 - indicator_radius)
     .attr("class", d => "tip-status-color-fill-" + d.status)
 
-  indicators.append("text")
-    .attr("y", -BLOCK_SIZE/2)
+  indicators.select("text")
     .attr("dx", (d, i) => (BLOCK_SIZE/2) - i * (indicator_radius + indicator_margin) * 2)
-    .attr("dy", ".35em")
     .text(d => d.count)
 
   let offset_x = 0;
