@@ -65,10 +65,9 @@ let descLayer = g
 
 function preprocess_data(data) {
   let header_infos = data.header_infos;
-  let tip_infos = [];
   let node_infos = data.nodes;
 
-  hash_to_tipstatus = {}
+  let hash_to_tipstatus = {}
   node_infos.forEach(node => {
     node.tips.forEach(tip => {
       if (!(tip.hash in hash_to_tipstatus)) {
@@ -120,7 +119,7 @@ function preprocess_data(data) {
     last_height = height;
   });
 
-  let treemap = gen_treemap(o, tip_infos.length, unique_heights);
+  let treemap = gen_treemap();
 
   // assigns the data to a hierarchy using parent-child relationships
   // and maps the node data to the tree layout. Make sure the headers
@@ -184,9 +183,9 @@ function draw() {
           .attr("class", "text-blocks-not-shown")
           .style("text-anchor", o.hidden_blocks_text.anchor)
           .style("font-size", "12px")
-          .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
-          .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y )
-          .attr("transform", d => `rotate(${o.block_text_rotate}, ${o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x},${o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y})`)
+          .attr("x", d => hidden_text_x(d, htoi))
+          .attr("y", d => hidden_text_y(d, htoi))
+          .attr("transform", d => `rotate(${o.block_text_rotate}, ${hidden_text_x(d, htoi)},${hidden_text_y(d, htoi)})`)
 
         blocksNotShown.append("tspan")
           .text(d => (d.target.data.data.height - d.source.data.data.height -1) + " blocks hidden")
@@ -196,9 +195,9 @@ function draw() {
       update => {
         update
           .transition(d3.transition().duration(600))
-          .attr("x", d => o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x )
-          .attr("y", d => o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y )
-          .attr("transform", d => `rotate(${o.block_text_rotate}, ${o.x(d.target, htoi) - ((o.x(d.target, htoi) - o.x(d.source, htoi))/2) + o.hidden_blocks_text.offset_x},${o.y(d.target, htoi) - ((o.y(d.target, htoi) - o.y(d.source, htoi))/2) + o.hidden_blocks_text.offset_y})`)
+          .attr("x", d => hidden_text_x(d, htoi))
+          .attr("y", d => hidden_text_y(d, htoi))
+          .attr("transform", d => `rotate(${o.block_text_rotate}, ${hidden_text_x(d, htoi)},${hidden_text_y(d, htoi)})`)
       }
     )
 
@@ -279,11 +278,6 @@ function draw() {
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
         update.selectAll(".block-pool-name")
           .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
-        update.selectAll(".node-indicator")
-           .filter(d => d.status == "in-chain")
-           .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
-           .append("text")
-           .text("abcd")
 
         update.raise()
         return update
@@ -406,8 +400,19 @@ function isInteresting(node) {
   return false
 }
 
-function gen_treemap(o, tips, unique_heights) {
-  return d3.tree().size([tips, unique_heights]).nodeSize([NODE_SIZE, NODE_SIZE]);
+function gen_treemap() {
+  // nodeSize fully determines the layout (it overrides any .size()), so the tree
+  // only needs a fixed node size here.
+  return d3.tree().nodeSize([NODE_SIZE, NODE_SIZE]);
+}
+
+// position of the "n blocks hidden" label: the midpoint of the collapsed link,
+// shifted by the orientation-specific offset
+function hidden_text_x(d, htoi) {
+  return o.x(d.target, htoi) - (o.x(d.target, htoi) - o.x(d.source, htoi)) / 2 + o.hidden_blocks_text.offset_x
+}
+function hidden_text_y(d, htoi) {
+  return o.y(d.target, htoi) - (o.y(d.target, htoi) - o.y(d.source, htoi)) / 2 + o.hidden_blocks_text.offset_y
 }
 
 function onBlockClick(c, d) {
