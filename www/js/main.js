@@ -121,17 +121,44 @@ function periodicallyRedrawTimestamps() {
 }
 
 changeSSE.addEventListener('open', () => {
-  connectionStatus.style("color", "green");
+  connectionStatus.style("color", "var(--tip-status-color-active)");
+  connectionStatus.attr("title", "connected — receiving live updates");
 });
 
 changeSSE.addEventListener('error', (e) => {
   console.error("SSE error", e);
-  connectionStatus.style("color", "red");
+  connectionStatus.style("color", "var(--tip-status-color-invalid)");
+  connectionStatus.attr("title", "disconnected — reconnecting…");
 });
 
 changeSSE.addEventListener('close', (e) => {
   connectionStatus.style("color", "grey");
+  connectionStatus.attr("title", "connection closed");
 });
+
+// copy text to the clipboard and confirm with a short toast
+function copyToClipboard(text, label) {
+  navigator.clipboard.writeText(text)
+    .then(() => showToast((label ? label + " " : "") + "copied to clipboard"))
+    .catch(() => showToast("could not copy to clipboard"))
+}
+
+let toastTimer = null
+function showToast(message) {
+  let toast = document.getElementById("toast")
+  if (toast == null) return
+  toast.textContent = message
+  toast.classList.add("toast-show")
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => toast.classList.remove("toast-show"), 1800)
+}
+
+// Escape closes any open block info boxes
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeAllDescriptions()
+  }
+})
 
 changeSSE.addEventListener("cache_changed", (e) => {
   let data = JSON.parse(e.data)
