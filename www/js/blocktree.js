@@ -49,6 +49,20 @@ svg.call(zoom)
 let g = svg
     .append("g")
 
+// layer for the connector links between a block and its open description. It is
+// never raised, so it stays below the blocks and the lines appear to originate
+// from underneath the block they belong to.
+let connectorLayer = g
+    .append("g")
+    .attr("id", "description-connectors")
+
+// overlay layer that always holds the open block descriptions (info boxes). It is
+// raised to the top on every draw so the boxes are never painted over by blocks or
+// tip status markers.
+let descLayer = g
+    .append("g")
+    .attr("id", "descriptions")
+
 function preprocess_data(data) {
   let header_infos = data.header_infos;
   let tip_infos = [];
@@ -233,10 +247,6 @@ function draw() {
           .classed("block-miner", true)
           .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
 
-        newBlocks
-          .append('path')
-          .attr("class", "link link-block-description") // when modifying, check if there is a depedency on this class name.
-
         if (!initialDraw) {
           block_backgrounds
             .filter(d => d.data.data.height == max_height)
@@ -314,9 +324,29 @@ function draw() {
     offset_y = o.y(max_height_tip, htoi);
   }
 
-  // raise the blocks to make sure they are drawn over the links
+  // raise the blocks to make sure they are drawn over the links, then the tip
+  // status markers over the blocks
   blocks.raise()
   node_groups.raise()
+
+  // keep open descriptions (and their connectors) anchored to their block as the
+  // layout shifts, and raise the overlay so the info boxes stay on top of everything
+  descLayer.selectAll(".block-description").each(function () {
+    let hash = this.getAttribute("data-hash")
+    let node = root_node.descendants().find(n => n.data.data.hash == hash)
+    let connector = connectorLayer.selectAll(".link-block-description")
+      .filter(function () { return this.getAttribute("data-hash") == hash })
+    if (node === undefined) {
+      // the block this description belonged to is gone
+      d3.select(this).remove()
+      connector.remove()
+    } else {
+      let transform = "translate(" + o.x(node, htoi) + "," + o.y(node, htoi) + ")"
+      d3.select(this).attr("transform", transform)
+      connector.attr("transform", transform)
+    }
+  })
+  descLayer.raise()
 
   zoom.scaleBy(svg, 1);
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
@@ -373,81 +403,101 @@ function gen_treemap(o, tips, unique_heights) {
 }
 
 function onBlockClick(c, d) {
-  let parentElement = d3.select(c.target.parentElement.parentElement)
-  // The on-click listener of the block propagates to the appened description elements.
-  // To prevent adding a second description element of the block we return early if the
-  // parentElement is not the block.
-  if (parentElement.attr("class") == null || !parentElement.attr("class").startsWith("block")) return
+  let blockGroup = d3.select(c.target.parentElement.parentElement)
+  // only react to clicks on an actual block group
+  if (blockGroup.attr("class") == null || !blockGroup.attr("class").startsWith("block")) return
 
-  if (parentElement.selectAll(".block-description").size() > 0) {
-    parentElement.selectAll(".block-description").remove()
-    parentElement.selectAll(".link-block-description").attr("d", "")
-  } else {
+  // toggle: if this block already has an open description, close it
+  let existing = descLayer.selectAll(".block-description")
+    .filter(function () { return this.getAttribute("data-hash") == d.data.data.hash })
+  if (!existing.empty()) {
+    existing.remove()
+    connectorLayer.selectAll(".link-block-description")
+      .filter(function () { return this.getAttribute("data-hash") == d.data.data.hash })
+      .remove()
+    return
+  }
 
-    const description_offset = { x: 50, y: -50 }
-    const description_margin = { x: 0, y: 15 }
-    let descGroup = parentElement.append("g")
-      .attr("class", "block-description")
-      .attr("transform", "translate(" + description_offset.x + "," + description_offset.y / 2 + ")")
-      .each(d => { d.x = description_offset.x; d.y = description_offset.y })
-      .call(
-        d3.drag()
-          .on("start", dragstarted)
-          .on("drag", dragged)
-          .on("end", dragended)
-      )
+  // the description lives in the overlay layer (drawn on top of everything) and is
+  // anchored at the block's absolute position, which the block stores as x/y attrs
+  const block_x = +blockGroup.attr("x")
+  const block_y = +blockGroup.attr("y")
+  // offset of the info box from the block, in the block's local coordinate space
+  const description_offset = { x: 50, y: -25 }
+  let pos = { x: description_offset.x, y: description_offset.y }
 
-    function dragstarted() {d3.select(this).raise().attr("cursor", "grabbing");}
-    function dragged(event, d) {
-      d.x += event.dx;
-      d.y += event.dy;
-      var link = d3.linkHorizontal()({
-        source: [ 0, 0 ],
-        target: [
-          d.x + (card.node().getBoundingClientRect().width  / d3.zoomTransform(svg.node()).k) / 2,
-          d.y + (card.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k) / 2
-        ]
-      });
-      parentElement.selectAll(".link-block-description").attr('d', link)
-      d3.select(this).attr("transform", "translate(" + d.x + "," + d.y + ")");
-    }
-    function dragended() { d3.select(this).attr("cursor", "drag"); }
+  let descGroup = descLayer.append("g")
+    .attr("class", "block-description")
+    .attr("data-hash", d.data.data.hash)
+    .attr("transform", "translate(" + block_x + "," + block_y + ")")
 
-    let descCloseGroup = descGroup.append("g")
+  // connector link from the block to the centre of the info box. It lives in its own
+  // layer below the blocks (both groups are anchored at the block, so its origin
+  // [0, 0] is the block centre) and carries the same data-hash to stay in sync.
+  let connector = connectorLayer.append("path")
+    .attr("class", "link link-block-description")
+    .attr("data-hash", d.data.data.hash)
+    .attr("transform", "translate(" + block_x + "," + block_y + ")")
 
-    let status_text = "";
-    // block description: tip status for nodes
-    if (d.data.data.status != "in-chain") {
-      d.data.data.status.reverse().forEach(status => {
-        status_text += `<span class="text-monospace tip-status-color-fill-${status.status}">▆ </span>`
-        status_text += `<span>${status.count}x ${status.status}: ${status.nodes.map(n => n.name).join(", ")}`
-      })
-    }
+  let cardHolder = descGroup.append("g")
+    .attr("transform", "translate(" + pos.x + "," + pos.y + ")")
+    .call(
+      d3.drag()
+        .on("start", dragstarted)
+        .on("drag", dragged)
+        .on("end", dragended)
+    )
 
+  function connectorPath() {
+    return d3.linkHorizontal()({
+      source: [0, 0],
+      target: [
+        pos.x + (card.node().getBoundingClientRect().width  / d3.zoomTransform(svg.node()).k) / 2,
+        pos.y + (card.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k) / 2
+      ]
+    })
+  }
 
-    function onBlockDescriptionCloseClick(c, d) {
-      let parentElement = d3.select(c.target.parentElement.parentElement.parentElement.parentElement.parentElement.parentElement)
-      parentElement.selectAll(".block-description").remove()
-      parentElement.selectAll(".link-block-description").attr("d", "")
-    }
+  function dragstarted() { d3.select(this).raise().attr("cursor", "grabbing"); }
+  function dragged(event) {
+    pos.x += event.dx;
+    pos.y += event.dy;
+    cardHolder.attr("transform", "translate(" + pos.x + "," + pos.y + ")");
+    connector.attr("d", connectorPath());
+  }
+  function dragended() { d3.select(this).attr("cursor", "grab"); }
 
-    let cardWrapper = descGroup.append("foreignObject")
-      .attr("height", "20")
-      .attr("width", "600")
-    let card = cardWrapper
-      .append("xhtml:div")
-        .attr("class", "card m-0 p-0 border")
-    let headerDiv = card.append("xhtml:div").attr("class", "card-header border")
-    headerDiv.append()
-      .html(`<span>Header at height <span style="cursor: pointer" onClick='window.prompt("height:", "${d.data.data.height}")'>${d.data.data.height}</span></span>`)
-    headerDiv.append()
-      .style("float", "right")
-      .html(`<button class="btn btn-close"></button>`)
-      .on("click", (c, d) => onBlockDescriptionCloseClick(c, d));
+  function closeDescription() {
+    descGroup.remove()
+    connector.remove()
+  }
 
-    card.append("div")
-      .attr("class", "card-body")
-      .html(`
+  let status_text = "";
+  // block description: tip status for nodes
+  if (d.data.data.status != "in-chain") {
+    d.data.data.status.slice().reverse().forEach(status => {
+      status_text += `<span class="text-monospace tip-status-color-fill-${status.status}">▆ </span>`
+      status_text += `<span>${status.count}x ${status.status}: ${status.nodes.map(n => n.name).join(", ")}`
+    })
+  }
+
+  let cardWrapper = cardHolder.append("foreignObject")
+    .attr("height", "20")
+    .attr("width", "600")
+  let card = cardWrapper
+    .append("xhtml:div")
+      .attr("class", "card m-0 p-0 border")
+  let headerDiv = card.append("xhtml:div").attr("class", "card-header border")
+  headerDiv.append()
+    .html(`<span>Header at height <span style="cursor: pointer" onClick='window.prompt("height:", "${d.data.data.height}")'>${d.data.data.height}</span></span>`)
+  headerDiv.append()
+    .style("float", "right")
+    .html(`<button class="btn btn-close"></button>`)
+    .on("click", closeDescription);
+
+  card.append("div")
+    .attr("class", "card-body")
+    .html(`
           <div class="container">
             <div class="row small">
               <div class="col small">
@@ -467,9 +517,11 @@ function onBlockClick(c, d) {
             </div>
           </div>
       `)
-    cardWrapper.attr("height", card.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k )
-    cardWrapper.attr("width", card.node().getBoundingClientRect().width / d3.zoomTransform(svg.node()).k )
-  }
+  cardWrapper.attr("height", card.node().getBoundingClientRect().height / d3.zoomTransform(svg.node()).k )
+  cardWrapper.attr("width", card.node().getBoundingClientRect().width / d3.zoomTransform(svg.node()).k )
+
+  // draw the connector now that the card size is known
+  connector.attr("d", connectorPath())
 }
 
 function node_description(description) {
