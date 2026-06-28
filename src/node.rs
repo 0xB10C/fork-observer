@@ -437,7 +437,7 @@ impl Node for BitcoinCoreNode {
         );
 
         let url = format!(
-            "http://{}/rest/headers/{}/{}.bin",
+            "{}/rest/headers/{}/{}.bin",
             self.rpc_url(),
             count,
             start_hash
@@ -522,7 +522,7 @@ impl Node for BtcdNode {
     }
 
     async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
-        let url = format!("http://{}/", self.rpc_url);
+        let url = format!("{}/", self.rpc_url);
         match crate::jsonrpc::btcd_blockheader(
             url,
             self.rpc_user.clone(),
@@ -554,7 +554,7 @@ impl Node for BtcdNode {
     }
 
     async fn coinbase(&self, hash: &BlockHash, _height: u64) -> Result<Transaction, FetchError> {
-        let url = format!("http://{}/", self.rpc_url);
+        let url = format!("{}/", self.rpc_url);
         match crate::jsonrpc::btcd_block(
             url,
             self.rpc_user.clone(),
@@ -571,7 +571,7 @@ impl Node for BtcdNode {
     }
 
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
-        let url = format!("http://{}/", self.rpc_url);
+        let url = format!("{}/", self.rpc_url);
         match crate::jsonrpc::btcd_blockhash(
             url,
             self.rpc_user.clone(),
@@ -584,7 +584,7 @@ impl Node for BtcdNode {
     }
 
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError> {
-        let url = format!("http://{}/", self.rpc_url);
+        let url = format!("{}/", self.rpc_url);
         match crate::jsonrpc::btcd_chaintips(url, self.rpc_user.clone(), self.rpc_password.clone())
         {
             Ok(tips) => Ok(tips),
