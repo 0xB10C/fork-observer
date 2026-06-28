@@ -281,6 +281,17 @@ fn parse_toml_network(
     })
 }
 
+/// Ensures the host carries a URL scheme. For backwards compatibility we default
+/// to `http://` when none is given (older configs used a bare host like
+/// `127.0.0.1`); an explicit scheme (`http://`, `https://`) is preserved.
+fn ensure_scheme(host: &str) -> String {
+    if host.contains("://") {
+        host.to_string()
+    } else {
+        format!("http://{}", host)
+    }
+}
+
 fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigError> {
     let implementation = toml_node
         .implementation
@@ -300,7 +311,7 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
             node_info,
             format!(
                 "{}:{}",
-                toml_node.rpc_host,
+                ensure_scheme(&toml_node.rpc_host),
                 toml_node.rpc_port.unwrap_or(DEFAULT_RPC_PORT)
             ),
             parse_rpc_auth(toml_node)?,
@@ -318,7 +329,7 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
                 node_info,
                 format!(
                     "{}:{}",
-                    toml_node.rpc_host,
+                    ensure_scheme(&toml_node.rpc_host),
                     toml_node.rpc_port.unwrap_or(DEFAULT_RPC_PORT)
                 ),
                 toml_node.rpc_user.clone().expect("a rpc_user for btcd"),
@@ -361,6 +372,16 @@ mod tests {
         assert_eq!(cfg.networks.len(), 2);
         assert_eq!(cfg.query_interval, std::time::Duration::from_secs(15));
         assert_eq!(cfg.networks[0].pool_identification.enable, true);
+    }
+
+    #[test]
+    fn ensure_scheme_defaults_to_http() {
+        // A bare host (the old config style) gets http:// prepended.
+        assert_eq!(ensure_scheme("127.0.0.1"), "http://127.0.0.1");
+        assert_eq!(ensure_scheme("localhost"), "http://localhost");
+        // An explicit scheme is preserved.
+        assert_eq!(ensure_scheme("http://localhost"), "http://localhost");
+        assert_eq!(ensure_scheme("https://example.org"), "https://example.org");
     }
 
     #[test]
