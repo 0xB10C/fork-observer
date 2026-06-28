@@ -2,7 +2,14 @@
   color-scheme: light dark;
 
   /* default light mode values */
-  --body-bg: white;
+  --body-bg: #fbfbfc;
+  --surface-bg: #ffffff;
+  --border-soft: rgba(0, 0, 0, 0.18);
+  --muted-soft: rgba(0, 0, 0, 0.55);
+  --block-stroke: rgba(180, 180, 180, 1);
+  --block-top: #e7e9ee;
+  --block-side: #c7ccd5;
+  --accent: gray;
   --text-color: black;
   --block-to-block-link-color: black;
   --block-description-link-color: gray;
@@ -21,7 +28,14 @@
 /* keep the rules in sync with the manual dark mode below! */
 @media (prefers-color-scheme: dark) {
   :root {
-    --body-bg: #202124;
+    --body-bg: #18191c;
+    --surface-bg: #232427;
+    --border-soft: rgba(255, 255, 255, 0.2);
+    --muted-soft: rgba(255, 255, 255, 0.6);
+    --block-stroke: rgba(255, 255, 255, 0.28);
+    --block-top: #34353c;
+    --block-side: #15161a;
+    --accent: #f7931a;
     --text-color: white;
     --block-to-block-link-color: white;
     --block-description-link-color: lightgray;
@@ -44,7 +58,14 @@
 /* manual dark mode */
 /* keep the rules in sync with the automatic dark mode above! */
 :root.dark {
-  --body-bg: #202124;
+  --body-bg: #18191c;
+  --surface-bg: #232427;
+  --border-soft: rgba(255, 255, 255, 0.2);
+  --muted-soft: rgba(255, 255, 255, 0.6);
+  --block-stroke: rgba(255, 255, 255, 0.28);
+  --block-top: #34353c;
+  --block-side: #15161a;
+  --accent: #f7931a;
   --text-color: white;
   --block-to-block-link-color: white;
   --block-description-link-color: lightgray;
@@ -63,16 +84,35 @@
   }
 }
 
-body, .card {
+body {
   background: var(--body-bg);
+  color: var(--text-color);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-h1, h2, h3, h4, h5, h6, p, label, span, hr, a {
+.card {
+  background: var(--surface-bg);
+}
+
+h1, h2, h3, h4, h5, h6, p, label, span, hr, a,
+.h1, .h2, .h3, .h4, .h5, .h6 {
   color: var(--text-color);
 }
 
 .border {
-  border-color: var(--text-color);
+  border-color: var(--border-soft) !important;
+}
+
+.text-muted-soft {
+  color: var(--muted-soft) !important;
+}
+
+/* let native-styled selects adopt the surface colors */
+.form-select {
+  background-color: var(--surface-bg);
+  color: var(--text-color);
+  border-color: var(--border-soft);
+  border-radius: 0;
 }
 
 .text-color-dark {
@@ -86,6 +126,7 @@ h1, h2, h3, h4, h5, h6, p, label, span, hr, a {
 path.link.link-block-block {
   stroke: var(--block-to-block-link-color);
   stroke-width: 2px;
+  stroke-linejoin: round;
 }
 
 path.link.link-block-description {
@@ -99,16 +140,41 @@ text.text-blocks-not-shown {
  font-size: 12px;
 }
 
+rect.block-background {
+ fill: var(--surface-bg);
+}
+
+/* 3D cube faces behind the front square (fill only; edges drawn once by .block-edges) */
+polygon.block-face-top {
+ fill: var(--block-top);
+}
+
+polygon.block-face-side {
+ fill: var(--block-side);
+}
+
+/* the cube's top/side/back edges, drawn once so shared edges don't double up */
+path.block-edges {
+ fill: none;
+ stroke: var(--block-stroke);
+ stroke-width: 1px;
+ stroke-linejoin: round;
+}
+
 text.block-text {
- fill: black;
+ fill: var(--text-color);
  text-anchor: middle;
- font-size: 10px;
+ font-size: 11px;
 }
 
 text.block-miner {
  fill: var(--block-miner-color);
  text-anchor: middle;
  font-size: 10px;
+}
+
+rect.block-miner-bg {
+ fill: var(--surface-bg);
 }
 
 .block {
@@ -124,23 +190,21 @@ text.block-miner {
   stroke: var(--text-color);
 }
 
-.node-tip-status-indicator {
- stroke: var(--node-indicatior-stroke);
- stroke-width: 1px;
-}
-
-.node-tip-status-indicator text {
+/* tip info: stack of colored "Nx status" boxes next to a tip block */
+.tip-info-bg {
+ stroke: var(--block-stroke);
  stroke-width: 0px;
- font-size: 14px;
- text-anchor: middle;
- fill: black;
 }
 
-/* For the legend */ 
+.tip-info-text {
+ fill: #1a1a1a;
+ font-size: 8px;
+ cursor: default;
+}
+
 .legend-item {
   color: black;
-  padding: 2px 5px;
-  border-radius: 5px;
+  padding: 1px 6px;
 }
 
 .tip-status-color-background-active { background-color: var(--tip-status-color-active); }
@@ -178,4 +242,305 @@ text.block-miner {
   100% {
     opacity: 1;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Modern layout
+   --------------------------------------------------------------------------- */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* compact, sticky top bar */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin-bottom: 1rem;
+  background: color-mix(in srgb, var(--body-bg) 88%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.app-header .navbar-brand span {
+  font-size: 1.25rem;
+}
+
+/* toolbar above the visualization: title/description on the left, controls right */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.toolbar-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+/* small RSS feed pills */
+.feed-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.feed-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--muted-soft);
+  border: 1px solid var(--border-soft);
+  text-decoration: none;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+/* square corners everywhere to match the block theme */
+.badge {
+  border-radius: 0 !important;
+}
+
+.feed-pill:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.feed-pill img {
+  opacity: 0.7;
+}
+
+/* the visualization is the centerpiece: keep it large */
+.viz {
+  display: block;
+  width: 100%;
+  height: 78vh;
+  background: var(--surface-bg);
+}
+
+/* wraps the SVG so the recenter button can float over its corner */
+.viz-wrap {
+  position: relative;
+}
+
+.viz-recenter {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  line-height: 1.2;
+  color: var(--accent);
+  background: var(--surface-bg);
+  border: 1px solid var(--block-stroke);
+  cursor: pointer;
+}
+
+.viz-recenter:hover {
+  border-color: var(--accent);
+}
+
+/* fields in the block info card / table that copy to the clipboard on click */
+.copyable {
+  cursor: pointer;
+}
+
+.copyable:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* transient confirmation toast (clipboard copy) */
+.toast-msg {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  color: var(--surface-bg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 1080;
+}
+
+.toast-msg.toast-show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* horizontal scroll keeps the node table usable on narrow screens */
+.node-table-wrap {
+  margin-top: 0.6rem;
+  overflow-x: auto;
+  border: 1px solid var(--border-soft);
+}
+
+@media (max-width: 575.98px) {
+  .toolbar-controls {
+    width: 100%;
+  }
+  .viz {
+    height: 70vh;
+  }
+}
+
+/* node table: one node per row */
+.node-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface-bg);
+  font-size: 0.95rem;
+}
+
+.node-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-bg);
+  text-align: left;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted-soft);
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+
+.node-table td {
+  padding: 0.5rem 0.75rem;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.node-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.node-row {
+  transition: background-color 0.15s ease;
+}
+
+.node-row:hover {
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface-bg));
+}
+
+.nt-name {
+  min-width: 12rem;
+}
+
+.node-status-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+}
+
+.node-status-dot.is-up {
+  background: var(--tip-status-color-active);
+}
+
+.node-status-dot.is-down {
+  background: var(--tip-status-color-invalid);
+}
+
+.nt-name-text {
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.nt-desc {
+  color: var(--muted-soft);
+  font-size: 0.82rem;
+  margin-top: 0.15rem;
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.nt-desc.nt-desc-open {
+  white-space: normal;
+}
+
+.nt-impl {
+  white-space: nowrap;
+}
+
+.nt-time {
+  white-space: nowrap;
+}
+
+.nt-num {
+  text-align: left;
+}
+
+/* solid color chips: same height -> same height-chip color; same tip -> same
+   hash-chip color. hues come from the --height-hue / --hash-hue vars on the row. */
+.height-chip,
+.hash-chip {
+  display: inline-block;
+  padding: 0.12rem 0.5rem;
+  color: #1a1a1a;
+  white-space: nowrap;
+}
+
+.height-chip {
+  background: hsl(var(--height-hue, 0) 68% 74%);
+  font-variant-numeric: tabular-nums;
+}
+
+.hash-chip {
+  background: hsl(var(--hash-hue, 0) 68% 74%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.hash-chip:hover {
+  filter: brightness(0.95);
+}
+
+/* the open block-header info card in the visualization */
+.block-info-card {
+  border-radius: 0 !important;
+  overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+
+.block-info-card .card-header {
+  background: var(--body-bg);
+  font-weight: 600;
+}
+
+/* footer */
+.app-footer {
+  border-top: 1px solid var(--border-soft);
+}
+
+.footer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--text-color);
+}
+
+.footer-link:hover {
+  color: var(--accent);
 }

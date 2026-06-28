@@ -1,6 +1,7 @@
-const NODE_SIZE = 100
+const NODE_SIZE = 120
 const MAX_USIZE = 18446744073709551615;
 const BLOCK_SIZE = 50
+const BLOCK_DEPTH = 9 // depth of the 3D extrusion (offset toward the top-right)
 const MIN_DIFFICULTY = 1
 
 const orientationSelect = d3.select("#orientation")
@@ -9,16 +10,37 @@ const orientations = {
   "bottom-to-top": {
     x: (d, _) => d.x,
     y: (d, htoi) => -htoi[d.data.data.height] * NODE_SIZE,
-    linkDir: (htoi) => d3.linkVertical().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
+    // start the link half a depth beyond the parent's top edge, over the middle of
+    // its depth face, so it looks like it comes from the center of the 3D block.
+    linkDir: (htoi) => d3.linkVertical()
+      .source(l => [o.x(l.source, htoi) + BLOCK_DEPTH/2, o.y(l.source, htoi) - BLOCK_SIZE/2 - BLOCK_DEPTH/2])
+      .target(l => [o.x(l.target, htoi) + BLOCK_DEPTH/2, o.y(l.target, htoi) - BLOCK_DEPTH/2 - 20]),
     hidden_blocks_text: {offset_x: -15, offset_y: 0, anchor: "left"},
     block_text_rotate: -90,
+    miner_dy: BLOCK_SIZE * (3/4),
+    // To make the miner label look centered on the link between the two blocks,
+    // we move it half of BLOCK_DEPTH to the right.
+    miner_dx: BLOCK_DEPTH / 2,
+    // where the tip block should land in the viewport on the initial draw: the chain
+    // grows downward, so put the tip near the top to show less empty space.
+    tip_anchor: (w, h) => [w/2, h*0.25],
   },
   "left-to-right": {
     x: (d, htoi) => htoi[d.data.data.height] * NODE_SIZE,
     y: (d, _) => d.x,
-    linkDir: (htoi) => d3.linkHorizontal().x(d => o.x(d, htoi)).y(d => o.y(d, htoi)),
+    // start the link half a depth beyond the parent's right edge, over the middle of
+    // its depth face, so it looks like it comes from the center of the 3D block.
+    linkDir: (htoi) => d3.linkHorizontal()
+      .source(l => [o.x(l.source, htoi) + BLOCK_SIZE/2 + BLOCK_DEPTH/2, o.y(l.source, htoi) - BLOCK_DEPTH/2])
+      .target(l => [o.x(l.target, htoi), o.y(l.target, htoi) - BLOCK_DEPTH/2]),
     hidden_blocks_text: {offset_x: 0, offset_y: 15, anchor: "middle"},
     block_text_rotate: 0,
+    // the label lands above the block, over the top depth face, so it must clear it.
+    miner_dy: BLOCK_SIZE * (3/4),
+    miner_dx: 0,
+    // where the tip block should land in the viewport on the initial draw: the chain
+    // grows rightward, so put the tip near the right to show less empty space.
+    tip_anchor: (w, h) => [w*0.75, h/2],
   },
 };
 
@@ -30,20 +52,39 @@ const status_to_color = {
   "headers-only": "yellow",
 }
 
-// node status indicator
-const indicator_radius = 8
-const indicator_margin = 1
+// tip info label: a stack of colored "Nx status" boxes shown next to each tip block,
+// rotated like the miner text so it sits opposite it.
+const TIP_BOX_H = 10      // height of one status box
+const TIP_PAD_X = 2       // horizontal padding inside a box
+const TIP_ROW_GAP = 2     // gap between stacked boxes
+// order the boxes by status so they always appear in the same sequence
+const status_order = {
+  "active": 0,
+  "valid-fork": 1,
+  "valid-headers": 2,
+  "headers-only": 3,
+  "invalid": 4,
+}
 
 let o = orientations["left-to-right"];
 
+// absolute position of the current tip, remembered so the "recenter" button can
+// bring the view back to it after the user pans/zooms away
+let lastTipPos = { x: 0, y: 0 }
+
 let svg = d3
     .select("#drawing-area")
-    .style("border", "1px solid")
 
 let initialDraw = true
 
 // enables zoom and panning
-const zoom = d3.zoom().scaleExtent([0.15, 2]).on( "zoom", e => g.attr("transform", e.transform) )
+const zoom = d3.zoom().scaleExtent([0.15, 5]).on( "zoom", e => {
+  g.attr("transform", e.transform)
+  // re-measure the text-fitted boxes; their metrics can be stale if they were first
+  // sized before the text was fully laid out
+  recalc_miner_boxes()
+  recalc_tip_boxes()
+})
 svg.call(zoom)
 
 let g = svg
@@ -145,6 +186,40 @@ function draw() {
 
   const [root_node, max_height, htoi] = preprocess_data(data)
 
+  // the 3D extrusion (top + right faces) lives in its own layer below the links, so
+  // a link can pass over a block's depth and tuck behind its front face — making it
+  // look like it comes from the center of the block.
+  let backFaces = g
+    .selectAll(".block-back")
+    .data(root_node.descendants(), d => `${d.data.data.hash}-${d.data.data.height}`)
+    .join(
+      enter => {
+        let back = enter.append("g")
+          .attr("class", "block-back")
+          .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
+        const half = BLOCK_SIZE / 2
+        const DEPTH = BLOCK_DEPTH
+        back.append("polygon")
+          .attr("class", "block-face-top")
+          .attr("points", `${-half},${-half} ${half},${-half} ${half + DEPTH},${-half - DEPTH} ${-half + DEPTH},${-half - DEPTH}`)
+        back.append("polygon")
+          .attr("class", "block-face-side")
+          .attr("points", `${half},${-half} ${half + DEPTH},${-half - DEPTH} ${half + DEPTH},${half - DEPTH} ${half},${half}`)
+        // edges of the top/side/back faces, each drawn once (the front square's edges
+        // come from the front rect's own stroke, so nothing overlaps)
+        back.append("path")
+          .attr("class", "block-edges")
+          .attr("d", `M ${-half},${-half} L ${-half + DEPTH},${-half - DEPTH} L ${half + DEPTH},${-half - DEPTH} L ${half},${-half}`
+            + ` M ${half + DEPTH},${-half - DEPTH} L ${half + DEPTH},${half - DEPTH} L ${half},${half}`)
+        return back
+      },
+      update => {
+        update.transition(d3.transition().duration(600))
+          .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
+        return update
+      }
+    )
+
   let links = g
     .selectAll(".link-block-block")
     .data(root_node.links(), d => `${d.source.data.data.hash}-${d.target.data.data.hash}`)
@@ -152,6 +227,7 @@ function draw() {
       enter => {
         enter.append("path")
           .attr("class", "link link-block-block")
+          .attr("filter", "#url(shadow)")
           .attr("d", o.linkDir(htoi))
           .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
           .attr("fill", "transparent")
@@ -219,10 +295,10 @@ function draw() {
           .attr("class", "block-child-group")
 
         let block_backgrounds = block_child_group.insert("rect")
-          .attr("rx", 5)
-          .attr("fill", "white")
-          .attr("stroke", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? "darksalmon" : "lightgray")
+          .attr("class", "block-background")
+          .attr("stroke", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? "var(--accent)" : "var(--block-stroke)")
           .attr("stroke-width", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? 3 : 1)
+          .attr("stroke-linejoin", "round")
           .attr("stroke-opacity", d => d.data.data.status == "mining" ? 0.2 : 1)
           .classed("being-mined", d => d.data.data.status == "mining")
 
@@ -238,11 +314,17 @@ function draw() {
           .attr("class", "block-text")
           .text(d => d.data.data.height);
 
-        let pool_text = block_child_group
-          .insert("text")
+        // miner tag: a small background box (rect) behind the miner text. the group
+        // carries the rotation; the rect is sized to the text in a later layout pass.
+        let miner_group = block_child_group
+          .append("g")
+          .attr("class", "block-miner-group")
+        miner_group.append("rect").attr("class", "block-miner-bg")
+        let pool_text = miner_group
+          .append("text")
           .classed("block-pool-name", true)
-          .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
-          .attr("dy", "4em")
+          .attr("dy", o.miner_dy)
+          .attr("dx", o.miner_dx)
           .classed("block-miner", true)
           .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
 
@@ -257,7 +339,7 @@ function draw() {
             .attr("y", -BLOCK_SIZE/2)
             .attr("transform", "scale(1)")
 
-          pool_text
+          miner_group
             .filter(d => d.data.data.height == max_height)
             .style("opacity", 0)
             .transition(d3.transition().duration(600))
@@ -267,7 +349,7 @@ function draw() {
             .filter(d => d.data.data.height == max_height)
             .style("font-size", "0px")
             .transition(d3.transition().duration(600))
-            .style("font-size", "10px")
+            .style("font-size", "11px")
         }
 
         return newBlocks
@@ -276,47 +358,54 @@ function draw() {
         update
           .transition(d3.transition().duration(600))
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
+        // keep the stored anchor coordinates in sync (info boxes read these), or
+        // they'd stay at the previous orientation's position after a switch
+        update
+          .attr("x", d => o.x(d, htoi))
+          .attr("y", d => o.y(d, htoi))
         update.selectAll(".block-pool-name")
-          .attr("transform", `rotate(${o.block_text_rotate},0,0)`)
+          .attr("dy", o.miner_dy)
+          .attr("dx", o.miner_dx)
 
         update.raise()
         return update
       }
     );
 
+  // size the miner background box to fit its (already positioned) text
+  recalc_miner_boxes()
+
+  // tip info label: a stack of colored "Nx status" boxes next to each tip block. the
+  // whole group is rotated like the miner text so it sits on the opposite side.
   let node_groups = g
-    .selectAll(".node-tip-status-indicator")
-    .data(root_node.descendants().filter(d => d.data.data.status != "in-chain" && d.data.data.status != "mining"))
+    .selectAll(".tip-info")
+    .data(root_node.descendants().filter(d => d.data.data.status != "in-chain" && d.data.data.status != "mining"),
+      d => `${d.data.data.hash}-${d.data.data.height}`)
     .join("g")
-    .classed("node-tip-status-indicator", true)
+    .classed("tip-info", true)
     .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
 
-  // build the rect + text once per indicator on enter, otherwise every redraw
-  // would append another copy to the existing indicator groups
-  let indicators = node_groups.selectAll("g.tip-status-indicator")
-    .data(d => d.data.data.status)
+  // build the box (rect + text + title) once per status on enter, so redraws don't
+  // accumulate copies
+  let tip_rows = node_groups.selectAll("g.tip-info-row")
+    .data(
+      d => d.data.data.status.slice().sort((a, b) => status_order[a.status] - status_order[b.status]),
+      d => d.status
+    )
     .join(enter => {
-      let group = enter.append("g").attr("class", "tip-status-indicator")
-      group.append("rect")
-        .attr("width", indicator_radius*2)
-        .attr("height", indicator_radius*2)
-        .attr("rx", 1)
-        .attr("r", indicator_radius)
-        .attr("y", -BLOCK_SIZE/2 - indicator_radius)
-      group.append("text")
-        .attr("y", -BLOCK_SIZE/2)
-        .attr("dy", ".35em")
-      return group
+      let row = enter.append("g").attr("class", "tip-info-row")
+      row.append("title")
+      row.append("rect").attr("class", "tip-info-bg")
+      row.append("text").attr("class", "tip-info-text").attr("text-anchor", "start").attr("dy", ".35em")
+      return row
     })
 
-  // refresh the parts that depend on the (possibly changed) status data
-  indicators.select("rect")
-    .attr("x", (d, i) => (BLOCK_SIZE/2) - i * (indicator_radius + indicator_margin) * 2 - indicator_radius)
-    .attr("class", d => "tip-status-color-fill-" + d.status)
+  tip_rows.select("rect").attr("class", d => "tip-info-bg tip-status-color-fill-" + d.status)
+  tip_rows.select("text").text(d => d.count + "x " + d.status)
+  tip_rows.select("title").text(d => d.nodes.map(node => node.name).join(", "))
 
-  indicators.select("text")
-    .attr("dx", (d, i) => (BLOCK_SIZE/2) - i * (indicator_radius + indicator_margin) * 2)
-    .text(d => d.count)
+  // measure each label and stack the boxes just off the block
+  recalc_tip_boxes()
 
   let offset_x = 0;
   let offset_y = 0;
@@ -326,8 +415,12 @@ function draw() {
     offset_y = o.y(max_height_tip, htoi);
   }
 
-  // raise the blocks to make sure they are drawn over the links, then the tip
-  // status markers over the blocks
+  // stack, bottom to top: 3D depth faces, then the links over them, then the block
+  // front faces (so links tuck behind the front face and look centered), then the
+  // tip status markers
+  backFaces.raise()
+  g.selectAll(".link-block-block").raise()
+  g.selectAll(".text-blocks-not-shown").raise()
   blocks.raise()
   node_groups.raise()
 
@@ -350,13 +443,57 @@ function draw() {
   })
   descLayer.raise()
 
+  lastTipPos = { x: offset_x, y: offset_y }
+
   zoom.scaleBy(svg, 1);
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
-  zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, [(svgSize.width)/2, (svgSize.height)/2])
-
-  svg.select("#legend").attr("x", svg.node().clientWidth - 150 - 10)
+  zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, o.tip_anchor(svgSize.width, svgSize.height))
 
   initialDraw = false
+}
+
+// bring the view back to the tip, anchored where the initial draw placed it. Keeps
+// the current zoom level; just re-pans.
+function recenter() {
+  let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
+  zoom.translateTo(svg.transition(d3.transition().duration(500)), lastTipPos.x, lastTipPos.y, o.tip_anchor(svgSize.width, svgSize.height))
+}
+
+// close every open block info box (and its connector)
+function closeAllDescriptions() {
+  descLayer.selectAll(".block-description").remove()
+  connectorLayer.selectAll(".link-block-description").remove()
+}
+
+// size each miner background box to fit its (already positioned) text. Text metrics
+// (getBBox) only become reliable once the element is laid out, so this also runs on
+// zoom to correct any boxes measured before their text was fully rendered.
+function recalc_miner_boxes() {
+  g.selectAll(".block-miner-group").each(function () {
+    let text = d3.select(this).select("text.block-miner").node()
+    let bb = text.getBBox()
+    d3.select(this).select("rect.block-miner-bg")
+      .attr("x", bb.width ? bb.x : 0).attr("y", bb.y)
+      .attr("width", bb.width ? bb.width : 0).attr("height", bb.height)
+  })
+}
+
+// measure each tip-status label and stack the boxes just off the block. Runs on draw
+// and on zoom, for the same text-metric reason as recalc_miner_boxes().
+function recalc_tip_boxes() {
+  const bottom_edge = -1 * ((BLOCK_SIZE / 2) + 3)
+  g.selectAll(".tip-info").each(function () {
+    let rows = d3.select(this).selectAll("g.tip-info-row")
+    let n = rows.size()
+    rows.each(function (d, j) {
+      let row = d3.select(this)
+      let w = row.select("text").node().getComputedTextLength() + 2 * TIP_PAD_X
+      let top_y = bottom_edge - TIP_BOX_H - (n - 1 - j) * (TIP_BOX_H + TIP_ROW_GAP)
+      row.attr("transform", "translate(" + BLOCK_DEPTH/2 + "," + top_y + ")")
+      row.select("rect").attr("x", -BLOCK_SIZE/2).attr("y", 0).attr("width", w).attr("height", TIP_BOX_H)
+      row.select("text").attr("x", -BLOCK_SIZE/2 + TIP_PAD_X).attr("y", TIP_BOX_H/2)
+    })
+  })
 }
 
 // recursivly collapses linear branches of blocks longer than x,
@@ -499,10 +636,10 @@ function onBlockClick(c, d) {
     .attr("width", "600")
   let card = cardWrapper
     .append("xhtml:div")
-      .attr("class", "card m-0 p-0 border")
-  let headerDiv = card.append("xhtml:div").attr("class", "card-header border")
+      .attr("class", "card m-0 p-0 block-info-card")
+  let headerDiv = card.append("xhtml:div").attr("class", "card-header")
   headerDiv.append()
-    .html(`<span>Header at height <span style="cursor: pointer" onClick='window.prompt("height:", "${d.data.data.height}")'>${d.data.data.height}</span></span>`)
+    .html(`<span>Header at height <span class="copyable" title="click to copy" onClick='copyToClipboard("${d.data.data.height}", "height")'>${d.data.data.height}</span></span>`)
   headerDiv.append()
     .style("float", "right")
     .html(`<button class="btn btn-close"></button>`)
@@ -514,9 +651,9 @@ function onBlockClick(c, d) {
           <div class="container">
             <div class="row small">
               <div class="col small">
-                <div class="row" style="cursor: pointer" onClick='window.prompt("hash:", "${d.data.data.hash}")'><span class="col-2">hash</span><span class="col-10 font-monospace small">${d.data.data.hash}</span></div>
-                <div class="row" style="cursor: pointer" onClick='window.prompt("previous hash:", "${d.data.data.prev_blockhash}")'><span class="col-2">previous</span><span class="col-10 font-monospace small">${d.data.data.prev_blockhash}</span></div>
-                <div class="row" style="cursor: pointer" onClick='window.prompt("merkle root:", "${d.data.data.merkle_root}")'><span class="col-2">merkleroot</span><span class="col-10 font-monospace small">${d.data.data.merkle_root}</span></div>
+                <div class="row copyable" title="click to copy" onClick='copyToClipboard("${d.data.data.hash}", "hash")'><span class="col-2">hash</span><span class="col-10 font-monospace small">${d.data.data.hash}</span></div>
+                <div class="row copyable" title="click to copy" onClick='copyToClipboard("${d.data.data.prev_blockhash}", "previous hash")'><span class="col-2">previous</span><span class="col-10 font-monospace small">${d.data.data.prev_blockhash}</span></div>
+                <div class="row copyable" title="click to copy" onClick='copyToClipboard("${d.data.data.merkle_root}", "merkle root")'><span class="col-2">merkleroot</span><span class="col-10 font-monospace small">${d.data.data.merkle_root}</span></div>
                 <div class="row">
                   <span class="col-2">timestamp</span><span class="col-4">${d.data.data.time}</span>
                   <span class="col-2">version</span><span class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</span>
@@ -535,14 +672,6 @@ function onBlockClick(c, d) {
 
   // draw the connector now that the card size is known
   connector.attr("d", connectorPath())
-}
-
-function node_description(description) {
-  return `
-    <p class="mb-0 text-truncate" onclick="this.style.whiteSpace = 'normal'">
-      <span>${description}</span>
-    </p>
-  `
 }
 
 function get_active_height_or_0(node) {
@@ -594,47 +723,46 @@ function ago(timestamp) {
 
 async function draw_nodes() {
   nodeInfoRow.html(null);
-  nodeInfoRow.selectAll('.node-info')
+
+  let table = nodeInfoRow.append("table").attr("class", "node-table")
+  table.append("thead").append("tr").html(`
+    <th>node</th>
+    <th>implementation</th>
+    <th>tip changed</th>
+    <th class="nt-num">height</th>
+    <th>tip hash</th>
+  `)
+
+  table.append("tbody")
+    .selectAll("tr")
     .data(state_data.nodes.sort((a, b) => get_active_height_or_0(a) - get_active_height_or_0(b)))
     .enter()
-    .append("div")
-      .attr("class", "row-cols-auto px-1")
-      .html(d => `
-      <div class="col border rounded node-info my-2" style="min-height: 8rem; width: 16rem;">
-        <h5 class="card-title py-0 mt-1 mb-0">
-          <span class="mx-2 mt-1 d-inline-block text-truncate" style="max-width: 15rem;">
-            <img class="invert" src="static/img/node.svg" height=28 alt="Node symbol">
-            ${d.name}
-          </span>
-        </h5>
-        <div class="px-2 small">
-          ${d.reachable ? "": "<span class='badge text-bg-danger'>unreachable</span>"}
-          <span class='badge text-bg-secondary small'>${d.implementation} ${d.version.replaceAll("/", "").replaceAll("Satoshi:", "").replace("unknown", "(version unknown)")}</span>
-        </div>
-
-        <div class="px-2">
-          ${node_description(d.description)}
-        </div>
-        <div class="px-2">
-          <span class="small">tip changed <span class="relativeTimestamp" data-timestamp=${d.last_changed_timestamp}>${ago(d.last_changed_timestamp)}</span>
-        </div>
-        <div class="px-2" style="background-color: hsl(${parseInt(get_active_height_or_0(d) * 90, 10) % 360}, 50%, 75%)">
-          <span class="small text-color-dark"> height: ${get_active_height_or_0(d)}
-        </div>
-        <div class="px-2 rounded-bottom" style="background-color: hsl(${(parseInt(get_active_hash_or_fake(d).substring(58), 16) + 120) % 360}, 50%, 75%)">
-          <details>
-            <summary style="list-style: none;">
-              <span class="small text-color-dark">
-                tip hash: …${get_active_hash_or_fake(d).substring(54, 64)}
-              </span>
-            </summary>
-            <span class="small text-color-dark">
-              ${get_active_hash_or_fake(d)}
-            </span>
-          </details>
-        </div>
-      </div>
-    `)
+    .append("tr")
+      .attr("class", "node-row")
+      // expose the height/tip-hash hues as CSS vars so the height and tip-hash
+      // cells can be tinted: same height -> same height-chip color, same tip ->
+      // same hash-chip color.
+      .attr("style", d => {
+        const height_hue = parseInt(get_active_height_or_0(d) * 90, 10) % 360
+        const hash_hue = (parseInt(get_active_hash_or_fake(d).substring(58), 16) + 120) % 360
+        return `--height-hue: ${height_hue}; --hash-hue: ${hash_hue};`
+      })
+      .html(d => {
+        const height = get_active_height_or_0(d)
+        const hash = get_active_hash_or_fake(d)
+        const version = d.version.replaceAll("/", "").replaceAll("Satoshi:", "").replace("unknown", "(version unknown)")
+        return `
+        <td class="nt-name">
+          <span class="node-status-dot ${d.reachable ? "is-up" : "is-down"}" title="${d.reachable ? "reachable" : "unreachable"}"></span>
+          <span class="nt-name-text" title="${d.name}">${d.name}</span>
+          ${d.reachable ? "" : "<span class='badge text-bg-danger'>unreachable</span>"}
+          ${d.description ? `<div class="nt-desc" onclick="this.classList.toggle('nt-desc-open')">${d.description}</div>` : ""}
+        </td>
+        <td class="nt-impl">${d.implementation} ${version}</td>
+        <td class="text-muted-soft nt-time"><span class="relativeTimestamp" data-timestamp=${d.last_changed_timestamp}>${ago(d.last_changed_timestamp)}</span></td>
+        <td class="nt-num"><span class="height-chip">${height}</span></td>
+        <td><code class="hash-chip" title="click to copy full tip hash" onclick="copyToClipboard('${hash}', 'tip hash')">…${hash.substring(44, 64)}</code></td>
+      `})
 }
 
 orientationSelect.on("input", async function() {
