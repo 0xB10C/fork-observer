@@ -9,7 +9,7 @@ use log::{debug, error, info, warn};
 use petgraph::graph::NodeIndex;
 use rusqlite::Connection;
 use std::cmp::max;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::mpsc::unbounded_channel;
@@ -33,12 +33,13 @@ use crate::config::BoxedSyncSendNode;
 use crate::error::{DbError, MainError};
 use types::{
     Cache, Caches, ChainTip, Db, Fork, HeaderInfo, HeaderInfoJson, NetworkJson, NodeData,
-    NodeDataJson, Tree,
+    NodeDataJson, StaleBlockJson, Tree,
 };
 
 const VERSION_UNKNOWN: &str = "unknown";
 const MINER_UNKNOWN: &str = "Unknown";
 const MAX_FORKS_IN_CACHE: usize = 50;
+const MAX_STALE_BLOCKS: usize = 50;
 
 async fn startup() -> Result<(config::Config, Db, Caches), MainError> {
     let config: config::Config = match config::load_config() {
@@ -85,6 +86,7 @@ async fn startup() -> Result<(config::Config, Db, Caches), MainError> {
 async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Caches) {
     let forks = headertree::recent_forks(&tree, MAX_FORKS_IN_CACHE).await;
     let hij = headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
+    let stale_blocks = headertree::stale_blocks(&tree, MAX_STALE_BLOCKS).await;
     {
         let mut locked_caches = caches.lock().await;
         let node_data: NodeData = network
@@ -110,6 +112,8 @@ async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Caches)
                 header_infos_json: hij.clone(),
                 node_data,
                 forks,
+                stale_blocks,
+                block_cache: HashMap::new(),
                 recent_miners: vec![],
             },
         );
@@ -328,6 +332,8 @@ async fn main() -> Result<(), MainError> {
                             .await;
                             let forks =
                                 headertree::recent_forks(&tree_clone, MAX_FORKS_IN_CACHE).await;
+                            let stale_blocks =
+                                headertree::stale_blocks(&tree_clone, MAX_STALE_BLOCKS).await;
 
                             update_cache(
                                 &caches_clone,
@@ -335,6 +341,7 @@ async fn main() -> Result<(), MainError> {
                                 CacheUpdate::HeaderTree {
                                     header_infos_json,
                                     forks,
+                                    stale_blocks,
                                 },
                                 &cache_changed_tx_cloned,
                             )
@@ -523,6 +530,27 @@ async fn main() -> Result<(), MainError> {
         .and(api::with_caches(caches.clone()))
         .and_then(api::data_response);
 
+    let stale_json = warp::get()
+        .and(warp::path!("api" / u32 / "stale.json"))
+        .and(api::with_caches(caches.clone()))
+        .and_then(api::stale_blocks_response);
+
+    let block_hex = warp::get()
+        .and(warp::path!("api" / u32 / "block" / String / "hex"))
+        .and(api::with_caches(caches.clone()))
+        .and(api::with_config_networks(config.networks.clone()))
+        .and_then(|network_id, hash, caches, networks| {
+            api::block_response(network_id, hash, true, caches, networks)
+        });
+
+    let block_bin = warp::get()
+        .and(warp::path!("api" / u32 / "block" / String / "bin"))
+        .and(api::with_caches(caches.clone()))
+        .and(api::with_config_networks(config.networks.clone()))
+        .and_then(|network_id, hash, caches, networks| {
+            api::block_response(network_id, hash, false, caches, networks)
+        });
+
     let forks_rss = warp::get()
         .and(warp::path!("rss" / u32 / "forks.xml"))
         .and(api::with_caches(caches.clone()))
@@ -576,6 +604,9 @@ async fn main() -> Result<(), MainError> {
         .or(index_html)
         .or(fullscreen_html)
         .or(data_json)
+        .or(stale_json)
+        .or(block_hex)
+        .or(block_bin)
         .or(info_json)
         .or(networks_json)
         .or(change_sse)
@@ -618,6 +649,7 @@ enum CacheUpdate {
     HeaderTree {
         header_infos_json: Vec<HeaderInfoJson>,
         forks: Vec<Fork>,
+        stale_blocks: Vec<StaleBlockJson>,
     },
     NodeTips {
         node_id: u32,
@@ -718,6 +750,7 @@ async fn update_cache(
         CacheUpdate::HeaderTree {
             header_infos_json,
             forks,
+            stale_blocks,
         } => {
             let mut new_header_infos_map: HashMap<String, HeaderInfoJson> = header_infos_json
                 .iter()
@@ -735,12 +768,19 @@ async fn update_cache(
                 });
             }
 
+            let stale_hashes: HashSet<String> =
+                stale_blocks.iter().map(|b| b.hash.clone()).collect();
             locked_cache.entry(network_id).and_modify(|e| {
                 e.header_infos_json = new_header_infos_map
                     .iter()
                     .map(|(_, header)| header.clone())
                     .collect();
                 e.forks = forks;
+                e.stale_blocks = stale_blocks;
+                // Drop cached blocks that are no longer in the stale list, so the
+                // block cache stays bounded to the last MAX_STALE_BLOCKS blocks.
+                e.block_cache
+                    .retain(|hash, _| stale_hashes.contains(&hash.to_string()));
             });
         }
         CacheUpdate::NodeTips { node_id, tips } => {
@@ -907,6 +947,8 @@ mod tests {
                     header_infos_json: vec![],
                     node_data,
                     forks: vec![],
+                    stale_blocks: vec![],
+                    block_cache: HashMap::new(),
                     recent_miners: vec![],
                 },
             );
@@ -945,5 +987,63 @@ mod tests {
             get_test_node_reachable(&caches, network_id, node.id).await,
             true
         );
+    }
+
+    #[tokio::test]
+    async fn header_tree_update_prunes_block_cache() {
+        use crate::types::StaleBlockJson;
+        use std::str::FromStr;
+
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+
+        let keep =
+            BlockHash::from_str("00000000000000000000000000000000000000000000000000000000000000aa")
+                .unwrap();
+        let drop_it =
+            BlockHash::from_str("00000000000000000000000000000000000000000000000000000000000000bb")
+                .unwrap();
+
+        {
+            let mut locked = caches.lock().await;
+            let mut block_cache = HashMap::new();
+            block_cache.insert(keep, Some(vec![1u8, 2, 3]));
+            block_cache.insert(drop_it, Some(vec![4u8, 5, 6]));
+            locked.insert(
+                network_id,
+                Cache {
+                    header_infos_json: vec![],
+                    node_data: BTreeMap::new(),
+                    forks: vec![],
+                    stale_blocks: vec![],
+                    block_cache,
+                    recent_miners: vec![],
+                },
+            );
+        }
+
+        // After a header-tree update whose stale list only contains `keep`, the
+        // cached block for `drop_it` must be pruned.
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::HeaderTree {
+                header_infos_json: vec![],
+                forks: vec![],
+                stale_blocks: vec![StaleBlockJson {
+                    height: 1,
+                    hash: keep.to_string(),
+                    header: "00".repeat(80),
+                }],
+            },
+            &dummy_sender,
+        )
+        .await;
+
+        let locked = caches.lock().await;
+        let block_cache = &locked.get(&network_id).unwrap().block_cache;
+        assert!(block_cache.contains_key(&keep));
+        assert!(!block_cache.contains_key(&drop_it));
     }
 }

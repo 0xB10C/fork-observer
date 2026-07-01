@@ -48,6 +48,9 @@ pub trait Node: Sync {
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError>;
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError>;
     async fn coinbase(&self, hash: &BlockHash, height: u64) -> Result<Transaction, FetchError>;
+    /// Fetches a full block by its hash, returning the consensus-serialized
+    /// (raw) block bytes. Used to serve full stale blocks on demand.
+    async fn block(&self, hash: &BlockHash) -> Result<Vec<u8>, FetchError>;
     /// Fetches a batch of successive headers from the active chain.
     async fn batch_header_fetch(
         &self,
@@ -384,6 +387,33 @@ impl Node for BitcoinCoreNode {
         }
     }
 
+    async fn block(&self, hash: &BlockHash) -> Result<Vec<u8>, FetchError> {
+        // Prefer the REST interface (if enabled) as it returns the raw block
+        // bytes directly and doesn't need an extra (de)serialization roundtrip.
+        if self.use_rest {
+            let url = format!("{}/rest/block/{}.bin", self.rpc_url(), hash);
+            let res = minreq::get(url.clone()).with_timeout(8).send()?;
+            if res.status_code != 200 {
+                return Err(FetchError::BitcoinCoreREST(format!(
+                    "could not load block from REST URL ({}): {} {}: {:?}",
+                    url,
+                    res.status_code,
+                    res.reason_phrase,
+                    res.as_str(),
+                )));
+            }
+            return Ok(res.as_bytes().to_vec());
+        }
+
+        let rpc = self.rpc_client()?;
+        let hash_clone = *hash;
+        match task::spawn_blocking(move || rpc.get_block(hash_clone)).await {
+            Ok(Ok(block)) => Ok(corepc_client::bitcoin::consensus::encode::serialize(&block)),
+            Ok(Err(e)) => Err(e.into()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError> {
         let rpc = self.rpc_client()?;
         task::spawn_blocking(move || -> Result<Vec<ChainTip>, FetchError> {
@@ -570,6 +600,19 @@ impl Node for BtcdNode {
         }
     }
 
+    async fn block(&self, hash: &BlockHash) -> Result<Vec<u8>, FetchError> {
+        let url = format!("{}/", self.rpc_url);
+        match crate::jsonrpc::btcd_block(
+            url,
+            self.rpc_user.clone(),
+            self.rpc_password.clone(),
+            hash.to_string(),
+        ) {
+            Ok(block) => Ok(corepc_client::bitcoin::consensus::encode::serialize(&block)),
+            Err(error) => Err(FetchError::BtcdRPC(error)),
+        }
+    }
+
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
         let url = format!("{}/", self.rpc_url);
         match crate::jsonrpc::btcd_blockhash(
@@ -725,6 +768,23 @@ impl Node for Esplora {
                     res.as_str()?
                 ))));
             }
+        }
+    }
+
+    async fn block(&self, hash: &BlockHash) -> Result<Vec<u8>, FetchError> {
+        let url = format!("{}/block/{}/raw", self.api_url, hash);
+
+        let res = minreq::get(url.clone()).with_timeout(8).send()?;
+
+        match res.status_code {
+            200 => Ok(res.as_bytes().to_vec()),
+            _ => Err(FetchError::EsploraREST(EsploraRESTError::Http(format!(
+                "HTTP request to {} failed: {} {}: {}",
+                url,
+                res.status_code,
+                res.reason_phrase,
+                res.as_str()?
+            )))),
         }
     }
 
@@ -969,6 +1029,13 @@ impl Node for Electrum {
             "Could not fetch coinbase from non-active chain. Not supported by Electrum."
                 .to_string(),
         ));
+    }
+
+    async fn block(&self, _hash: &BlockHash) -> Result<Vec<u8>, FetchError> {
+        // The Electrum protocol has no way to fetch a full block by its hash.
+        Err(FetchError::DataError(
+            "Fetching full blocks by hash is not supported by Electrum.".to_string(),
+        ))
     }
 
     async fn batch_header_fetch(

@@ -1,9 +1,14 @@
 use std::convert::Infallible;
+use std::str::FromStr;
 
+use corepc_client::bitcoin::BlockHash;
+use log::warn;
 use warp::{sse::Event, Filter};
 
+use crate::config::Network;
 use crate::types::{
     Caches, DataChanged, DataJsonResponse, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
+    StaleBlocksJsonResponse,
 };
 
 pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
@@ -22,6 +27,153 @@ pub async fn data_response(network: u32, caches: Caches) -> Result<impl warp::Re
             nodes: vec![],
         })),
     }
+}
+
+pub async fn stale_blocks_response(
+    network: u32,
+    caches: Caches,
+) -> Result<impl warp::Reply, Infallible> {
+    let caches_locked = caches.lock().await;
+    let stale_blocks = match caches_locked.get(&network) {
+        Some(cache) => cache.stale_blocks.clone(),
+        None => vec![],
+    };
+    Ok(warp::reply::json(&StaleBlocksJsonResponse { stale_blocks }))
+}
+
+/// Serves a full block by its hash as hex (`as_hex = true`) or raw binary.
+/// We try every node we are connected to until one returns the block. We cache
+/// this response for a while.
+///
+/// Only blocks that this instance currently considers stale (i.e. present in the
+/// cached stale-blocks list) are served; any other hash returns a 404. This
+/// keeps the endpoint from acting as a general-purpose block proxy.
+pub async fn block_response(
+    network_id: u32,
+    hash: String,
+    as_hex: bool,
+    caches: Caches,
+    networks: Vec<Network>,
+) -> Result<impl warp::Reply, Infallible> {
+    let block_hash = match BlockHash::from_str(&hash) {
+        Ok(h) => h,
+        Err(e) => {
+            return Ok(warp::http::Response::builder()
+                .status(400)
+                .header("content-type", "text/plain")
+                .body(format!("Invalid block hash '{}': {}", hash, e).into_bytes())
+                .unwrap());
+        }
+    };
+
+    // We only serve blocks the instance considers stale. While holding the lock
+    // we also read any cached entry:
+    //   Some(Some(bytes)) - the block, already fetched and cached
+    //   Some(None)        - we already asked every node and none had it
+    //   None              - not yet fetched
+    let cached = {
+        let caches_locked = caches.lock().await;
+        match caches_locked.get(&network_id) {
+            Some(cache) => {
+                if !cache
+                    .stale_blocks
+                    .iter()
+                    .any(|b| b.hash == block_hash.to_string())
+                {
+                    return Ok(not_a_stale_block(block_hash, network_id));
+                }
+                cache.block_cache.get(&block_hash).cloned()
+            }
+            None => return Ok(not_a_stale_block(block_hash, network_id)),
+        }
+    };
+
+    let bytes = match cached {
+        // Cached hit.
+        Some(Some(bytes)) => bytes,
+        // We already tried every node and none had it. Don't retry.
+        Some(None) => return Ok(block_not_available(block_hash)),
+        // Not fetched yet: try every node until one returns the block, then
+        // cache the outcome (the bytes, or `None` if no node had it).
+        None => {
+            let network = match networks.iter().find(|n| n.id == network_id) {
+                Some(n) => n,
+                None => return Ok(block_not_available(block_hash)),
+            };
+
+            let mut fetched: Option<Vec<u8>> = None;
+            for node in network.nodes.iter() {
+                match node.block(&block_hash).await {
+                    Ok(bytes) => {
+                        fetched = Some(bytes);
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Could not fetch block {} from node {} on network {}: {}",
+                            block_hash,
+                            node.info(),
+                            network_id,
+                            e
+                        );
+                    }
+                }
+            }
+
+            // Cache the result (only while the block is still stale, so we don't
+            // reintroduce an entry that was concurrently pruned).
+            {
+                let mut caches_locked = caches.lock().await;
+                if let Some(cache) = caches_locked.get_mut(&network_id) {
+                    if cache
+                        .stale_blocks
+                        .iter()
+                        .any(|b| b.hash == block_hash.to_string())
+                    {
+                        cache.block_cache.insert(block_hash, fetched.clone());
+                    }
+                }
+            }
+
+            match fetched {
+                Some(bytes) => bytes,
+                None => return Ok(block_not_available(block_hash)),
+            }
+        }
+    };
+
+    if as_hex {
+        return Ok(warp::http::Response::builder()
+            .header("content-type", "text/plain")
+            .body(hex::encode(&bytes).into_bytes())
+            .unwrap());
+    }
+    Ok(warp::http::Response::builder()
+        .header("content-type", "application/octet-stream")
+        .body(bytes)
+        .unwrap())
+}
+
+fn not_a_stale_block(block_hash: BlockHash, network_id: u32) -> warp::http::Response<Vec<u8>> {
+    warp::http::Response::builder()
+        .status(404)
+        .header("content-type", "text/plain")
+        .body(
+            format!(
+                "Block {} is not a known stale block on network {}.",
+                block_hash, network_id
+            )
+            .into_bytes(),
+        )
+        .unwrap()
+}
+
+fn block_not_available(block_hash: BlockHash) -> warp::http::Response<Vec<u8>> {
+    warp::http::Response::builder()
+        .status(404)
+        .header("content-type", "text/plain")
+        .body(format!("Could not fetch block {} from any node.", block_hash).into_bytes())
+        .unwrap()
 }
 
 pub async fn networks_response(
@@ -50,4 +202,398 @@ pub fn with_networks(
     networks: Vec<NetworkJson>,
 ) -> impl Filter<Extract = (Vec<NetworkJson>,), Error = Infallible> + Clone {
     warp::any().map(move || networks.clone())
+}
+
+pub fn with_config_networks(
+    networks: Vec<Network>,
+) -> impl Filter<Extract = (Vec<Network>,), Error = Infallible> + Clone {
+    warp::any().map(move || networks.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{block_response, stale_blocks_response, with_caches, with_config_networks};
+    use crate::config::{BoxedSyncSendNode, Network, PoolIdentification};
+    use crate::node::{BitcoinCoreNode, NodeInfo};
+    use crate::types::{Cache, Caches, StaleBlockJson};
+    use corepc_client::bitcoin::consensus::deserialize;
+    use corepc_client::bitcoin::{Block, BlockHash};
+    use corepc_client::client_sync::Auth;
+    use std::collections::{BTreeMap, HashMap};
+    use std::str::FromStr;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use warp::Filter;
+
+    fn caches_with_stale(network_id: u32, stale_blocks: Vec<StaleBlockJson>) -> Caches {
+        let mut map = BTreeMap::new();
+        map.insert(
+            network_id,
+            Cache {
+                header_infos_json: vec![],
+                node_data: BTreeMap::new(),
+                forks: vec![],
+                stale_blocks,
+                block_cache: HashMap::new(),
+                recent_miners: vec![],
+            },
+        );
+        Arc::new(Mutex::new(map))
+    }
+
+    fn make_network(id: u32, nodes: Vec<BoxedSyncSendNode>) -> Network {
+        Network {
+            id,
+            description: String::new(),
+            name: format!("net{}", id),
+            min_fork_height: 0,
+            max_interesting_heights: 100,
+            nodes,
+            pool_identification: PoolIdentification::default(),
+        }
+    }
+
+    fn node_info(id: u32, name: &str) -> NodeInfo {
+        NodeInfo {
+            id,
+            name: name.to_string(),
+            description: String::new(),
+            implementation: "Bitcoin Core".to_string(),
+        }
+    }
+
+    // A node whose RPC/REST endpoint is not listening, so every request fails.
+    fn broken_core_node(id: u32) -> BoxedSyncSendNode {
+        Arc::new(BitcoinCoreNode::new(
+            node_info(id, "broken"),
+            "http://127.0.0.1:1".to_string(),
+            Auth::UserPass("user".to_string(), "pass".to_string()),
+            false, // use_rest
+            false, // use_waitfornewblock
+        ))
+    }
+
+    #[tokio::test]
+    async fn stale_json_returns_cached_blocks_in_order() {
+        let caches = caches_with_stale(
+            0,
+            vec![
+                StaleBlockJson {
+                    height: 10,
+                    hash: "aa".to_string(),
+                    header: "00".repeat(80),
+                },
+                StaleBlockJson {
+                    height: 9,
+                    hash: "bb".to_string(),
+                    header: "11".repeat(80),
+                },
+            ],
+        );
+        let route = warp::get()
+            .and(warp::path!("api" / u32 / "stale.json"))
+            .and(with_caches(caches))
+            .and_then(stale_blocks_response);
+
+        let resp = warp::test::request()
+            .path("/api/0/stale.json")
+            .reply(&route)
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        let arr = v["stale_blocks"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["hash"], "aa");
+        assert_eq!(arr[0]["height"], 10);
+        assert_eq!(arr[1]["hash"], "bb");
+    }
+
+    #[tokio::test]
+    async fn stale_json_unknown_network_is_empty() {
+        let caches = caches_with_stale(
+            0,
+            vec![StaleBlockJson {
+                height: 1,
+                hash: "aa".to_string(),
+                header: "00".repeat(80),
+            }],
+        );
+        let route = warp::get()
+            .and(warp::path!("api" / u32 / "stale.json"))
+            .and(with_caches(caches))
+            .and_then(stale_blocks_response);
+
+        let resp = warp::test::request()
+            .path("/api/99/stale.json")
+            .reply(&route)
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(v["stale_blocks"].as_array().unwrap().len(), 0);
+    }
+
+    // Builds a caches map in which `hash` is a known stale block on `network_id`.
+    fn caches_with_stale_hash(network_id: u32, hash: &str) -> Caches {
+        caches_with_stale(
+            network_id,
+            vec![StaleBlockJson {
+                height: 1,
+                hash: hash.to_string(),
+                header: "00".repeat(80),
+            }],
+        )
+    }
+
+    fn block_hex_route(
+        caches: Caches,
+        networks: Vec<Network>,
+    ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+        warp::get()
+            .and(warp::path!("api" / u32 / "block" / String / "hex"))
+            .and(with_caches(caches))
+            .and(with_config_networks(networks))
+            .and_then(|id, hash, caches, nets| block_response(id, hash, true, caches, nets))
+    }
+
+    fn block_bin_route(
+        caches: Caches,
+        networks: Vec<Network>,
+    ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+        warp::get()
+            .and(warp::path!("api" / u32 / "block" / String / "bin"))
+            .and(with_caches(caches))
+            .and(with_config_networks(networks))
+            .and_then(|id, hash, caches, nets| block_response(id, hash, false, caches, nets))
+    }
+
+    #[tokio::test]
+    async fn block_invalid_hash_returns_400() {
+        let route = block_hex_route(
+            caches_with_stale(0, vec![]),
+            vec![make_network(0, vec![broken_core_node(0)])],
+        );
+        let resp = warp::test::request()
+            .path("/api/0/block/not-a-hash/hex")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn block_unknown_network_returns_404() {
+        let hash = "0".repeat(64);
+        let route = block_hex_route(
+            caches_with_stale_hash(0, &hash),
+            vec![make_network(0, vec![broken_core_node(0)])],
+        );
+        let resp = warp::test::request()
+            .path(&format!("/api/99/block/{}/hex", hash))
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn block_non_stale_hash_returns_404() {
+        // The network exists, but the requested block isn't a known stale block.
+        let route = block_hex_route(
+            caches_with_stale(0, vec![]),
+            vec![make_network(0, vec![broken_core_node(0)])],
+        );
+        let hash = "0".repeat(64);
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/hex", hash))
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn block_all_nodes_failing_returns_502() {
+        // The block is a known stale block, so we proceed to (unsuccessfully)
+        // query the nodes.
+        let hash = "0".repeat(64);
+        let route = block_hex_route(
+            caches_with_stale_hash(0, &hash),
+            vec![make_network(0, vec![broken_core_node(0)])],
+        );
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/hex", hash))
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    // --- Tests that spin up a real regtest bitcoind ---
+
+    use corepc_node::Node as CoreNode;
+
+    fn start_bitcoind() -> CoreNode {
+        let exe = corepc_node::exe_path()
+            .expect("a bitcoind binary via BITCOIND_EXE or PATH (see shell.nix)");
+        CoreNode::new(exe).expect("failed to launch bitcoind")
+    }
+
+    fn core_node(id: u32, core: &CoreNode) -> BoxedSyncSendNode {
+        Arc::new(BitcoinCoreNode::new(
+            node_info(id, "core"),
+            core.rpc_url(),
+            Auth::CookieFile(core.params.cookie_file.clone()),
+            false, // use_rest (avoid needing bitcoind's REST interface enabled)
+            true,  // use_waitfornewblock
+        ))
+    }
+
+    #[tokio::test]
+    async fn block_endpoints_return_the_full_block() {
+        let core = start_bitcoind();
+        let address = core.client.new_address().expect("new_address failed");
+        core.client
+            .generate_to_address(3, &address)
+            .expect("generate_to_address failed");
+
+        let node = core_node(0, &core);
+        let hash = node.block_hash(2).await.expect("block_hash failed");
+        let network = make_network(0, vec![node.clone()]);
+        // Mark the block as stale so the endpoint serves it.
+        let caches = caches_with_stale_hash(0, &hash.to_string());
+
+        // hex endpoint
+        let hex_route = block_hex_route(caches.clone(), vec![network.clone()]);
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/hex", hash))
+            .reply(&hex_route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let hex = std::str::from_utf8(resp.body()).expect("hex body should be utf8");
+        let bytes = hex::decode(hex).expect("body should be valid hex");
+        let block: Block = deserialize(&bytes).expect("should deserialize to a block");
+        assert_eq!(block.block_hash(), hash);
+
+        // bin endpoint
+        let bin_route = block_bin_route(caches, vec![network]);
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/bin", hash))
+            .reply(&bin_route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let block: Block = deserialize(resp.body()).expect("should deserialize to a block");
+        assert_eq!(block.block_hash(), hash);
+    }
+
+    #[tokio::test]
+    async fn block_endpoint_tries_all_nodes_until_one_succeeds() {
+        let core = start_bitcoind();
+        let address = core.client.new_address().expect("new_address failed");
+        core.client
+            .generate_to_address(2, &address)
+            .expect("generate_to_address failed");
+
+        let good = core_node(1, &core);
+        let hash = good.block_hash(1).await.expect("block_hash failed");
+
+        // A broken node comes first; the handler must fall through to the good one.
+        let network = make_network(0, vec![broken_core_node(0), good.clone()]);
+        let caches = caches_with_stale_hash(0, &hash.to_string());
+        let route = block_hex_route(caches, vec![network]);
+
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/hex", hash))
+            .reply(&route)
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        let hex = std::str::from_utf8(resp.body()).expect("hex body should be utf8");
+        let bytes = hex::decode(hex).expect("body should be valid hex");
+        let block: Block = deserialize(&bytes).expect("should deserialize to a block");
+        assert_eq!(block.block_hash(), hash);
+    }
+
+    #[tokio::test]
+    async fn block_is_served_from_cache_after_first_fetch() {
+        let core = start_bitcoind();
+        let address = core.client.new_address().expect("new_address failed");
+        core.client
+            .generate_to_address(2, &address)
+            .expect("generate_to_address failed");
+
+        let good = core_node(0, &core);
+        let hash = good.block_hash(1).await.expect("block_hash failed");
+        let caches = caches_with_stale_hash(0, &hash.to_string());
+
+        // First fetch via a working node populates the cache.
+        let route = block_hex_route(caches.clone(), vec![make_network(0, vec![good.clone()])]);
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/hex", hash))
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+
+        // The cache now holds the raw block bytes.
+        {
+            let locked = caches.lock().await;
+            let cached = locked
+                .get(&0)
+                .unwrap()
+                .block_cache
+                .get(&hash)
+                .cloned()
+                .expect("cache entry present")
+                .expect("cached bytes present");
+            let block: Block = deserialize(&cached).expect("cached bytes deserialize");
+            assert_eq!(block.block_hash(), hash);
+        }
+
+        // A second request whose only node is broken still succeeds: it is served
+        // from the cache and the node is never consulted.
+        let route2 = block_bin_route(
+            caches.clone(),
+            vec![make_network(0, vec![broken_core_node(1)])],
+        );
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/bin", hash))
+            .reply(&route2)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let block: Block = deserialize(resp.body()).expect("should deserialize to a block");
+        assert_eq!(block.block_hash(), hash);
+    }
+
+    #[tokio::test]
+    async fn missing_block_is_cached_as_none_and_not_retried() {
+        let hash = "0".repeat(64);
+        let block_hash = BlockHash::from_str(&hash).unwrap();
+        let caches = caches_with_stale_hash(0, &hash);
+        let route = block_hex_route(
+            caches.clone(),
+            vec![make_network(0, vec![broken_core_node(0)])],
+        );
+
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/hex", hash))
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 404);
+
+        // The failure is remembered as `None` so we don't retry the nodes.
+        {
+            let locked = caches.lock().await;
+            let entry = locked
+                .get(&0)
+                .unwrap()
+                .block_cache
+                .get(&block_hash)
+                .cloned();
+            assert_eq!(entry, Some(None));
+        }
+
+        // A second request is still 404, now served from the cached `None`.
+        let resp = warp::test::request()
+            .path(&format!("/api/0/block/{}/hex", hash))
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 404);
+    }
 }
