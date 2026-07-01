@@ -17,6 +17,11 @@ const soundCheckbox = d3.select("#sound")
 
 const SEARCH_PARAM_NETWORK = "network"
 
+// The mining feature (see the stratum jobs section at the bottom) is opt-in via
+// ?mining. Declared up here because blocktree.js reads it while drawing, which can
+// happen before the bottom of this file has run.
+const MINING_ENABLED = new URLSearchParams(window.location.search).has("mining")
+
 // TODO: should be queried via the API as info
 const PAGE_NAME = "fork-observer"
 
@@ -226,7 +231,7 @@ async function update() {
   await fetch_data()
   check_tip_changed()
   await draw_nodes()
-  await draw()
+  await draw({ reason: "update" })
 }
 
 async function run() {
@@ -308,3 +313,83 @@ changeSSE.addEventListener("cache_changed", (e) => {
 
 
 run()
+
+// ---------------------------------------------------------------------------
+// Stratum jobs feed: show which blocks pools are currently mining on top of.
+// Off by default; enable for testing by adding ?mining to the URL.
+// ---------------------------------------------------------------------------
+
+const STRATUM_SSE_URL = "https://stream.stratum.work/"
+// forget a pool entirely if we haven't heard a job from it within this window, so
+// pools that stop sending (or disappear from the feed) don't linger forever.
+const STRATUM_JOB_TTL_MS = 120000
+// pool_name -> { prev_hash, last_seen }: the one block each pool is currently mining
+// on. Read by build_mining_headers() in blocktree.js on every draw, which groups it
+// the other way round, by the block being mined on.
+var state_stratum_jobs = new Map()
+let stratum_redraw_scheduled = false
+
+// the feed's prev_hash lists the header's 4-byte words in header (little-endian)
+// order; reversing the word order gives the big-endian display hash used
+// everywhere else in the app (header_infos[].hash), so to-be-mined blocks
+// resolve against the real tree.
+function stratum_prevhash_to_display(hex) {
+  let words = []
+  for (let i = 0; i < hex.length; i += 8) words.push(hex.slice(i, i + 8))
+  return words.reverse().join("")
+}
+
+// A pool mines on exactly one block at a time, so a new job replaces whatever we knew
+// about that pool. Keying the state by pool (rather than by the block being mined on)
+// is what makes that replacement automatic: keyed the other way round, a pool that
+// switched to a new block would keep haunting the old one until its TTL ran out, and
+// look like it was mining two blocks at once.
+function record_stratum_job(job) {
+  if (job == null || !job.prev_hash || !job.pool_name) return
+  state_stratum_jobs.set(job.pool_name, {
+    prev_hash: stratum_prevhash_to_display(job.prev_hash),
+    last_seen: Date.now(),
+  })
+}
+
+// jobs arrive several times a second; coalesce them into at most one redraw per
+// window and never recenter the viewport for them.
+function schedule_stratum_redraw() {
+  if (stratum_redraw_scheduled) return
+  stratum_redraw_scheduled = true
+  setTimeout(() => {
+    stratum_redraw_scheduled = false
+    // refresh_mining() only does a full redraw when the set of being-mined blocks
+    // changes; otherwise it just re-lays-out the pool cloud, leaving the
+    // to-be-mined blocks (and their pulse animation) untouched.
+    refresh_mining()
+  }, 1500)
+}
+
+let stratumSource = null
+function connect_stratum() {
+  try {
+    // EventSource reconnects on its own after an error (with the server's
+    // requested retry delay, or a browser default), so no manual backoff here.
+    stratumSource = new EventSource(STRATUM_SSE_URL)
+  } catch (e) {
+    console.error("could not open stratum jobs stream", e)
+    return
+  }
+  stratumSource.addEventListener("message", (e) => {
+    let job
+    try { job = JSON.parse(e.data) } catch (_) { return }
+    record_stratum_job(job)
+    schedule_stratum_redraw()
+  })
+  stratumSource.addEventListener("error", (e) => {
+    console.debug("stratum jobs stream error, browser will retry", e)
+  })
+}
+
+// only connect (and thus show any being-mined blocks) when opted in via ?mining
+if (MINING_ENABLED) {
+  connect_stratum()
+} else {
+  console.debug("mining jobs feed disabled; add ?mining to the URL to enable it")
+}
