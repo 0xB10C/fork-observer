@@ -178,3 +178,79 @@ changeSSE.addEventListener("cache_changed", (e) => {
 
 
 run()
+
+// ---------------------------------------------------------------------------
+// Stratum jobs feed: show which blocks pools are currently mining on top of.
+// Off by default; enable for testing by adding ?mining to the URL.
+// ---------------------------------------------------------------------------
+
+const MINING_ENABLED = new URLSearchParams(window.location.search).has("mining")
+const STRATUM_WS_URL = "wss://stratum.miningpool.observer/jobs"
+// drop a pool's job if we haven't heard a fresh one within this window. After a new
+// block is found pools quickly switch to the new prev_hash, so stale ghosts on the
+// old tip fade out on their own.
+const STRATUM_JOB_TTL_MS = 120000
+// prev_hash -> { height, pools: Map<pool_name, { coinbase_tag, last_seen }> }
+// read by build_mining_headers() in blocktree.js on every draw.
+var state_stratum_jobs = new Map()
+let stratum_redraw_scheduled = false
+
+function record_stratum_job(job) {
+  if (job == null || !job.prev_hash || !job.pool_name) return
+  let entry = state_stratum_jobs.get(job.prev_hash)
+  if (entry === undefined) {
+    entry = { height: job.height, pools: new Map() }
+    state_stratum_jobs.set(job.prev_hash, entry)
+  }
+  entry.height = job.height
+  entry.pools.set(job.pool_name, { coinbase_tag: job.coinbase_tag, last_seen: Date.now() })
+}
+
+// jobs arrive several times a second; coalesce them into at most one redraw per
+// window and never recenter the viewport for them.
+function schedule_stratum_redraw() {
+  if (stratum_redraw_scheduled) return
+  stratum_redraw_scheduled = true
+  setTimeout(() => {
+    stratum_redraw_scheduled = false
+    if (state_data.header_infos && state_data.header_infos.length > 0) {
+      // refresh_mining() only does a full redraw when the set of being-mined blocks
+      // changes; otherwise it just re-lays-out the pool cloud, leaving the ghost
+      // blocks (and their pulse animation) untouched.
+      refresh_mining()
+    }
+  }, 1500)
+}
+
+let stratumSocket = null
+let stratumBackoff = 1000
+function connect_stratum() {
+  try {
+    stratumSocket = new WebSocket(STRATUM_WS_URL)
+  } catch (e) {
+    console.error("could not open stratum jobs socket", e)
+    return
+  }
+  stratumSocket.addEventListener("open", () => { stratumBackoff = 1000 })
+  stratumSocket.addEventListener("message", (e) => {
+    let job
+    try { job = JSON.parse(e.data) } catch (_) { return }
+    record_stratum_job(job)
+    schedule_stratum_redraw()
+  })
+  stratumSocket.addEventListener("close", () => {
+    // reconnect with exponential backoff (capped)
+    setTimeout(connect_stratum, stratumBackoff)
+    stratumBackoff = Math.min(stratumBackoff * 2, 30000)
+  })
+  stratumSocket.addEventListener("error", () => {
+    if (stratumSocket) stratumSocket.close()
+  })
+}
+
+// only connect (and thus show any being-mined blocks) when opted in via ?mining
+if (MINING_ENABLED) {
+  connect_stratum()
+} else {
+  console.debug("mining jobs feed disabled; add ?mining to the URL to enable it")
+}

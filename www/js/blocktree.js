@@ -97,12 +97,107 @@ let connectorLayer = g
     .append("g")
     .attr("id", "description-connectors")
 
+// layer for the connector lines from a being-mined block to its pool labels. Like
+// connectorLayer it is never raised, so the lines stay below the blocks and appear to
+// come out from behind the ghost block.
+let miningLinkLayer = g
+    .append("g")
+    .attr("id", "mining-links")
+
+// layer for the force-positioned pool-name labels around "being mined" blocks. It is
+// raised above the blocks on every draw so the labels stay readable.
+let miningLabelLayer = g
+    .append("g")
+    .attr("id", "mining-labels")
+
 // overlay layer that always holds the open block descriptions (info boxes). It is
 // raised to the top on every draw so the boxes are never painted over by blocks or
 // tip status markers.
 let descLayer = g
     .append("g")
     .attr("id", "descriptions")
+
+// context from the last draw, so job updates can refresh just the pool cloud (and
+// detect whether a full redraw is actually needed) without re-rendering the blocks.
+let miningDrawCtx = null
+
+// resolve the current stratum jobs (state_stratum_jobs, kept up to date in main.js)
+// into a map of prev_hash -> { parent, pool_names } for the blocks we recognise.
+// Expired pools are pruned here so the set stays current without a separate timer.
+function current_mining_by_prev(header_infos) {
+  let result = new Map()
+  if (typeof state_stratum_jobs === "undefined" || state_stratum_jobs.size === 0) {
+    return result
+  }
+  const now = Date.now()
+  // index the real headers by hash so we can resolve a job's parent block
+  let by_hash = new Map()
+  header_infos.forEach(h => by_hash.set(h.hash, h))
+
+  state_stratum_jobs.forEach((job, prev_hash) => {
+    // drop pools we haven't heard from recently, then the whole entry if empty
+    job.pools.forEach((pool, name) => {
+      if (now - pool.last_seen > STRATUM_JOB_TTL_MS) job.pools.delete(name)
+    })
+    if (job.pools.size === 0) {
+      state_stratum_jobs.delete(prev_hash)
+      return
+    }
+    // only show ghosts that build on a block we actually know about
+    let parent = by_hash.get(prev_hash)
+    if (parent === undefined) return
+    result.set(prev_hash, { parent, pool_names: Array.from(job.pools.keys()).sort() })
+  })
+  return result
+}
+
+// build synthetic "being mined" header objects to inject into the tree. One ghost
+// block per prev_hash we recognise, aggregating all pools mining on top of it.
+function build_mining_headers(header_infos) {
+  let mining_headers = []
+  current_mining_by_prev(header_infos).forEach(({ parent, pool_names }, prev_hash) => {
+    mining_headers.push({
+      id: "mining-" + prev_hash,
+      prev_id: parent.id,
+      height: parent.height + 1,
+      hash: "mining-" + prev_hash,
+      prev_blockhash: prev_hash,
+      // pool names are shown in a force-positioned cloud around the block, so the
+      // block itself carries no miner label
+      miner: "",
+      // not MIN_DIFFICULTY, so it doesn't get the accent-colored stroke
+      difficulty_int: 0,
+      status: "mining",
+      mining_pools: pool_names,
+    })
+  })
+  return mining_headers
+}
+
+// called when new stratum jobs arrive. If the set of being-mined blocks is unchanged
+// (the common case: same tip, just a shifting pool set) only the pool cloud is
+// refreshed, leaving the block DOM — and its running pulse animation — untouched. A
+// full redraw happens only when a ghost block appears or disappears.
+function refresh_mining() {
+  if (miningDrawCtx === null) {
+    draw({ preserveView: true })
+    return
+  }
+  let desired = current_mining_by_prev(miningDrawCtx.header_infos)
+  let current_keys = miningDrawCtx.ghostByPrev
+  let same = desired.size === current_keys.size &&
+    Array.from(desired.keys()).every(k => current_keys.has(k))
+  if (!same) {
+    draw({ preserveView: true })
+    return
+  }
+  // same set of ghosts: update their pool lists in place and re-lay-out the cloud only
+  desired.forEach(({ pool_names }, prev_hash) => {
+    let node = current_keys.get(prev_hash)
+    if (node) node.data.data.mining_pools = pool_names
+  })
+  draw_mining_pool_clouds(miningDrawCtx.root_node, miningDrawCtx.htoi)
+}
 
 function preprocess_data(data) {
   let header_infos = data.header_infos;
@@ -128,13 +223,18 @@ function preprocess_data(data) {
     header_info.is_tip = status != undefined
   })
 
+  // synthetic "being mined" blocks from the stratum jobs feed, injected as children
+  // of the block each pool builds on. max_height (below) stays based on the real
+  // headers only, so these ghosts are not treated as the animated newest block.
+  let mining_headers = build_mining_headers(header_infos)
+
   var treeData = d3
     .stratify()
     .id(d => d.id)
     .parentId(function (d) {
       // d3js requires the first prev block hash to be null
       return (d.prev_id == MAX_USIZE ? null : d.prev_id)
-    })(header_infos);
+    })(header_infos.concat(mining_headers));
 
   stripUninteresting(treeData, 4)
 
@@ -176,7 +276,8 @@ function preprocess_data(data) {
   return [root_node, max_height, htoi]
 }
 
-function draw() {
+function draw(opts) {
+  opts = opts || {}
   let data = state_data
 
   // nothing to draw if there are no headers
@@ -196,6 +297,7 @@ function draw() {
       enter => {
         let back = enter.append("g")
           .attr("class", "block-back")
+          .classed("being-mined", d => d.data.data.status == "mining")
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
         const half = BLOCK_SIZE / 2
         const DEPTH = BLOCK_DEPTH
@@ -285,6 +387,7 @@ function draw() {
       enter => {
         let newBlocks = enter.append("g")
           .classed("block", true)
+          .classed("being-mined", d => d.data.data.status == "mining")
           .attr("id", d => "block-" + d.data.data.height + "-" + d.data.data.hash)
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
           .attr("x", d => o.x(d, htoi))
@@ -299,7 +402,7 @@ function draw() {
           .attr("stroke", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? "var(--accent)" : "var(--block-stroke)")
           .attr("stroke-width", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? 3 : 1)
           .attr("stroke-linejoin", "round")
-          .attr("stroke-opacity", d => d.data.data.status == "mining" ? 0.2 : 1)
+          .attr("stroke-opacity", 1)
           .classed("being-mined", d => d.data.data.status == "mining")
 
         block_backgrounds.filter(d => d.data.data.height != max_height || initialDraw)
@@ -327,6 +430,25 @@ function draw() {
           .attr("dx", o.miner_dx)
           .classed("block-miner", true)
           .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
+
+        // "being mined" tag above ghost blocks, styled like the tip-status boxes so it
+        // reads as a status label. Lives in the block group, so it persists (and isn't
+        // re-rendered) on the frequent pool-only refreshes.
+        let mining_tag = block_child_group.filter(d => d.data.data.status == "mining")
+          .append("g")
+          .attr("class", "mining-tag")
+          .attr("transform", "translate(" + -BLOCK_SIZE/2 + "," + (+(BLOCK_SIZE / 2) + BLOCK_DEPTH) + ")")
+        mining_tag.append("rect").attr("class", "mining-tag-bg")
+        mining_tag.append("text").attr("class", "mining-tag-text")
+          .attr("text-anchor", "left").attr("dy", ".35em").text("being mined..")
+        mining_tag.each(function () {
+          let group = d3.select(this)
+          let bb = group.select("text").node().getBBox()
+          const px = 1, py = 1
+          group.select("rect")
+            .attr("x", bb.x - px).attr("y", bb.y - py)
+            .attr("width", bb.width + 2 * px).attr("height", bb.height + 2 * py)
+        })
 
         if (!initialDraw) {
           block_backgrounds
@@ -372,6 +494,16 @@ function draw() {
       }
     );
 
+  // pool names orbiting each "being mined" block, laid out with a force simulation
+  draw_mining_pool_clouds(root_node, htoi)
+
+  // remember what we drew so incoming jobs can refresh the cloud in place, without a
+  // full redraw that would restart the ghost blocks' pulse animation
+  let ghostByPrev = new Map()
+  root_node.descendants().filter(d => d.data.data.status == "mining")
+    .forEach(d => ghostByPrev.set(d.data.data.prev_blockhash, d))
+  miningDrawCtx = { root_node, htoi, header_infos: data.header_infos, ghostByPrev }
+
   // size the miner background box to fit its (already positioned) text
   recalc_miner_boxes()
 
@@ -409,7 +541,9 @@ function draw() {
 
   let offset_x = 0;
   let offset_y = 0;
-  let max_height_tip = root_node.leaves().filter(d => d.data.data.height == max_height)[0]
+  // the real tip at max_height. Not necessarily a leaf(): a "being mined" ghost block
+  // is injected as its child, so filter descendants by height instead of using leaves().
+  let max_height_tip = root_node.descendants().filter(d => d.data.data.status != "mining" && d.data.data.height == max_height)[0]
   if (max_height_tip !== undefined) {
     offset_x = o.x(max_height_tip, htoi);
     offset_y = o.y(max_height_tip, htoi);
@@ -423,6 +557,7 @@ function draw() {
   g.selectAll(".text-blocks-not-shown").raise()
   blocks.raise()
   node_groups.raise()
+  miningLabelLayer.raise()
 
   // keep open descriptions (and their connectors) anchored to their block as the
   // layout shifts, and raise the overlay so the info boxes stay on top of everything
@@ -445,11 +580,16 @@ function draw() {
 
   lastTipPos = { x: offset_x, y: offset_y }
 
-  zoom.scaleBy(svg, 1);
-  let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
-  zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, o.tip_anchor(svgSize.width, svgSize.height))
-
-  initialDraw = false
+  // job-triggered redraws (new stratum jobs arriving) pass preserveView so the
+  // viewport isn't yanked back to the tip while the user is panning around.
+  if (!opts.preserveView) {
+    zoom.scaleBy(svg, 1);
+    let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
+    zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, o.tip_anchor(svgSize.width, svgSize.height))
+    // only clear this once the view has actually been anchored, so a job-triggered
+    // preserveView redraw can't consume it before the first real draw
+    initialDraw = false
+  }
 }
 
 // bring the view back to the tip, anchored where the initial draw placed it. Keeps
@@ -463,6 +603,149 @@ function recenter() {
 function closeAllDescriptions() {
   descLayer.selectAll(".block-description").remove()
   connectorLayer.selectAll(".link-block-description").remove()
+}
+
+// max pool-name labels to draw around a being-mined block before summarising the rest
+const MINING_CLOUD_MAX = 25
+// radius of the ring the labels are pulled toward, around the block centre
+const MINING_CLOUD_RADIUS = BLOCK_SIZE * 3
+
+// persistent force layout for the pool-name clouds. Kept across redraws so labels keep
+// their positions (and keep gently drifting) instead of teleporting each frame.
+let miningSim = null
+let miningLabelNodes = new Map() // key -> { key, name, bx, by, x, y }
+
+// pull each label toward a ring of `radius` around ITS OWN block centre (bx, by).
+// d3.forceRadial only supports one shared centre, so we roll our own.
+function forcePerNodeRadial(radius, strength) {
+  let nodes
+  function force(alpha) {
+    for (const d of nodes) {
+      const dx = d.x - d.bx, dy = d.y - d.by
+      const r = Math.sqrt(dx * dx + dy * dy) || 1e-6
+      const k = (radius - r) * strength * alpha / r
+      d.vx += dx * k
+      d.vy += dy * k
+    }
+  }
+  force.initialize = n => { nodes = n }
+  return force
+}
+
+// push labels away from block centres so they don't sit on top of older blocks
+function forceAvoidBlocks(blocks, minDist, strength) {
+  let nodes
+  function force(alpha) {
+    for (const d of nodes) {
+      for (const b of blocks) {
+        const dx = d.x - b.x, dy = d.y - b.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1e-6
+        if (dist < minDist) {
+          const k = (minDist - dist) * strength * alpha / dist
+          d.vx += dx * k
+          d.vy += dy * k
+        }
+      }
+    }
+  }
+  force.initialize = n => { nodes = n }
+  return force
+}
+
+// tick handler: move the labels and their connector lines to the simulation positions
+function mining_cloud_tick() {
+  miningLinkLayer.selectAll("line.mining-pool-link")
+    .attr("x1", d => d.bx).attr("y1", d => d.by)
+    .attr("x2", d => d.x).attr("y2", d => d.y)
+  miningLabelLayer.selectAll("g.mining-pool")
+    .attr("transform", d => "translate(" + d.x + "," + d.y + ")")
+}
+
+// lay out each being-mined block's pool names in a live force cloud around it:
+// repulsion + collision keep names apart, a per-node radial pull keeps them ringed
+// around their block, and a repelling force keeps them off the other blocks. Node
+// objects persist across redraws so positions are continuous, and the simulation is
+// gently reheated each draw so the labels keep drifting.
+function draw_mining_pool_clouds(root_node, htoi) {
+  let mining_nodes = root_node.descendants().filter(d => d.data.data.status == "mining")
+
+  // obstacles: every real block centre, for the avoid force
+  let obstacles = root_node.descendants()
+    .filter(d => d.data.data.status != "mining")
+    .map(d => ({ x: o.x(d, htoi), y: o.y(d, htoi) }))
+
+  // resolve the desired labels into persistent node objects (keyed by block + name)
+  let wanted = new Map()
+  mining_nodes.forEach(node => {
+    const cx = o.x(node, htoi), cy = o.y(node, htoi)
+    const pools = node.data.data.mining_pools
+    let labels = pools.slice(0, MINING_CLOUD_MAX)
+    if (pools.length > MINING_CLOUD_MAX) {
+      labels = labels.concat("+" + (pools.length - MINING_CLOUD_MAX) + " more")
+    }
+    const n = labels.length
+    labels.forEach((name, i) => {
+      const key = node.data.data.hash + "|" + name
+      let d = miningLabelNodes.get(key)
+      if (d === undefined) {
+        // seed a new label on the ring near its block so it eases into place
+        const a = (i / n) * 2 * Math.PI
+        d = { key, x: cx + MINING_CLOUD_RADIUS * Math.cos(a), y: cy + MINING_CLOUD_RADIUS * Math.sin(a) }
+      }
+      d.name = name
+      d.bx = cx
+      d.by = cy
+      wanted.set(key, d)
+    })
+  })
+  miningLabelNodes = wanted
+  let nodeArray = Array.from(wanted.values())
+
+  // connector lines (in the lower layer, so they come out from behind the block) and
+  // label groups, keyed so they persist across draws
+  miningLinkLayer.selectAll("line.mining-pool-link")
+    .data(nodeArray, d => d.key)
+    .join(enter => enter.append("line").attr("class", "mining-pool-link"))
+
+  miningLabelLayer.selectAll("g.mining-pool")
+    .data(nodeArray, d => d.key)
+    .join(enter => {
+      let group = enter.append("g").attr("class", "mining-pool")
+      group.append("rect").attr("class", "mining-pool-bg")
+      group.append("text").attr("class", "mining-pool-text")
+        .attr("text-anchor", "middle").attr("dy", ".35em")
+      return group
+    })
+
+  // (re)set label text and size the background to fit it (names can change)
+  miningLabelLayer.selectAll("g.mining-pool").each(function (d) {
+    let group = d3.select(this)
+    let bb = group.select("text").text(d.name).node().getBBox()
+    const px = 3, py = 1
+    group.select("rect")
+      .attr("x", bb.x - px).attr("y", bb.y - py)
+      .attr("width", bb.width + 2 * px).attr("height", bb.height + 2 * py)
+  })
+
+  if (nodeArray.length == 0) {
+    if (miningSim) miningSim.stop()
+    return
+  }
+
+  const char_w = 5.2 // rough width per character at 8px, for collision sizing
+  if (miningSim === null) {
+    miningSim = d3.forceSimulation().on("tick", mining_cloud_tick)
+  }
+  miningSim.nodes(nodeArray)
+  miningSim
+    .force("charge", d3.forceManyBody().strength(-20))
+    .force("collide", d3.forceCollide().radius(d => (d.name.length * char_w) / 2 + 7))
+    .force("radial", forcePerNodeRadial(MINING_CLOUD_RADIUS, 0.12))
+    .force("avoid", forceAvoidBlocks(obstacles, BLOCK_SIZE * 3, 0.6))
+  // gentle reheat so labels drift and settle rather than snapping
+  miningSim.alpha(0.4).restart()
+  // place everything immediately so new labels/lines don't flash at the origin
+  mining_cloud_tick()
 }
 
 // size each miner background box to fit its (already positioned) text. Text metrics
@@ -556,6 +839,8 @@ function onBlockClick(c, d) {
   let blockGroup = d3.select(c.target.parentElement.parentElement)
   // only react to clicks on an actual block group
   if (blockGroup.attr("class") == null || !blockGroup.attr("class").startsWith("block")) return
+  // ghost "being mined" blocks have no real header data to show in the info card
+  if (d.data.data.status == "mining") return
 
   // toggle: if this block already has an open description, close it
   let existing = descLayer.selectAll(".block-description")
