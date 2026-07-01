@@ -22,6 +22,16 @@ pub struct Cache {
     pub header_infos_json: Vec<HeaderInfoJson>,
     pub node_data: NodeData,
     pub forks: Vec<Fork>,
+    /// The (up to `MAX_STALE_BLOCKS`) most recent stale blocks we know about.
+    /// A stale block is any block that is not part of the active chain, including
+    /// intermediate (non-tip) blocks of a stale branch.
+    pub stale_blocks: Vec<StaleBlockJson>,
+    /// In-memory cache of full (raw, consensus-serialized) stale blocks, keyed by
+    /// block hash. `Some(bytes)` is a block we fetched from a node; `None` means
+    /// we asked every node and none had it, so we don't retry (a restart clears
+    /// this and retries). Bounded to the blocks currently in `stale_blocks`
+    /// (<= `MAX_STALE_BLOCKS`); entries are pruned as blocks leave that list.
+    pub block_cache: HashMap<BlockHash, Option<Vec<u8>>>,
     /// Since strip_tree and identifying miners runs in parallel,
     /// the strip_tree result might not contain a miner yet. Keeping
     /// recent miners here and use + manage them when updating the cache.
@@ -120,6 +130,31 @@ pub struct InfoJsonResponse {
 pub struct DataJsonResponse {
     pub header_infos: Vec<HeaderInfoJson>,
     pub nodes: Vec<NodeDataJson>,
+}
+
+/// A stale block: a block that is not part of the active chain. This includes
+/// stale tips as well as intermediate (non-tip) blocks of a stale branch.
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
+pub struct StaleBlockJson {
+    pub height: u64,
+    pub hash: String,
+    /// The 80-byte block header, hex-encoded.
+    pub header: String,
+}
+
+impl StaleBlockJson {
+    pub fn new(hi: &HeaderInfo) -> Self {
+        StaleBlockJson {
+            height: hi.height,
+            hash: hi.header.block_hash().to_string(),
+            header: corepc_client::bitcoin::consensus::encode::serialize_hex(&hi.header),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct StaleBlocksJsonResponse {
+    pub stale_blocks: Vec<StaleBlockJson>,
 }
 
 #[derive(Serialize, Clone, Eq, Hash, PartialEq, Debug)]
