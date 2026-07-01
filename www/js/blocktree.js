@@ -99,12 +99,6 @@ let lastTipPos = { x: 0, y: 0 }
 // See the end of draw().
 let viewAnchor = null
 
-// whether the mining feature is on (?mining, see main.js). blocktree.js is loaded
-// first, so guard against the constant not being there at all.
-function mining_enabled() {
-  return typeof MINING_ENABLED !== "undefined" && MINING_ENABLED
-}
-
 // size a group's background rect to fit the text next to it, with `px`/`py` of padding.
 // Both are only measurable once the text has been laid out, hence the getBBox().
 function fit_rect_to_text(group, px, py) {
@@ -201,6 +195,99 @@ let countdownLayer = g
     .append("g")
     .attr("id", "countdown")
 
+// context from the last draw, so job updates can refresh just the pool cloud (and
+// detect whether a full redraw is actually needed) without re-rendering the blocks.
+let miningDrawCtx = null
+
+// invert the current stratum jobs (state_stratum_jobs, one entry per pool, kept up to
+// date in main.js) into a map of prev_hash -> { parent, pool_names }: the pools mining
+// on each block we recognise. Expired pools are pruned here so the set stays current
+// without a separate timer.
+function current_mining_by_prev(header_infos) {
+  let result = new Map()
+  if (!MINING_ENABLED || state_stratum_jobs.size === 0) {
+    return result
+  }
+  const now = Date.now()
+  // index the real headers by hash so we can resolve a job's parent block
+  let by_hash = new Map()
+  header_infos.forEach(h => by_hash.set(h.hash, h))
+
+  state_stratum_jobs.forEach((job, pool_name) => {
+    // drop pools we haven't heard from in a while
+    if (now - job.last_seen > STRATUM_JOB_TTL_MS) {
+      state_stratum_jobs.delete(pool_name)
+      return
+    }
+    // only show to-be-mined blocks that build on a block we actually know about
+    let parent = by_hash.get(job.prev_hash)
+    if (parent === undefined) return
+    let entry = result.get(job.prev_hash)
+    if (entry === undefined) {
+      entry = { parent, pool_names: [] }
+      result.set(job.prev_hash, entry)
+    }
+    entry.pool_names.push(pool_name)
+  })
+  // stable order, so the labels don't get reshuffled between refreshes
+  result.forEach(entry => entry.pool_names.sort())
+  return result
+}
+
+// build synthetic "being mined" header objects to inject into the tree. One
+// to-be-mined block per prev_hash we recognise, aggregating all pools mining on it.
+function build_mining_headers(header_infos) {
+  let mining_headers = []
+  current_mining_by_prev(header_infos).forEach(({ parent, pool_names }, prev_hash) => {
+    mining_headers.push({
+      id: "mining-" + prev_hash,
+      prev_id: parent.id,
+      height: parent.height + 1,
+      hash: "mining-" + prev_hash,
+      prev_blockhash: prev_hash,
+      // pool names are shown in a force-positioned cloud around the block, so the
+      // block itself carries no miner label
+      miner: "",
+      // not MIN_DIFFICULTY, so it doesn't get the accent-colored stroke
+      difficulty_int: 0,
+      status: "mining",
+      mining_pools: pool_names,
+    })
+  })
+  return mining_headers
+}
+
+// called when new stratum jobs arrive. If the set of being-mined blocks is unchanged
+// (the common case: same tip, just a shifting pool set) only the pool cloud is
+// refreshed, leaving the block DOM — and its running pulse animation — untouched. A
+// full redraw happens only when a to-be-mined block appears or disappears.
+function refresh_mining() {
+  // jobs can arrive before the first fetch has returned; there is nothing to draw yet
+  if (!state_data.header_infos || state_data.header_infos.length == 0) return
+  if (miningDrawCtx === null) {
+    draw({ preserveView: true, reason: "jobs (first draw)" })
+    return
+  }
+  let desired = current_mining_by_prev(state_data.header_infos)
+  let current_keys = miningDrawCtx.toBeMinedByPrev
+  let same = desired.size === current_keys.size &&
+    Array.from(desired.keys()).every(k => current_keys.has(k))
+  if (!same) {
+    log_view("to-be-mined set changed", {
+      was: Array.from(current_keys.keys()).map(k => k.substring(56)),
+      now: Array.from(desired.keys()).map(k => k.substring(56)),
+    })
+    draw({ preserveView: true, reason: "jobs (block set changed)" })
+    return
+  }
+  // same set of blocks: update their pool lists in place and re-lay-out the cloud only
+  desired.forEach(({ pool_names }, prev_hash) => {
+    let node = current_keys.get(prev_hash)
+    if (node) node.data.data.mining_pools = pool_names
+  })
+  draw_mining_pool_clouds(miningDrawCtx.root_node, miningDrawCtx.htoi)
+}
+
 function preprocess_data(data) {
   let header_infos = data.header_infos;
   let node_infos = data.nodes;
@@ -225,13 +312,18 @@ function preprocess_data(data) {
     header_info.is_tip = status != undefined
   })
 
+  // synthetic "being mined" blocks from the stratum jobs feed, injected as children
+  // of the block each pool builds on. max_height (below) stays based on the real
+  // headers only, so these are not treated as the animated newest block.
+  let mining_headers = build_mining_headers(header_infos)
+
   var treeData = d3
     .stratify()
     .id(d => d.id)
     .parentId(function (d) {
       // d3js requires the first prev block hash to be null
       return (d.prev_id == MAX_USIZE ? null : d.prev_id)
-    })(header_infos);
+    })(header_infos.concat(mining_headers));
 
   stripUninteresting(treeData, 4)
 
@@ -259,15 +351,40 @@ function preprocess_data(data) {
 
   let treemap = gen_treemap();
 
+  // Make sure the headers and forks are sorted deterministically. This means, they
+  // don't change on redraws, which is nicer.
+  const sort_blocks = (a, b) =>
+    d3.ascending(a.data.data.height, b.data.data.height) ||
+    d3.ascending(a.data.data.hash, b.data.data.hash)
+
   // assigns the data to a hierarchy using parent-child relationships
-  // and maps the node data to the tree layout. Make sure the headers
-  // and forks are sorted deterministically. This means, they don't
-  // change on redraws, which is nicer.
-  const root_node = treemap(
-    d3.hierarchy(treeData).sort((a, b) =>
-      d3.ascending(a.data.data.height, b.data.data.height) ||
-      d3.ascending(a.data.data.hash, b.data.data.hash))
-  )
+  // and maps the node data to the tree layout.
+  const root_node = treemap(d3.hierarchy(treeData).sort(sort_blocks))
+
+  // Where the real blocks end up across the chain comes from a second run of the same
+  // layout with the feed's synthetic blocks left out. Laying both out together lets the
+  // feed move the real chain around: a to-be-mined block makes the branch it hangs off
+  // one deeper, and d3.tree answers that by pushing the neighbouring branches apart.
+  // Pools switch jobs several times a second, so that showed up as the whole tree
+  // sliding back and forth for no visible reason. Both runs walk the same stripped
+  // tree, so every real block is in both and htoi above stays valid for either.
+  const real_root = treemap(
+    d3.hierarchy(treeData, d => (d.children || []).filter(c => c.data.status != "mining"))
+      .sort(sort_blocks))
+  let real_x = new Map()
+  real_root.descendants().forEach(d => real_x.set(d.data.data.hash, d.x))
+
+  // Pin every real block back to where it sits without the feed. The synthetic ones
+  // aren't in that layout, so they take the shift of the block they hang off - which
+  // keeps them lined up with it and keeps any siblings as far apart as they were.
+  // eachBefore visits parents first, so a node's shift is always known by then.
+  let shift = new Map()
+  root_node.eachBefore(d => {
+    let real = real_x.get(d.data.data.hash)
+    let s = real !== undefined ? real - d.x : shift.get(d.parent)
+    shift.set(d, s)
+    d.x += s
+  })
   const max_height = Math.max(...header_infos.map(d => d.height))
 
   return [root_node, max_height, htoi]
@@ -498,6 +615,13 @@ function draw(opts) {
     draw_mining_pool_clouds(root_node, htoi)
   }
 
+  // remember what we drew so incoming jobs can refresh the cloud in place, without a
+  // full redraw that would restart the to-be-mined blocks' pulse animation
+  let toBeMinedByPrev = new Map()
+  root_node.descendants().filter(d => d.data.data.status == "mining")
+    .forEach(d => toBeMinedByPrev.set(d.data.data.prev_blockhash, d))
+  miningDrawCtx = { root_node, htoi, toBeMinedByPrev }
+
   // size the miner background box to fit its (already positioned) text
   recalc_miner_boxes()
 
@@ -547,7 +671,7 @@ function draw(opts) {
     // block happens to exist right now: pools switch jobs constantly, so anchoring on
     // the block itself dragged the view back and forth by a block slot as it came and
     // went.
-    if (mining_enabled()) {
+    if (MINING_ENABLED) {
       offset_x += o.next_slot.x;
       offset_y += o.next_slot.y;
     }
@@ -597,18 +721,24 @@ function draw(opts) {
 
   log_view("draw", {
     reason: opts.reason || "?",
+    preserveView: !!opts.preserveView,
     orientation: o.name,
     tip: tip_hash && tip_hash.substring(56),
     max_height,
     offset: [offset_x, offset_y],
     viewAnchor, anchor, follow,
+    willMoveCamera: !opts.preserveView && follow,
   })
 
-  if (follow) {
+  // job-triggered redraws (new stratum jobs arriving) pass preserveView so the
+  // viewport isn't yanked back to the tip while the user is panning around.
+  if (!opts.preserveView && follow) {
     viewAnchor = anchor
     zoom.scaleBy(svg, 1);
     let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
     zoom.translateTo(svg.transition(d3.transition().duration(snap ? 0 : 750)), offset_x, offset_y, o.tip_anchor(svgSize.width, svgSize.height))
+    // only clear this once the view has actually been anchored, so a job-triggered
+    // preserveView redraw can't consume it before the first real draw
     initialDraw = false
   }
 }
