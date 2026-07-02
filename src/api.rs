@@ -1,15 +1,129 @@
-use std::convert::Infallible;
-use std::str::FromStr;
-
-use corepc_client::bitcoin::BlockHash;
-use log::warn;
-use warp::{sse::Event, Filter};
-
-use crate::config::Network;
+use crate::config::{Config, Network};
+use crate::rss;
 use crate::types::{
     Caches, DataChanged, DataJsonResponse, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
     StaleBlocksJsonResponse,
 };
+use corepc_client::bitcoin::BlockHash;
+use futures_util::StreamExt;
+use log::{error, warn};
+use std::convert::Infallible;
+use std::str::FromStr;
+use tokio::sync::broadcast::Sender;
+use tokio_stream::wrappers::BroadcastStream;
+use warp::{sse::Event, Filter};
+
+pub fn build_routes(
+    network_infos: &Vec<NetworkJson>,
+    config: &Config,
+    caches: &Caches,
+    cache_changed_tx_warp: Sender<u32>,
+) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    let www_dir = warp::get()
+        .and(warp::path("static"))
+        .and(warp::fs::dir(config.www_path.clone()));
+    let index_html = warp::get()
+        .and(warp::path::end())
+        .and(warp::fs::file(config.www_path.join("index.html")));
+    let fullscreen_html = warp::get()
+        .and(warp::path!("fullscreen"))
+        .and(warp::fs::file(config.www_path.join("fullscreen.html")));
+
+    let info_json = warp::get()
+        .and(warp::path!("api" / "info.json"))
+        .and(with_footer(config.footer_html.clone()))
+        .and_then(info_response);
+
+    let data_json = warp::get()
+        .and(warp::path!("api" / u32 / "data.json"))
+        .and(with_caches(caches.clone()))
+        .and_then(data_response);
+
+    let stale_json = warp::get()
+        .and(warp::path!("api" / u32 / "stale.json"))
+        .and(with_caches(caches.clone()))
+        .and_then(stale_blocks_response);
+
+    let block_hex = warp::get()
+        .and(warp::path!("api" / u32 / "block" / String / "hex"))
+        .and(with_caches(caches.clone()))
+        .and(with_config_networks(config.networks.clone()))
+        .and_then(|network_id, hash, caches, networks| {
+            block_response(network_id, hash, true, caches, networks)
+        });
+
+    let block_bin = warp::get()
+        .and(warp::path!("api" / u32 / "block" / String / "bin"))
+        .and(with_caches(caches.clone()))
+        .and(with_config_networks(config.networks.clone()))
+        .and_then(|network_id, hash, caches, networks| {
+            block_response(network_id, hash, false, caches, networks)
+        });
+
+    let forks_rss = warp::get()
+        .and(warp::path!("rss" / u32 / "forks.xml"))
+        .and(with_caches(caches.clone()))
+        .and(with_networks(network_infos.clone()))
+        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and_then(rss::forks_response);
+
+    let invalid_blocks_rss = warp::get()
+        .and(warp::path!("rss" / u32 / "invalid.xml"))
+        .and(with_caches(caches.clone()))
+        .and(with_networks(network_infos.clone()))
+        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and_then(rss::invalid_blocks_response);
+
+    let lagging_nodes_rss = warp::get()
+        .and(warp::path!("rss" / u32 / "lagging.xml"))
+        .and(with_caches(caches.clone()))
+        .and(with_networks(network_infos.clone()))
+        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and_then(rss::lagging_nodes_response);
+
+    let unreachable_nodes_rss = warp::get()
+        .and(warp::path!("rss" / u32 / "unreachable.xml"))
+        .and(with_caches(caches.clone()))
+        .and(with_networks(network_infos.clone()))
+        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and_then(rss::unreachable_nodes_response);
+
+    let networks_json = warp::get()
+        .and(warp::path!("api" / "networks.json"))
+        .and(with_networks(network_infos.to_vec()))
+        .and_then(networks_response);
+
+    let change_sse = warp::path!("api" / "changes")
+        .and(warp::get())
+        .map(move || {
+            let changes_tx = cache_changed_tx_warp.subscribe();
+            let broadcast_stream = BroadcastStream::new(changes_tx);
+            let event_stream = broadcast_stream.map(move |d| match d {
+                Ok(d) => data_changed_sse(d),
+                Err(e) => {
+                    error!("Could not SSE notify about tip changed event: {}", e);
+                    data_changed_sse(u32::MAX)
+                }
+            });
+            let stream = warp::sse::keep_alive().stream(event_stream);
+            warp::sse::reply(stream)
+        });
+
+    www_dir
+        .or(index_html)
+        .or(fullscreen_html)
+        .or(data_json)
+        .or(stale_json)
+        .or(block_hex)
+        .or(block_bin)
+        .or(info_json)
+        .or(networks_json)
+        .or(change_sse)
+        .or(forks_rss)
+        .or(lagging_nodes_rss)
+        .or(unreachable_nodes_rss)
+        .or(invalid_blocks_rss)
+}
 
 pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
     Ok(warp::reply::json(&InfoJsonResponse { footer }))
@@ -212,10 +326,10 @@ pub fn with_config_networks(
 
 #[cfg(test)]
 mod tests {
-    use super::{block_response, stale_blocks_response, with_caches, with_config_networks};
-    use crate::config::{BoxedSyncSendNode, Network, PoolIdentification};
+    use super::build_routes;
+    use crate::config::{BoxedSyncSendNode, Config, Network, PoolIdentification};
     use crate::node::{BitcoinCoreNode, NodeInfo};
-    use crate::types::{Cache, Caches, StaleBlockJson};
+    use crate::types::{Cache, Caches, NetworkJson, StaleBlockJson};
     use corepc_client::bitcoin::consensus::deserialize;
     use corepc_client::bitcoin::{Block, BlockHash};
     use corepc_client::client_sync::Auth;
@@ -290,10 +404,7 @@ mod tests {
                 },
             ],
         );
-        let route = warp::get()
-            .and(warp::path!("api" / u32 / "stale.json"))
-            .and(with_caches(caches))
-            .and_then(stale_blocks_response);
+        let route = routes(caches, vec![make_network(0, vec![])]);
 
         let resp = warp::test::request()
             .path("/api/0/stale.json")
@@ -319,10 +430,7 @@ mod tests {
                 header: "00".repeat(80),
             }],
         );
-        let route = warp::get()
-            .and(warp::path!("api" / u32 / "stale.json"))
-            .and(with_caches(caches))
-            .and_then(stale_blocks_response);
+        let route = routes(caches, vec![make_network(0, vec![])]);
 
         let resp = warp::test::request()
             .path("/api/99/stale.json")
@@ -346,31 +454,33 @@ mod tests {
         )
     }
 
-    fn block_hex_route(
-        caches: Caches,
-        networks: Vec<Network>,
-    ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
-        warp::get()
-            .and(warp::path!("api" / u32 / "block" / String / "hex"))
-            .and(with_caches(caches))
-            .and(with_config_networks(networks))
-            .and_then(|id, hash, caches, nets| block_response(id, hash, true, caches, nets))
+    fn test_config(networks: Vec<Network>) -> Config {
+        Config {
+            database_path: std::path::PathBuf::new(),
+            www_path: std::path::PathBuf::new(),
+            query_interval: std::time::Duration::from_secs(1),
+            address: "127.0.0.1:0".parse().unwrap(),
+            networks,
+            footer_html: String::new(),
+            rss_base_url: String::new(),
+        }
     }
 
-    fn block_bin_route(
+    // Builds the real application routes (via `build_routes`) so tests exercise
+    // the same route wiring the server uses in production.
+    fn routes(
         caches: Caches,
         networks: Vec<Network>,
-    ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
-        warp::get()
-            .and(warp::path!("api" / u32 / "block" / String / "bin"))
-            .and(with_caches(caches))
-            .and(with_config_networks(networks))
-            .and_then(|id, hash, caches, nets| block_response(id, hash, false, caches, nets))
+    ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+        let network_infos: Vec<NetworkJson> = networks.iter().map(NetworkJson::new).collect();
+        let config = test_config(networks);
+        let (cache_changed_tx, _rx) = tokio::sync::broadcast::channel(16);
+        build_routes(&network_infos, &config, &caches, cache_changed_tx)
     }
 
     #[tokio::test]
     async fn block_invalid_hash_returns_400() {
-        let route = block_hex_route(
+        let route = routes(
             caches_with_stale(0, vec![]),
             vec![make_network(0, vec![broken_core_node(0)])],
         );
@@ -384,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn block_unknown_network_returns_404() {
         let hash = "0".repeat(64);
-        let route = block_hex_route(
+        let route = routes(
             caches_with_stale_hash(0, &hash),
             vec![make_network(0, vec![broken_core_node(0)])],
         );
@@ -398,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn block_non_stale_hash_returns_404() {
         // The network exists, but the requested block isn't a known stale block.
-        let route = block_hex_route(
+        let route = routes(
             caches_with_stale(0, vec![]),
             vec![make_network(0, vec![broken_core_node(0)])],
         );
@@ -415,7 +525,7 @@ mod tests {
         // The block is a known stale block, so we proceed to (unsuccessfully)
         // query the nodes.
         let hash = "0".repeat(64);
-        let route = block_hex_route(
+        let route = routes(
             caches_with_stale_hash(0, &hash),
             vec![make_network(0, vec![broken_core_node(0)])],
         );
@@ -460,11 +570,12 @@ mod tests {
         // Mark the block as stale so the endpoint serves it.
         let caches = caches_with_stale_hash(0, &hash.to_string());
 
+        let route = routes(caches, vec![network]);
+
         // hex endpoint
-        let hex_route = block_hex_route(caches.clone(), vec![network.clone()]);
         let resp = warp::test::request()
             .path(&format!("/api/0/block/{}/hex", hash))
-            .reply(&hex_route)
+            .reply(&route)
             .await;
         assert_eq!(resp.status(), 200);
         let hex = std::str::from_utf8(resp.body()).expect("hex body should be utf8");
@@ -473,10 +584,9 @@ mod tests {
         assert_eq!(block.block_hash(), hash);
 
         // bin endpoint
-        let bin_route = block_bin_route(caches, vec![network]);
         let resp = warp::test::request()
             .path(&format!("/api/0/block/{}/bin", hash))
-            .reply(&bin_route)
+            .reply(&route)
             .await;
         assert_eq!(resp.status(), 200);
         let block: Block = deserialize(resp.body()).expect("should deserialize to a block");
@@ -497,7 +607,7 @@ mod tests {
         // A broken node comes first; the handler must fall through to the good one.
         let network = make_network(0, vec![broken_core_node(0), good.clone()]);
         let caches = caches_with_stale_hash(0, &hash.to_string());
-        let route = block_hex_route(caches, vec![network]);
+        let route = routes(caches, vec![network]);
 
         let resp = warp::test::request()
             .path(&format!("/api/0/block/{}/hex", hash))
@@ -524,7 +634,7 @@ mod tests {
         let caches = caches_with_stale_hash(0, &hash.to_string());
 
         // First fetch via a working node populates the cache.
-        let route = block_hex_route(caches.clone(), vec![make_network(0, vec![good.clone()])]);
+        let route = routes(caches.clone(), vec![make_network(0, vec![good.clone()])]);
         let resp = warp::test::request()
             .path(&format!("/api/0/block/{}/hex", hash))
             .reply(&route)
@@ -548,7 +658,7 @@ mod tests {
 
         // A second request whose only node is broken still succeeds: it is served
         // from the cache and the node is never consulted.
-        let route2 = block_bin_route(
+        let route2 = routes(
             caches.clone(),
             vec![make_network(0, vec![broken_core_node(1)])],
         );
@@ -566,7 +676,7 @@ mod tests {
         let hash = "0".repeat(64);
         let block_hash = BlockHash::from_str(&hash).unwrap();
         let caches = caches_with_stale_hash(0, &hash);
-        let route = block_hex_route(
+        let route = routes(
             caches.clone(),
             vec![make_network(0, vec![broken_core_node(0)])],
         );
