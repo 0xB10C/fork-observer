@@ -167,6 +167,85 @@ text.block-text {
  font-size: 11px;
 }
 
+/* "being mined" blocks (from the stratum jobs feed): a solid block whose whole cube
+   (front + both 3D faces + edges) and its incoming link pulse in unison toward the
+   accent colour to read as "in progress". Colours (not opacity) are animated so the
+   block stays opaque and the dashed link never shows through it. All parts share the
+   same duration so the pulse looks like one motion. */
+.block.being-mined rect.block-background {
+ animation: mining-pulse-front 2.4s ease-in-out infinite;
+}
+
+.block-back.being-mined polygon.block-face-top {
+ animation: mining-pulse-top 2.4s ease-in-out infinite;
+}
+
+.block-back.being-mined polygon.block-face-side {
+ animation: mining-pulse-side 2.4s ease-in-out infinite;
+}
+
+.block-back.being-mined path.block-edges {
+ animation: mining-pulse-stroke 2.4s ease-in-out infinite;
+}
+
+path.link.link-block-block.being-mined {
+ stroke-opacity: 0.6;
+ animation: mining-pulse-link 2.4s ease-in-out infinite;
+}
+
+@keyframes mining-pulse-front {
+ 0%, 100% { fill: var(--surface-bg); }
+ 50% { fill: color-mix(in srgb, var(--accent) 32%, var(--surface-bg)); }
+}
+
+@keyframes mining-pulse-top {
+ 0%, 100% { fill: var(--block-top); }
+ 50% { fill: color-mix(in srgb, var(--accent) 45%, var(--block-top)); }
+}
+
+@keyframes mining-pulse-side {
+ 0%, 100% { fill: var(--block-side); }
+ 50% { fill: color-mix(in srgb, var(--accent) 45%, var(--block-side)); }
+}
+
+@keyframes mining-pulse-stroke {
+ 0%, 100% { stroke: var(--block-stroke); }
+ 50% { stroke: var(--accent); }
+}
+
+@keyframes mining-pulse-link {
+ 0%, 100% { stroke: var(--block-to-block-link-color); }
+ 50% { stroke: var(--accent); }
+}
+
+/* "being mined" status tag above a ghost block, styled like the tip-status boxes */
+.mining-tag-bg {
+ fill: lightgray;
+}
+
+.mining-tag-text {
+ fill: #1a1a1a;
+ font-size: 8px;
+}
+
+/* force-positioned pool-name labels around a being-mined block */
+.mining-pool-link {
+ stroke: var(--block-stroke);
+ stroke-width: 1px;
+ opacity: 0.5;
+}
+
+.mining-pool-bg {
+ fill: var(--surface-bg);
+ stroke: var(--block-stroke);
+ stroke-width: 0.5px;
+}
+
+.mining-pool-text {
+ fill: var(--block-miner-color);
+ font-size: 8px;
+}
+
 text.block-miner {
  fill: var(--block-miner-color);
  text-anchor: middle;
