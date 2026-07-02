@@ -93,6 +93,17 @@ pub fn build_routes(
         .and(with_networks(network_infos.to_vec()))
         .and_then(networks_response);
 
+    // Friendly network URLs: `/testnet4` redirects to `/?network=testnet4`,
+    // which the frontend then resolves. Unknown slugs are rejected so they fall
+    // through to a 404.
+    let slug_redirect = warp::get()
+        .and(warp::path::param::<String>())
+        .and(warp::path::end())
+        .and(with_slugs(
+            network_infos.iter().map(|n| n.slug.clone()).collect(),
+        ))
+        .and_then(slug_redirect_response);
+
     let change_sse = warp::path!("api" / "changes")
         .and(warp::get())
         .map(move || {
@@ -123,6 +134,7 @@ pub fn build_routes(
         .or(lagging_nodes_rss)
         .or(unreachable_nodes_rss)
         .or(invalid_blocks_rss)
+        .or(slug_redirect)
 }
 
 pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
@@ -290,6 +302,29 @@ fn block_not_available(block_hash: BlockHash) -> warp::http::Response<Vec<u8>> {
         .unwrap()
 }
 
+/// Redirects a friendly network URL (`/<slug>`) to the query-parameter form the
+/// frontend understands (`?network=<slug>`). Unknown slugs are rejected so warp
+/// continues matching and eventually returns a 404.
+///
+/// The `Location` is a relative reference (`./?network=<slug>`) so it resolves
+/// against the request's directory. This keeps the redirect correct both when
+/// the app is served from the site root and when it is mounted under a subpath
+/// (e.g. `example.com/forks/`), matching the relative URLs the frontend uses.
+pub async fn slug_redirect_response(
+    slug: String,
+    slugs: Vec<String>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    if slugs.iter().any(|s| *s == slug) {
+        Ok(warp::http::Response::builder()
+            .status(warp::http::StatusCode::FOUND)
+            .header("location", format!("./?network={}", slug))
+            .body(Vec::new())
+            .unwrap())
+    } else {
+        Err(warp::reject::not_found())
+    }
+}
+
 pub async fn networks_response(
     network_infos: Vec<NetworkJson>,
 ) -> Result<impl warp::Reply, Infallible> {
@@ -322,6 +357,12 @@ pub fn with_config_networks(
     networks: Vec<Network>,
 ) -> impl Filter<Extract = (Vec<Network>,), Error = Infallible> + Clone {
     warp::any().map(move || networks.clone())
+}
+
+pub fn with_slugs(
+    slugs: Vec<String>,
+) -> impl Filter<Extract = (Vec<String>,), Error = Infallible> + Clone {
+    warp::any().map(move || slugs.clone())
 }
 
 #[cfg(test)]
@@ -360,6 +401,7 @@ mod tests {
             id,
             description: String::new(),
             name: format!("net{}", id),
+            slug: format!("net{}", id),
             min_fork_height: 0,
             max_interesting_heights: 100,
             nodes,
@@ -476,6 +518,37 @@ mod tests {
         let config = test_config(networks);
         let (cache_changed_tx, _rx) = tokio::sync::broadcast::channel(16);
         build_routes(&network_infos, &config, &caches, cache_changed_tx)
+    }
+
+    #[tokio::test]
+    async fn known_slug_redirects_to_query_param() {
+        // make_network(0, ..) has slug "net0".
+        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let resp = warp::test::request().path("/net0").reply(&route).await;
+        assert_eq!(resp.status(), 302);
+        assert_eq!(resp.headers().get("location").unwrap(), "./?network=net0");
+    }
+
+    #[tokio::test]
+    async fn unknown_slug_returns_404() {
+        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let resp = warp::test::request()
+            .path("/does-not-exist")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn networks_json_exposes_slug() {
+        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let resp = warp::test::request()
+            .path("/api/networks.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(v["networks"][0]["slug"], "net0");
     }
 
     #[tokio::test]
