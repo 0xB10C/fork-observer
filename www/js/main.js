@@ -61,6 +61,12 @@ function update_network() {
   rssInvalidBlocks.node().href = `rss/${current_network.id}/invalid.xml`
   rssLaggingNodes.node().href = `rss/${current_network.id}/lagging.xml`
   rssUnreachableNodes.node().href = `rss/${current_network.id}/unreachable.xml`
+
+  // Keep the URL in sync with the selected network, using the friendly slug, so
+  // it can be bookmarked and shared (e.g. ?network=testnet4).
+  let url = new URL(window.location)
+  url.searchParams.set(SEARCH_PARAM_NETWORK, current_network.slug)
+  window.history.replaceState({}, "", url)
 }
 
 function set_initial_network() {
@@ -69,9 +75,12 @@ function set_initial_network() {
   let searchParams = new URLSearchParams(url.search);
   let searchParamNetwork = searchParams.get(SEARCH_PARAM_NETWORK)
 
-  if (searchParamNetwork != null && state_networks.filter(x => x.id == searchParamNetwork).length > 0) {
+  // Match the URL parameter against the network slug or, for backwards
+  // compatibility, the numeric network id.
+  let matched = state_networks.find(x => x.slug == searchParamNetwork || x.id == searchParamNetwork)
+  if (searchParamNetwork != null && matched != undefined) {
     console.debug("Setting network to", searchParamNetwork, "based on the URL search parameter", SEARCH_PARAM_NETWORK)
-    state_selected_network_id = searchParamNetwork
+    state_selected_network_id = matched.id
   } else {
     console.debug("Setting network to first network:", state_networks[0].id);
     state_selected_network_id = state_networks[0].id

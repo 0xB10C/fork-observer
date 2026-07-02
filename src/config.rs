@@ -73,6 +73,10 @@ struct TomlNetwork {
     id: u32,
     name: String,
     description: String,
+    /// An optional URL-friendly identifier for the network (e.g. `testnet4`).
+    /// When omitted it is derived from the name. Used for friendly URLs like
+    /// `/testnet4` and `?network=testnet4`.
+    slug: Option<String>,
     min_fork_height: u64,
     max_interesting_heights: usize,
     nodes: Vec<TomlNode>,
@@ -84,6 +88,7 @@ pub struct Network {
     pub id: u32,
     pub description: String,
     pub name: String,
+    pub slug: String,
     pub min_fork_height: u64,
     pub max_interesting_heights: usize,
     pub nodes: Vec<BoxedSyncSendNode>,
@@ -204,6 +209,7 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
 
     let mut networks: Vec<Network> = vec![];
     let mut network_ids: Vec<u32> = vec![];
+    let mut network_slugs: Vec<String> = vec![];
     for toml_network in toml_config.networks.iter() {
         let mut nodes: Vec<BoxedSyncSendNode> = vec![];
         let mut node_ids: Vec<u32> = vec![];
@@ -230,16 +236,23 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
         }
         match parse_toml_network(toml_network, nodes) {
             Ok(network) => {
-                if !network_ids.contains(&network.id) {
-                    network_ids.push(network.id);
-                    networks.push(network);
-                } else {
+                if network_ids.contains(&network.id) {
                     error!(
                         "Duplicate network id {}: The network {} could not be loaded.",
                         network.id, network.name
                     );
                     return Err(ConfigError::DuplicateNetworkId);
                 }
+                if network_slugs.contains(&network.slug) {
+                    error!(
+                        "Duplicate network slug '{}': The network {} could not be loaded.",
+                        network.slug, network.name
+                    );
+                    return Err(ConfigError::DuplicateNetworkSlug);
+                }
+                network_ids.push(network.id);
+                network_slugs.push(network.slug.clone());
+                networks.push(network);
             }
             Err(e) => {
                 error!(
@@ -270,15 +283,44 @@ fn parse_toml_network(
     toml_network: &TomlNetwork,
     nodes: Vec<BoxedSyncSendNode>,
 ) -> Result<Network, ConfigError> {
+    // Use the configured slug if present, otherwise derive one from the name.
+    // Either way we slugify to guarantee a URL-safe result. As a last resort
+    // (e.g. an empty or purely-symbolic name) we fall back to the network id.
+    let mut slug = slugify(toml_network.slug.as_deref().unwrap_or(&toml_network.name));
+    if slug.is_empty() {
+        slug = toml_network.id.to_string();
+    }
+
     Ok(Network {
         id: toml_network.id,
         name: toml_network.name.clone(),
+        slug,
         description: toml_network.description.clone(),
         min_fork_height: toml_network.min_fork_height,
         max_interesting_heights: toml_network.max_interesting_heights,
         nodes,
         pool_identification: toml_network.pool_identification.clone().unwrap_or_default(),
     })
+}
+
+/// Turns an arbitrary string into a URL-friendly slug: ASCII alphanumerics are
+/// lowercased and any run of other characters becomes a single `-`. Leading and
+/// trailing dashes are trimmed (e.g. `"Testnet 4!"` becomes `"testnet-4"`).
+fn slugify(s: &str) -> String {
+    let mut slug = String::new();
+    let mut pending_dash = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_dash = false;
+            slug.push(c.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    slug
 }
 
 /// Ensures the host carries a URL scheme. For backwards compatibility we default
@@ -415,6 +457,132 @@ mod tests {
         )
         .expect("node with use_waitfornewblock should parse");
         assert_eq!(node.use_waitfornewblock, Some(false));
+    }
+
+    #[test]
+    fn slugify_test() {
+        assert_eq!(slugify("Testnet4"), "testnet4");
+        assert_eq!(slugify("Mainnet"), "mainnet");
+        assert_eq!(slugify("Testnet 4!"), "testnet-4");
+        assert_eq!(slugify("  Signet  "), "signet");
+        assert_eq!(slugify("a__b--c"), "a-b-c");
+        assert_eq!(slugify("!!!"), "");
+    }
+
+    #[test]
+    fn slug_derived_from_name_when_absent() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = "Testnet 4"
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        )
+        .expect("config should parse");
+        assert_eq!(config.networks[0].slug, "testnet-4");
+    }
+
+    #[test]
+    fn explicit_slug_is_used() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = "Testnet 4"
+            slug = "tn4"
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        )
+        .expect("config should parse");
+        assert_eq!(config.networks[0].slug, "tn4");
+    }
+
+    #[test]
+    fn error_on_duplicate_network_slug_test() {
+        // Two different names that slugify to the same slug.
+        match parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = "Testnet 4"
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+            [[networks]]
+            id = 2
+            name = "testnet-4"
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node B"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        ) {
+            Err(ConfigError::DuplicateNetworkSlug) => {
+                // test OK, as we expect this to error
+            }
+            _ => panic!("expected DuplicateNetworkSlug error"),
+        }
     }
 
     #[test]

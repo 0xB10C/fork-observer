@@ -61,6 +61,7 @@ impl HeaderInfo {
 pub struct NetworkJson {
     pub id: u32,
     pub name: String,
+    pub slug: String,
     pub description: String,
 }
 
@@ -69,6 +70,7 @@ impl NetworkJson {
         NetworkJson {
             id: network.id,
             name: network.name.clone(),
+            slug: network.slug.clone(),
             description: network.description.clone(),
         }
     }
