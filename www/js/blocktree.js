@@ -631,6 +631,19 @@ function onBlockClick(c, d) {
     })
   }
 
+  // The full block can only be fetched (via the API) for stale blocks: those
+  // that are a tip on some node but not the active chain. The active tip and
+  // ghost "mining" blocks are not served, so we don't offer a link for them.
+  let is_stale = Array.isArray(d.data.data.status)
+    && !d.data.data.status.some(s => s.status == "active");
+  // The `download` attribute renames the fetched file to `<height>-<hash>.<ext>`.
+  let block_basename = `${d.data.data.height}-${d.data.data.hash}`;
+  let block_url = `api/${state_selected_network_id}/block/${d.data.data.hash}`;
+  let download = is_stale
+    ? `<a href="${block_url}/hex" download="${block_basename}.hex">hex</a> `
+      + `<a href="${block_url}/bin" download="${block_basename}.bin">binary</a></span></div>`
+    : "";
+
   let cardWrapper = cardHolder.append("foreignObject")
     .attr("height", "20")
     .attr("width", "600")
@@ -661,6 +674,7 @@ function onBlockClick(c, d) {
                   <span class="col-2">bits</span><span class="col-4 font-monospace">0x${d.data.data.bits.toString(16)}</span>
                   <span class="col-2">difficulty</span><span class="col-4 font-monospace">${d.data.data.difficulty_int}</span>
                   ${ d.data.data.miner != "" ? '<span class="col-2">miner</span><span class="col-4 font-monospace">' + d.data.data.miner + '</span>' : '' }
+                  ${ is_stale ? '<span class="col-2">download</span><span class="col-4">' + download + '</span>' : "" }
                 </div>
                 <div class="row"><span class="col">${status_text}</span></div>
               </div>
