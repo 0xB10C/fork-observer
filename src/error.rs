@@ -124,6 +124,7 @@ pub enum ConfigError {
     UnknownImplementation,
     DuplicateNodeId,
     DuplicateNetworkId,
+    DuplicateNetworkSlug,
     TomlError(toml::de::Error),
     ReadError(io::Error),
     AddrError(AddrParseError),
@@ -139,6 +140,7 @@ impl fmt::Display for ConfigError {
             ConfigError::UnknownImplementation => write!(f, "the node implementation defined in the config is not supported"),
             ConfigError::DuplicateNodeId => write!(f, "a node id has been used multiple times in the same network"),
             ConfigError::DuplicateNetworkId => write!(f, "a network id has been used multiple times"),
+            ConfigError::DuplicateNetworkSlug => write!(f, "a network slug has been used multiple times (slugs must be unique; set an explicit `slug` for one of the networks)"),
             ConfigError::TomlError(e) => write!(f, "the TOML in the configuration file could not be parsed: {}", e),
             ConfigError::ReadError(e) => write!(f, "the configuration file could not be read: {}", e),
             ConfigError::AddrError(e) => write!(f, "the address could not be parsed: {}", e),
@@ -159,6 +161,7 @@ impl error::Error for ConfigError {
             ConfigError::AddrError(ref e) => Some(e),
             ConfigError::DuplicateNodeId => None,
             ConfigError::DuplicateNetworkId => None,
+            ConfigError::DuplicateNetworkSlug => None,
         }
     }
 }

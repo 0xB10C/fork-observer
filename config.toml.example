@@ -41,6 +41,10 @@ footer_html = """
 id = 1
 name = "Mainnet"
 description = "An example mainnet node."
+# Optional URL-friendly identifier used for friendly URLs like /mainnet and
+# ?network=mainnet. When omitted it is derived from the name (here: "mainnet").
+# Slugs must be unique across networks.
+# slug = "mainnet"
 min_fork_height = 0
 max_interesting_heights = 100
     [networks.pool_identification]
