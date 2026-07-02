@@ -4,7 +4,6 @@ use bitcoin_pool_identification::{default_data, PoolIdentification};
 use corepc_client::bitcoin::{BlockHash, Network};
 use corepc_client::client_sync::Error::JsonRpc;
 use env_logger::Env;
-use futures_util::StreamExt;
 use log::{debug, error, info, warn};
 use petgraph::graph::NodeIndex;
 use rusqlite::Connection;
@@ -16,8 +15,6 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task;
 use tokio::time::{interval, sleep, Duration};
-use tokio_stream::wrappers::BroadcastStream;
-use warp::Filter;
 
 mod api;
 mod config;
@@ -510,110 +507,7 @@ async fn main() -> Result<(), MainError> {
         });
     }
 
-    let www_dir = warp::get()
-        .and(warp::path("static"))
-        .and(warp::fs::dir(config.www_path.clone()));
-    let index_html = warp::get()
-        .and(warp::path::end())
-        .and(warp::fs::file(config.www_path.join("index.html")));
-    let fullscreen_html = warp::get()
-        .and(warp::path!("fullscreen"))
-        .and(warp::fs::file(config.www_path.join("fullscreen.html")));
-
-    let info_json = warp::get()
-        .and(warp::path!("api" / "info.json"))
-        .and(api::with_footer(config.footer_html.clone()))
-        .and_then(api::info_response);
-
-    let data_json = warp::get()
-        .and(warp::path!("api" / u32 / "data.json"))
-        .and(api::with_caches(caches.clone()))
-        .and_then(api::data_response);
-
-    let stale_json = warp::get()
-        .and(warp::path!("api" / u32 / "stale.json"))
-        .and(api::with_caches(caches.clone()))
-        .and_then(api::stale_blocks_response);
-
-    let block_hex = warp::get()
-        .and(warp::path!("api" / u32 / "block" / String / "hex"))
-        .and(api::with_caches(caches.clone()))
-        .and(api::with_config_networks(config.networks.clone()))
-        .and_then(|network_id, hash, caches, networks| {
-            api::block_response(network_id, hash, true, caches, networks)
-        });
-
-    let block_bin = warp::get()
-        .and(warp::path!("api" / u32 / "block" / String / "bin"))
-        .and(api::with_caches(caches.clone()))
-        .and(api::with_config_networks(config.networks.clone()))
-        .and_then(|network_id, hash, caches, networks| {
-            api::block_response(network_id, hash, false, caches, networks)
-        });
-
-    let forks_rss = warp::get()
-        .and(warp::path!("rss" / u32 / "forks.xml"))
-        .and(api::with_caches(caches.clone()))
-        .and(api::with_networks(network_infos.clone()))
-        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
-        .and_then(rss::forks_response);
-
-    let invalid_blocks_rss = warp::get()
-        .and(warp::path!("rss" / u32 / "invalid.xml"))
-        .and(api::with_caches(caches.clone()))
-        .and(api::with_networks(network_infos.clone()))
-        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
-        .and_then(rss::invalid_blocks_response);
-
-    let lagging_nodes_rss = warp::get()
-        .and(warp::path!("rss" / u32 / "lagging.xml"))
-        .and(api::with_caches(caches.clone()))
-        .and(api::with_networks(network_infos.clone()))
-        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
-        .and_then(rss::lagging_nodes_response);
-
-    let unreachable_nodes_rss = warp::get()
-        .and(warp::path!("rss" / u32 / "unreachable.xml"))
-        .and(api::with_caches(caches.clone()))
-        .and(api::with_networks(network_infos.clone()))
-        .and(rss::with_rss_base_url(config.rss_base_url.clone()))
-        .and_then(rss::unreachable_nodes_response);
-
-    let networks_json = warp::get()
-        .and(warp::path!("api" / "networks.json"))
-        .and(api::with_networks(network_infos))
-        .and_then(api::networks_response);
-
-    let change_sse = warp::path!("api" / "changes")
-        .and(warp::get())
-        .map(move || {
-            let changes_tx = cache_changed_tx_warp.subscribe();
-            let broadcast_stream = BroadcastStream::new(changes_tx);
-            let event_stream = broadcast_stream.map(move |d| match d {
-                Ok(d) => api::data_changed_sse(d),
-                Err(e) => {
-                    error!("Could not SSE notify about tip changed event: {}", e);
-                    api::data_changed_sse(u32::MAX)
-                }
-            });
-            let stream = warp::sse::keep_alive().stream(event_stream);
-            warp::sse::reply(stream)
-        });
-
-    let routes = www_dir
-        .or(index_html)
-        .or(fullscreen_html)
-        .or(data_json)
-        .or(stale_json)
-        .or(block_hex)
-        .or(block_bin)
-        .or(info_json)
-        .or(networks_json)
-        .or(change_sse)
-        .or(forks_rss)
-        .or(lagging_nodes_rss)
-        .or(unreachable_nodes_rss)
-        .or(invalid_blocks_rss);
+    let routes = api::build_routes(&network_infos, &config, &caches, cache_changed_tx_warp);
 
     warp::serve(routes).run(config.address).await;
     Ok(())
