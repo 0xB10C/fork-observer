@@ -37,6 +37,7 @@ fork-observer needs access to the following RPCs:
   version. This RPC could potentially expose private information about your
   nodes connectivity.
 - `getblock` (optional): Used for miner identification.
+- `waitfornewblock` (optional) for faster notifications about blocks
 
 
 A sample Bitcoin Core configuration could contain the following:
@@ -46,7 +47,7 @@ rpcauth=forkobserver:<password generated with rpcauth.py>
 
 rpcwhitelist=forkobserver:getchaintips,getblockheader,getblockhash,getblock
 # OR if you're fine with exposing getnetworkinfo
-# rpcwhitelist=forkobserver:getchaintips,getblockheader,getblockhash,getblock,getnetworkinfo
+# rpcwhitelist=forkobserver:getchaintips,getblockheader,getblockhash,getblock,getnetworkinfo,waitfornewblock
 
 # If you want to access *your* node's RPC interface via e.g. a wireguard tunnel
 # from some *other host*.
