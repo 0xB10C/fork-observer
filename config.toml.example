@@ -23,6 +23,23 @@ address = "127.0.0.1:2323"
 # Some RSS readers might complain.
 rss_base_url = "https://fork-observer.example.com/"
 
+# Optional: enables the activity log, a timestamped per-node log of e.g.
+# tip changes, reorgs, and reachability changes. Nodes opt in individually
+# with `activity_log = true`. Recent events are served via
+# /api/<network_id>/activity.json.
+# [activity]
+# Path of the activity log SQLite database (separate from database_path).
+# Will be created if non-existing.
+# database_path = "./activity.sqlite"
+# Directory the retention task writes monthly archive files
+# (activity-archive-YYYY-MM.sqlite) to before purging old events from the
+# live database. Required if any retention is configured.
+# archive_directory = "./activity-archive"
+# Optional: events older than this many days are archived and then purged.
+# Networks can override this with `activity_retention_days`. If unset,
+# events are kept forever.
+# retention_days = 90
+
 # Custom footer for the site.
 footer_html = """
     <div class="my-2">
@@ -47,6 +64,8 @@ description = "An example mainnet node."
 # slug = "mainnet"
 min_fork_height = 0
 max_interesting_heights = 100
+# Optional: override [activity].retention_days for this network.
+# activity_retention_days = 30
     [networks.pool_identification]
     enable = true
     network = "Mainnet"
@@ -70,6 +89,9 @@ max_interesting_heights = 100
     # to false if `waitfornewblock` is not on the RPC whitelist, or if a reverse
     # proxy in front of the node kills long-held connections.
     # use_waitfornewblock = true
+    # Record this node's events in the activity log (requires the [activity]
+    # section). Defaults to false.
+    # activity_log = true
 
     [[networks.nodes]]
     id = 1

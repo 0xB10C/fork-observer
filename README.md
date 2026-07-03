@@ -108,3 +108,30 @@ regardless of `max_interesting_heights`.
 height = 1050000
 label = "Halving"
 ```
+
+## Activity log
+
+fork-observer can keep a timestamped, per-node activity log recording, for
+example, active tip changes, reorgs, newly appearing fork tips, invalid
+blocks, nodes becoming unreachable/reachable, version changes, and nodes
+lagging behind their peers. The log lives in its own SQLite database
+(separate from the headers database) and is enabled by adding an
+`[activity]` section to the configuration; nodes then opt in individually
+with `activity_log = true` (see `config.toml.example`).
+
+Recent events are served, newest first, via:
+
+```
+GET /api/<network_id>/activity.json?count=<n>&before=<id>
+```
+
+`count` defaults to 50 (capped at 250). Requests without `before` are served
+from an in-memory cache of recent events; passing the smallest `id` of the
+previous response as `before` paginates into the database.
+
+With `retention_days` (globally, or per network via
+`activity_retention_days`) configured, events older than the retention are
+periodically moved into monthly `activity-archive-YYYY-MM.sqlite` files in
+`archive_directory` and purged from the live database. The archive files use
+the same schema as the live database, so archived events remain queryable
+with regular SQLite tooling.
