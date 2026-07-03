@@ -4,8 +4,9 @@ use crate::backend::{
 use crate::error::ConfigError;
 use corepc_client::bitcoin::Network as BitcoinNetwork;
 use corepc_client::client_sync::Auth;
-use log::{error, info};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::hash::Hash;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -51,6 +52,30 @@ struct TomlConfig {
     query_interval: u64,
     networks: Vec<TomlNetwork>,
     footer_html: String,
+    activity: Option<TomlActivity>,
+}
+
+#[derive(Deserialize)]
+struct TomlActivity {
+    database_path: String,
+    archive_directory: Option<String>,
+    retention_days: Option<u64>,
+}
+
+/// Configuration of the activity log. The activity log is only enabled when
+/// the `[activity]` section is present in the configuration file.
+#[derive(Clone)]
+pub struct ActivityConfig {
+    /// Path of the activity SQLite database (separate from the headers
+    /// database).
+    pub database_path: PathBuf,
+    /// Directory the retention task writes monthly archive files to.
+    /// Required when a retention is configured.
+    pub archive_directory: Option<PathBuf>,
+    /// Events older than this many days are archived and purged. Networks
+    /// can override this with `activity_retention_days`. Unset means events
+    /// are kept forever.
+    pub retention_days: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -62,6 +87,7 @@ pub struct Config {
     pub networks: Vec<Network>,
     pub footer_html: String,
     pub rss_base_url: String,
+    pub activity: Option<ActivityConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -93,6 +119,7 @@ struct TomlNetwork {
     forkobservers: Option<Vec<TomlRemoteForkObserver>>,
     pool_identification: Option<PoolIdentification>,
     countdown: Option<Countdown>,
+    activity_retention_days: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -107,6 +134,11 @@ pub struct Network {
     pub remote_forkobservers: Vec<RemoteForkObserver>,
     pub pool_identification: PoolIdentification,
     pub countdown: Option<Countdown>,
+    /// Per-network override of `[activity].retention_days`.
+    pub activity_retention_days: Option<u64>,
+    /// The ids of this network's nodes that opted into activity logging
+    /// (`activity_log = true`).
+    pub activity_log_node_ids: BTreeSet<u32>,
 }
 
 /// Another fork-observer instance used as a data source: its header and node
@@ -160,6 +192,7 @@ struct TomlNode {
     use_rest: Option<bool>,
     use_waitfornewblock: Option<bool>,
     implementation: Option<String>,
+    activity_log: Option<bool>,
 }
 
 impl fmt::Display for TomlNode {
@@ -263,7 +296,19 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
     for toml_network in toml_config.networks.iter() {
         let mut nodes: Vec<BoxedSyncSendNode> = vec![];
         let mut node_ids: Vec<u32> = vec![];
+        let mut activity_log_node_ids: BTreeSet<u32> = BTreeSet::new();
         for toml_node in toml_network.nodes.iter() {
+            if toml_node.activity_log.unwrap_or(false) {
+                if toml_config.activity.is_some() {
+                    activity_log_node_ids.insert(toml_node.id);
+                } else {
+                    warn!(
+                        "node '{}' (id={}) on network '{}' sets activity_log = true, but there \
+                         is no [activity] section in the configuration: activity logging is off",
+                        toml_node.name, toml_node.id, toml_network.name
+                    );
+                }
+            }
             match parse_toml_node(toml_node) {
                 Ok(node) => {
                     if !node_ids.contains(&node.info().id) {
@@ -284,7 +329,7 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
                 }
             }
         }
-        match parse_toml_network(toml_network, nodes) {
+        match parse_toml_network(toml_network, nodes, activity_log_node_ids) {
             Ok(network) => {
                 if network_ids.contains(&network.id) {
                     error!(
@@ -318,6 +363,25 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
         return Err(ConfigError::NoNetworks);
     }
 
+    let activity = match toml_config.activity {
+        Some(toml_activity) => {
+            let activity = ActivityConfig {
+                database_path: PathBuf::from(toml_activity.database_path),
+                archive_directory: toml_activity.archive_directory.map(PathBuf::from),
+                retention_days: toml_activity.retention_days,
+            };
+            // Archive-then-purge: a retention without a place to archive to
+            // would mean deleting events without keeping them.
+            let retention_configured = activity.retention_days.is_some()
+                || networks.iter().any(|n| n.activity_retention_days.is_some());
+            if retention_configured && activity.archive_directory.is_none() {
+                return Err(ConfigError::ActivityRetentionWithoutArchiveDir);
+            }
+            Some(activity)
+        }
+        None => None,
+    };
+
     Ok(Config {
         database_path: PathBuf::from(toml_config.database_path),
         www_path: PathBuf::from(toml_config.www_path),
@@ -326,12 +390,14 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
         footer_html: toml_config.footer_html.clone(),
         rss_base_url: toml_config.rss_base_url.unwrap_or_default().clone(),
         networks,
+        activity,
     })
 }
 
 fn parse_toml_network(
     toml_network: &TomlNetwork,
     nodes: Vec<BoxedSyncSendNode>,
+    activity_log_node_ids: BTreeSet<u32>,
 ) -> Result<Network, ConfigError> {
     // Use the configured slug if present, otherwise derive one from the name.
     // Either way we slugify to guarantee a URL-safe result. As a last resort
@@ -373,6 +439,8 @@ fn parse_toml_network(
         remote_forkobservers,
         pool_identification: toml_network.pool_identification.clone().unwrap_or_default(),
         countdown: toml_network.countdown.clone(),
+        activity_retention_days: toml_network.activity_retention_days,
+        activity_log_node_ids,
     })
 }
 
@@ -762,6 +830,136 @@ mod tests {
                 // test OK, as we expect this to error
             }
             _ => panic!("expected DuplicateNetworkSlug error"),
+        }
+    }
+
+    #[test]
+    fn activity_config_parsing() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [activity]
+            database_path = "./activity.sqlite"
+            archive_directory = "./activity-archive"
+            retention_days = 90
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+            activity_retention_days = 30
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_user = ""
+                rpc_password = ""
+                activity_log = true
+
+                [[networks.nodes]]
+                id = 1
+                name = "Node B"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        )
+        .expect("the activity configuration should parse");
+
+        let activity = config.activity.expect("activity config should be set");
+        assert_eq!(activity.database_path, PathBuf::from("./activity.sqlite"));
+        assert_eq!(
+            activity.archive_directory,
+            Some(PathBuf::from("./activity-archive"))
+        );
+        assert_eq!(activity.retention_days, Some(90));
+        assert_eq!(config.networks[0].activity_retention_days, Some(30));
+        // Only the opted-in node is in the set.
+        assert!(config.networks[0].activity_log_node_ids.contains(&0));
+        assert!(!config.networks[0].activity_log_node_ids.contains(&1));
+    }
+
+    #[test]
+    fn activity_disabled_without_section() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_user = ""
+                rpc_password = ""
+                activity_log = true
+        "#,
+        )
+        .expect("a config without [activity] should parse");
+
+        // Without an [activity] section the feature is off, even when nodes
+        // opted in (a warning is logged).
+        assert!(config.activity.is_none());
+        assert!(config.networks[0].activity_log_node_ids.is_empty());
+    }
+
+    #[test]
+    fn error_on_activity_retention_without_archive_dir() {
+        if let Err(ConfigError::ActivityRetentionWithoutArchiveDir) = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [activity]
+            database_path = "./activity.sqlite"
+            retention_days = 90
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        ) {
+            // test OK, as we expect this to error
+        } else {
+            panic!("Test did not error!");
         }
     }
 
