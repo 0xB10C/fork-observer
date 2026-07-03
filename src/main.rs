@@ -16,6 +16,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio::task;
 use tokio::time::{interval, sleep, Duration};
 
+mod activity;
 mod api;
 mod backend;
 mod config;
@@ -27,6 +28,7 @@ mod remote_forkobserver;
 mod rss;
 mod types;
 
+use crate::activity::{Activity, ActivityEvent, ActivityEventKind};
 use crate::config::BoxedSyncSendNode;
 use crate::error::{DbError, MainError};
 use types::{
@@ -39,7 +41,7 @@ const MINER_UNKNOWN: &str = "Unknown";
 const MAX_FORKS_IN_CACHE: usize = 50;
 const MAX_STALE_BLOCKS: usize = 50;
 
-async fn startup() -> Result<(config::Config, Db, Caches), MainError> {
+async fn startup() -> Result<(config::Config, Db, Caches, Option<Activity>), MainError> {
     let config: config::Config = match config::load_config() {
         Ok(config) => {
             info!("Configuration loaded");
@@ -78,7 +80,44 @@ async fn startup() -> Result<(config::Config, Db, Caches), MainError> {
             return Err(e.into());
         }
     };
-    Ok((config, db, caches))
+
+    // The activity log lives in its own database and is only enabled when
+    // the configuration has an [activity] section.
+    let activity: Option<Activity> = match &config.activity {
+        Some(activity_config) => {
+            let connection = match Connection::open(activity_config.database_path.clone()) {
+                Ok(connection) => {
+                    info!(
+                        "Opened activity database: {:?}",
+                        activity_config.database_path
+                    );
+                    connection
+                }
+                Err(e) => {
+                    error!(
+                        "Could not open the activity database {:?}: {}",
+                        activity_config.database_path, e
+                    );
+                    return Err(DbError::from(e).into());
+                }
+            };
+            let activity = Activity::new(connection);
+            match activity.setup().await {
+                Ok(_) => info!("Activity database setup successful"),
+                Err(e) => {
+                    error!(
+                        "Could not setup the activity database {:?}: {}",
+                        activity_config.database_path, e
+                    );
+                    return Err(e.into());
+                }
+            };
+            Some(activity)
+        }
+        None => None,
+    };
+
+    Ok((config, db, caches, activity))
 }
 
 async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Caches) {
@@ -127,13 +166,49 @@ async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Caches)
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-    let (config, db, caches) = startup().await?;
+    let (config, db, caches, activity) = startup().await?;
 
     // A channel to notify about changes via ServerSentEvents to clients.
     let (cache_changed_tx, _) = broadcast::channel(16);
     let cache_changed_tx_warp = cache_changed_tx.clone();
     let network_infos: Vec<NetworkJson> = config.networks.iter().map(NetworkJson::new).collect();
     let db_clone = db.clone();
+
+    // Activity log: preload the in-memory ring buffers with recent events,
+    // spawn the writer task the event generation sites send into, and (when
+    // a retention is configured) the archive-then-purge retention task.
+    let (activity_tx, activity_rx) = unbounded_channel::<ActivityEvent>();
+    if let Some(ref activity) = activity {
+        let network_ids: Vec<u32> = config.networks.iter().map(|n| n.id).collect();
+        if let Err(e) = activity.preload_cache(&network_ids).await {
+            warn!("Could not preload the activity event cache: {}", e);
+        }
+        task::spawn(activity::run_activity_writer(activity.clone(), activity_rx));
+
+        if let Some(ref activity_config) = config.activity {
+            let retentions: Vec<(u32, u64)> = config
+                .networks
+                .iter()
+                .filter_map(|network| {
+                    network
+                        .activity_retention_days
+                        .or(activity_config.retention_days)
+                        .map(|days| (network.id, days))
+                })
+                .collect();
+            if !retentions.is_empty() {
+                let archive_directory = activity_config
+                    .archive_directory
+                    .clone()
+                    .expect("the config parser rejects a retention without an archive_directory");
+                task::spawn(activity::run_retention(
+                    activity.clone(),
+                    archive_directory,
+                    retentions,
+                ));
+            }
+        }
+    }
 
     for network in config.networks.iter().cloned() {
         let network = network.clone();
@@ -162,6 +237,12 @@ async fn main() -> Result<(), MainError> {
 
         populate_cache(&network, &tree, &caches).await;
 
+        // Lagging/caught-up state of this network's nodes, shared by its node
+        // tasks: a stuck node can't observe itself falling behind, so lagging
+        // is (re-)evaluated whenever any node of the network updates its tips.
+        let lagging_state: Arc<Mutex<BTreeMap<u32, bool>>> = Arc::new(Mutex::new(BTreeMap::new()));
+        let network_logs_activity = activity.is_some() && !network.activity_log_node_ids.is_empty();
+
         for node in network.nodes.iter().cloned() {
             let network = network.clone();
             let query_interval = config.query_interval;
@@ -176,16 +257,31 @@ async fn main() -> Result<(), MainError> {
             let caches_clone = caches.clone();
             let cache_changed_tx_cloned = cache_changed_tx.clone();
             let pool_id_tx_clone = pool_id_tx.clone();
+            // For the node's own activity events (only when it opted in) and
+            // for network-wide lagging evaluation (when any node opted in).
+            let node_activity_tx =
+                if activity.is_some() && network.activity_log_node_ids.contains(&node.info().id) {
+                    Some(activity_tx.clone())
+                } else {
+                    None
+                };
+            let lagging_activity_tx = if network_logs_activity {
+                Some(activity_tx.clone())
+            } else {
+                None
+            };
+            let lagging_state = lagging_state.clone();
 
             let mut last_tips: Vec<ChainTip> = vec![];
             task::spawn(async move {
                 // Try to load the node version an update the cache with it.
+                let version = load_node_version(node.clone(), &network.name).await;
                 update_cache(
                     &caches_clone,
                     network.id,
                     CacheUpdate::NodeVersion {
                         node_id: node.info().id,
-                        version: load_node_version(node.clone(), &network.name).await,
+                        version,
                     },
                     &cache_changed_tx_cloned,
                 )
@@ -217,6 +313,14 @@ async fn main() -> Result<(), MainError> {
                     let mut tips = match node.tips().await {
                         Ok(tips) => {
                             if !is_node_reachable(&caches_clone, network.id, node.info().id).await {
+                                if let Some(ref activity_tx) = node_activity_tx {
+                                    send_activity(
+                                        activity_tx,
+                                        network.id,
+                                        node.info().id,
+                                        ActivityEventKind::NodeReachable {},
+                                    );
+                                }
                                 update_cache(
                                     &caches_clone,
                                     network.id,
@@ -239,6 +343,14 @@ async fn main() -> Result<(), MainError> {
                                 e
                             );
                             if is_node_reachable(&caches_clone, network.id, node.info().id).await {
+                                if let Some(ref activity_tx) = node_activity_tx {
+                                    send_activity(
+                                        activity_tx,
+                                        network.id,
+                                        node.info().id,
+                                        ActivityEventKind::NodeUnreachable {},
+                                    );
+                                }
                                 update_cache(
                                     &caches_clone,
                                     network.id,
@@ -288,7 +400,7 @@ async fn main() -> Result<(), MainError> {
                             }
                         }
 
-                        last_tips = tips.clone();
+                        let old_tips = std::mem::replace(&mut last_tips, tips.clone());
                         let db_write = db_write.clone();
                         // We want to avoid stripping the tree (strip_tree()) if it didn't change.
                         // Keeping tracking of changes:
@@ -311,6 +423,14 @@ async fn main() -> Result<(), MainError> {
                             }
                         }
 
+                        // Log tip activity after the new headers were inserted
+                        // into the tree, so reorg detection sees the new blocks.
+                        if let Some(ref activity_tx) = node_activity_tx {
+                            for kind in activity::tip_events(&old_tips, &tips, &tree_clone).await {
+                                send_activity(activity_tx, network.id, node.info().id, kind);
+                            }
+                        }
+
                         // Update node tips in cache
                         update_cache(
                             &caches_clone,
@@ -322,6 +442,21 @@ async fn main() -> Result<(), MainError> {
                             &cache_changed_tx_cloned,
                         )
                         .await;
+
+                        // With this node's tips updated in the cache, re-evaluate
+                        // which of the network's opted-in nodes are lagging.
+                        if let Some(ref activity_tx) = lagging_activity_tx {
+                            let heights = active_tip_heights(network.id, &caches_clone).await;
+                            let events = {
+                                let mut state = lagging_state.lock().await;
+                                activity::lagging_events(&heights, &mut state)
+                            };
+                            for (node_id, kind) in events {
+                                if network.activity_log_node_ids.contains(&node_id) {
+                                    send_activity(activity_tx, network.id, node_id, kind);
+                                }
+                            }
+                        }
 
                         if tree_changed {
                             update_header_tree_cache(
@@ -512,7 +647,13 @@ async fn main() -> Result<(), MainError> {
         });
     }
 
-    let routes = api::build_routes(&network_infos, &config, &caches, cache_changed_tx_warp);
+    let routes = api::build_routes(
+        &network_infos,
+        &config,
+        &caches,
+        cache_changed_tx_warp,
+        &activity,
+    );
 
     warp::serve(routes).run(config.address).await;
     Ok(())
@@ -655,6 +796,34 @@ impl fmt::Display for CacheUpdate {
             }
         }
     }
+}
+
+// Sends an activity event to the writer task. This only fails when the writer
+// is gone, in which case events are lost anyway - so just log it.
+fn send_activity(
+    activity_tx: &tokio::sync::mpsc::UnboundedSender<ActivityEvent>,
+    network_id: u32,
+    node_id: u32,
+    kind: ActivityEventKind,
+) {
+    if let Err(e) = activity_tx.send(ActivityEvent::new(network_id, node_id, kind)) {
+        warn!("Could not send an activity event into the channel: {}", e);
+    }
+}
+
+// The active tip height of each of a network's nodes, from the cached node
+// data. Nodes that haven't reported any tips yet are absent.
+async fn active_tip_heights(network_id: u32, caches: &Caches) -> BTreeMap<u32, u64> {
+    let locked_cache = caches.lock().await;
+    let mut heights: BTreeMap<u32, u64> = BTreeMap::new();
+    if let Some(network) = locked_cache.get(&network_id) {
+        for (node_id, node_data) in network.node_data.iter() {
+            if let Some(tip) = node_data.tips.iter().find(|t| t.status == "active") {
+                heights.insert(*node_id, tip.height);
+            }
+        }
+    }
+    heights
 }
 
 async fn is_node_reachable(caches: &Caches, network_id: u32, node_id: u32) -> bool {

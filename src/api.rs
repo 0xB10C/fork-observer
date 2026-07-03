@@ -1,3 +1,4 @@
+use crate::activity::{Activity, ActivityJsonResponse, ActivityQuery, EVENTS_PER_PAGE};
 use crate::config::{Config, Network};
 use crate::rss;
 use crate::types::{
@@ -18,6 +19,7 @@ pub fn build_routes(
     config: &Config,
     caches: &Caches,
     cache_changed_tx_warp: Sender<u32>,
+    activity: &Option<Activity>,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     let www_dir = warp::get()
         .and(warp::path("static"))
@@ -44,6 +46,12 @@ pub fn build_routes(
         .and(warp::path!("api" / u32 / "stale.json"))
         .and(with_caches(caches.clone()))
         .and_then(stale_blocks_response);
+
+    let activity_json = warp::get()
+        .and(warp::path!("api" / u32 / "activity.json"))
+        .and(warp::query::<ActivityQuery>())
+        .and(with_activity(activity.clone()))
+        .and_then(activity_response);
 
     let block_hex = warp::get()
         .and(warp::path!("api" / u32 / "block" / String / "hex"))
@@ -126,6 +134,7 @@ pub fn build_routes(
         .or(fullscreen_html)
         .or(data_json)
         .or(stale_json)
+        .or(activity_json)
         .or(block_hex)
         .or(block_bin)
         .or(info_json)
@@ -176,6 +185,40 @@ pub async fn stale_blocks_response(
         None => vec![],
     };
     Ok(warp::reply::json(&StaleBlocksJsonResponse { stale_blocks }))
+}
+
+/// Serves the [`EVENTS_PER_PAGE`] most recent activity log events of a
+/// network, newest first.
+///
+/// Without a `before` parameter the events come from the in-memory ring
+/// buffer; `before=<id>` paginates into the activity database. When the
+/// activity log is disabled or the network is unknown, an empty event list
+/// is returned (matching how `data.json` degrades).
+pub async fn activity_response(
+    network_id: u32,
+    query: ActivityQuery,
+    activity: Option<Activity>,
+) -> Result<impl warp::Reply, Infallible> {
+    let events = match activity {
+        Some(activity) => match query.before {
+            Some(before) => match activity
+                .events_before(network_id, before, EVENTS_PER_PAGE)
+                .await
+            {
+                Ok(events) => events,
+                Err(e) => {
+                    error!(
+                        "Could not query activity events before id {} for network {}: {}",
+                        before, network_id, e
+                    );
+                    vec![]
+                }
+            },
+            None => activity.recent_events(network_id, EVENTS_PER_PAGE).await,
+        },
+        None => vec![],
+    };
+    Ok(warp::reply::json(&ActivityJsonResponse { events }))
 }
 
 /// Serves a full block by its hash as hex (`as_hex = true`) or raw binary.
@@ -358,6 +401,12 @@ pub fn with_caches(caches: Caches) -> impl Filter<Extract = (Caches,), Error = I
     warp::any().map(move || caches.clone())
 }
 
+pub fn with_activity(
+    activity: Option<Activity>,
+) -> impl Filter<Extract = (Option<Activity>,), Error = Infallible> + Clone {
+    warp::any().map(move || activity.clone())
+}
+
 pub fn with_networks(
     networks: Vec<NetworkJson>,
 ) -> impl Filter<Extract = (Vec<NetworkJson>,), Error = Infallible> + Clone {
@@ -530,10 +579,24 @@ mod tests {
         caches: Caches,
         networks: Vec<Network>,
     ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+        routes_with_activity(caches, networks, None)
+    }
+
+    fn routes_with_activity(
+        caches: Caches,
+        networks: Vec<Network>,
+        activity: Option<crate::activity::Activity>,
+    ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
         let network_infos: Vec<NetworkJson> = networks.iter().map(NetworkJson::new).collect();
         let config = test_config(networks);
         let (cache_changed_tx, _rx) = tokio::sync::broadcast::channel(16);
-        build_routes(&network_infos, &config, &caches, cache_changed_tx)
+        build_routes(
+            &network_infos,
+            &config,
+            &caches,
+            cache_changed_tx,
+            &activity,
+        )
     }
 
     #[tokio::test]
@@ -653,6 +716,106 @@ mod tests {
             .reply(&route)
             .await;
         assert_eq!(resp.status(), 404);
+    }
+
+    // --- Activity API ---
+
+    use crate::activity::{Activity, ActivityEvent, ActivityEventKind, EVENTS_PER_PAGE};
+
+    async fn activity_with_events(network_id: u32, how_many: usize) -> Activity {
+        let activity = Activity::new(
+            rusqlite::Connection::open_in_memory().expect("in-memory db should open"),
+        );
+        activity.setup().await.expect("activity setup");
+        let events: Vec<ActivityEvent> = (0..how_many)
+            .map(|i| {
+                ActivityEvent::new(
+                    network_id,
+                    0,
+                    ActivityEventKind::ActiveTipChanged {
+                        old_hash: format!("{:02}", i),
+                        old_height: i as u64,
+                        new_hash: format!("{:02}", i + 1),
+                        new_height: i as u64 + 1,
+                    },
+                )
+            })
+            .collect();
+        crate::activity::write_events(&activity, &events)
+            .await
+            .expect("writing test events");
+        activity
+    }
+
+    #[tokio::test]
+    async fn activity_json_disabled_returns_empty() {
+        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let resp = warp::test::request()
+            .path("/api/0/activity.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(v["events"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn activity_json_recent_and_pagination() {
+        let activity = activity_with_events(0, 10).await;
+        let route = routes_with_activity(
+            caches_with_stale(0, vec![]),
+            vec![make_network(0, vec![])],
+            Some(activity),
+        );
+
+        // Recent events (from the ring buffer), newest first.
+        let resp = warp::test::request()
+            .path("/api/0/activity.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        let events = v["events"].as_array().unwrap();
+        assert_eq!(events.len(), 10);
+        assert_eq!(events[0]["kind"], "active-tip-changed");
+        assert_eq!(events[0]["details"]["new_height"], 10);
+        assert_eq!(events[2]["details"]["new_height"], 8);
+        let third_id = events[2]["id"].as_i64().unwrap();
+
+        // Paginate into the database with `before`.
+        let resp = warp::test::request()
+            .path(&format!("/api/0/activity.json?before={}", third_id))
+            .reply(&route)
+            .await;
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        let events = v["events"].as_array().unwrap();
+        assert_eq!(events.len(), 7);
+        assert_eq!(events[0]["details"]["new_height"], 7);
+
+        // An unknown network has no events.
+        let resp = warp::test::request()
+            .path("/api/99/activity.json")
+            .reply(&route)
+            .await;
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(v["events"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn activity_json_serves_a_fixed_page_size() {
+        let activity = activity_with_events(0, EVENTS_PER_PAGE + 10).await;
+        let route = routes_with_activity(
+            caches_with_stale(0, vec![]),
+            vec![make_network(0, vec![])],
+            Some(activity),
+        );
+
+        let resp = warp::test::request()
+            .path("/api/0/activity.json")
+            .reply(&route)
+            .await;
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(v["events"].as_array().unwrap().len(), EVENTS_PER_PAGE);
     }
 
     // --- Tests that spin up a real regtest bitcoind ---
