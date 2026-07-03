@@ -119,6 +119,13 @@ async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Caches)
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+
+    // Our dependency graph enables both rustls CryptoProviders (electrum-client
+    // pulls `ring`, minreq pulls `aws-lc-rs`), so rustls can't pick one
+    // automatically and would panic on the first TLS connection. Select ring
+    // explicitly. `install_default` errors if a provider is already installed,
+    // which is fine to ignore.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let (config, db, caches) = startup().await?;
 
     // A channel to notify about changes via ServerSentEvents to clients.

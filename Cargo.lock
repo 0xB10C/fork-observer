@@ -593,6 +593,7 @@ dependencies = [
  "minreq",
  "petgraph",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",

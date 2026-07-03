@@ -2,6 +2,11 @@
 name = "fork-observer"
 version = "0.1.0"
 edition = "2018"
+# Use the v2 feature resolver so build-dependency features aren't unified with
+# normal dependencies. Without this, minreq's `rustls/aws-lc-rs` leaks into
+# corepc-node's (ring-only) bitcoind download build script, leaving rustls with
+# two CryptoProviders enabled and panicking during the CI download.
+resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -26,12 +31,16 @@ base64 = "0.22.1"
 
 async-trait = "0.1.89"
 bitcoin-pool-identification = "0.3.7"
-# Use the `ring` rustls provider (not the default aws-lc-rs) so that the whole
-# dependency graph agrees on a single rustls CryptoProvider. corepc-node's
-# downloader (via bitreq) pulls `rustls/ring`; mixing it with aws-lc-rs makes
-# rustls unable to pick a provider and panics when downloading bitcoind in CI.
+# Use the `ring` rustls provider (not the default aws-lc-rs). corepc-node's
+# downloader (via bitreq) also pulls `rustls/ring`. minreq, however, pulls
+# `rustls/aws-lc-rs` and offers no way to select ring, so the normal dependency
+# graph ends up with both providers enabled. We resolve the ambiguity at runtime
+# by installing the ring provider in `main()` (see src/main.rs).
 electrum-client = { version = "0.24.0", default-features = false, features = ["proxy", "use-rustls-ring"] }
 corepc-client = { version = "0.16.0", features = ["client-sync"] }
+# Direct dependency only so we can install the ring CryptoProvider as the process
+# default; the `ring` feature is already enabled elsewhere in the graph.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
 corepc-node = { version = "0.12.0", features = ["29_0", "download"] }
