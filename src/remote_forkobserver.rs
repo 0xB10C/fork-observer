@@ -353,7 +353,7 @@ mod tests {
     use crate::types::{Cache, HeaderInfoJson, NetworkJson, NodeDataJson};
     use corepc_client::bitcoin::hashes::Hash;
     use rusqlite::Connection;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -634,6 +634,8 @@ mod tests {
             remote_forkobservers: vec![],
             countdown: None,
             pool_identification: PoolIdentification::default(),
+            activity_retention_days: None,
+            activity_log_node_ids: BTreeSet::new(),
         }
     }
 
