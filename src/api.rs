@@ -418,6 +418,8 @@ mod tests {
             nodes,
             pool_identification: PoolIdentification::default(),
             countdown: None,
+            activity_retention_days: None,
+            activity_log_node_ids: std::collections::BTreeSet::new(),
         }
     }
 
@@ -517,6 +519,7 @@ mod tests {
             networks,
             footer_html: String::new(),
             rss_base_url: String::new(),
+            activity: None,
         }
     }
 
