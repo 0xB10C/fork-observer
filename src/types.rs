@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::config::Network;
+use crate::config::{Countdown, Network};
 use crate::node::NodeInfo;
 
 use corepc_client::bitcoin::blockdata::block::Header;
@@ -132,6 +132,8 @@ pub struct InfoJsonResponse {
 pub struct DataJsonResponse {
     pub header_infos: Vec<HeaderInfoJson>,
     pub nodes: Vec<NodeDataJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub countdown: Option<Countdown>,
 }
 
 /// A stale block: a block that is not part of the active chain. This includes

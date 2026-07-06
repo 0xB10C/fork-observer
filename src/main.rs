@@ -82,7 +82,13 @@ async fn startup() -> Result<(config::Config, Db, Caches), MainError> {
 
 async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Caches) {
     let forks = headertree::recent_forks(&tree, MAX_FORKS_IN_CACHE).await;
-    let hij = headertree::strip_tree(&tree, network.max_interesting_heights, BTreeSet::new()).await;
+    let hij = headertree::strip_tree(
+        &tree,
+        network.max_interesting_heights,
+        BTreeSet::new(),
+        network.countdown.as_ref().map(|c| c.height),
+    )
+    .await;
     let stale_blocks = headertree::stale_blocks(&tree, MAX_STALE_BLOCKS).await;
     {
         let mut locked_caches = caches.lock().await;
@@ -325,6 +331,7 @@ async fn main() -> Result<(), MainError> {
                                 &tree_clone,
                                 network.max_interesting_heights,
                                 tip_heights,
+                                network.countdown.as_ref().map(|c| c.height),
                             )
                             .await;
                             let forks =
@@ -380,6 +387,10 @@ async fn main() -> Result<(), MainError> {
                         || interesting_heights.contains(&(h + 1))
                         || interesting_heights.contains(&(h + 2))
                         || interesting_heights.contains(&(max(h, 1) - 1))
+                        || network_clone
+                            .countdown
+                            .as_ref()
+                            .is_some_and(|c| h + 2 >= c.height && h <= c.height.saturating_add(2))
                 })
                 .map(|node| node.weight.clone())
             {

@@ -24,6 +24,11 @@ const orientations = {
     // where the tip block should land in the viewport on the initial draw: the chain
     // grows downward, so put the tip near the top to show less empty space.
     tip_anchor: (w, h) => [w/2, h*0.25],
+    // the along-chain axis is y (growing negative), so the countdown marker is a
+    // horizontal line at a fixed y spanning the cross axis (x).
+    countdown_along: (idx) => -idx * NODE_SIZE,
+    countdown_line: (along, cross_min, cross_max) => ({x1: cross_min, y1: along, x2: cross_max, y2: along}),
+    countdown_label_pos: (along, cross_min) => ({x: cross_min, y: along}),
   },
   "left-to-right": {
     x: (d, htoi) => htoi[d.data.data.height] * NODE_SIZE,
@@ -41,8 +46,17 @@ const orientations = {
     // where the tip block should land in the viewport on the initial draw: the chain
     // grows rightward, so put the tip near the right to show less empty space.
     tip_anchor: (w, h) => [w*0.75, h/2],
+    // the along-chain axis is x, so the countdown marker is a vertical line at a
+    // fixed x spanning the cross axis (y).
+    countdown_along: (idx) => idx * NODE_SIZE,
+    countdown_line: (along, cross_min, cross_max) => ({x1: along, y1: cross_min, x2: along, y2: cross_max}),
+    countdown_label_pos: (along, cross_min) => ({x: along, y: cross_min}),
   },
 };
+
+// A countdown marker is only drawn once the chain tip is within this many
+// blocks of the configured countdown height.
+const COUNTDOWN_MARKER_THRESHOLD = 10
 
 const status_to_color = {
   "active": "lime",
@@ -103,6 +117,12 @@ let connectorLayer = g
 let descLayer = g
     .append("g")
     .attr("id", "descriptions")
+
+// layer holding the countdown marker line + label, redrawn from scratch on every
+// draw() call (cheap: at most one line and one text).
+let countdownLayer = g
+    .append("g")
+    .attr("id", "countdown")
 
 function preprocess_data(data) {
   let header_infos = data.header_infos;
@@ -415,6 +435,8 @@ function draw() {
     offset_y = o.y(max_height_tip, htoi);
   }
 
+  draw_countdown(htoi, max_height, root_node)
+
   // stack, bottom to top: 3D depth faces, then the links over them, then the block
   // front faces (so links tuck behind the front face and look centered), then the
   // tip status markers
@@ -423,6 +445,7 @@ function draw() {
   g.selectAll(".text-blocks-not-shown").raise()
   blocks.raise()
   node_groups.raise()
+  countdownLayer.raise()
 
   // keep open descriptions (and their connectors) anchored to their block as the
   // layout shifts, and raise the overlay so the info boxes stay on top of everything
@@ -534,6 +557,11 @@ function isInteresting(node) {
     // the node has a status != "in-chain"
     return true
   }
+  if (state_data.countdown) {
+    if (node.data.height == state_data.countdown.height) {
+      return true
+    }
+  }
   return false
 }
 
@@ -550,6 +578,82 @@ function hidden_text_x(d, htoi) {
 }
 function hidden_text_y(d, htoi) {
   return o.y(d.target, htoi) - (o.y(d.target, htoi) - o.y(d.source, htoi)) / 2 + o.hidden_blocks_text.offset_y
+}
+
+// Draws (or clears) the countdown marker line + label in the tree, and the large
+// "N blocks until <label>" overlay. `root_node`'s cross-axis coordinate (d.x, the
+// tree layout's own x) is shared by both orientations, only its final x/y slot
+// differs - see the `orientations` config.
+function draw_countdown(htoi, max_height, root_node) {
+  const cd = state_data.countdown
+  const display = document.getElementById("countdown-display")
+
+  if (!cd) {
+    countdownLayer.selectAll("*").remove()
+    if (display) display.style.display = "none"
+    return
+  }
+
+  const blocks_left = cd.height - max_height
+
+  if (display) {
+    if (blocks_left > 0) {
+      const unit = blocks_left == 1 ? "block" : "blocks"
+      display.textContent = `${blocks_left} ${unit} until ${cd.label}`
+      display.style.display = ""
+    } else if (blocks_left == 0) {
+      display.textContent = `${cd.label} now`
+      display.style.display = ""
+    } else if (blocks_left < 0 && blocks_left > -10) {
+      const unit = blocks_left == -1 ? "block" : "blocks"
+      display.textContent = `${blocks_left * -1} ${unit} ago: ${cd.label}`
+      display.style.display = ""
+    } else {
+      display.style.display = "none"
+    }
+  }
+
+  // Only draw the marker once we're close to the target; once shown (including
+  // after the target height has been reached) it is never hidden again, since
+  // blocks_left stays <= 0 (and thus < the threshold) from then on.
+  if (blocks_left >= COUNTDOWN_MARKER_THRESHOLD) {
+    countdownLayer.selectAll("*").remove()
+    return
+  }
+
+  const idx = cd.height in htoi ? htoi[cd.height] : htoi[max_height] + blocks_left
+  // Sit the marker between height-1 and height rather than centered on the
+  // target block itself (assumes the two are adjacent slots, which holds here
+  // since the backend always keeps height-2..height+2 once mined).
+  const along = o.countdown_along(idx - 0.4)
+
+  const cross_values = root_node.descendants().map(d => d.x)
+  const cross_min = Math.min(...cross_values) - NODE_SIZE
+  const cross_max = Math.max(...cross_values) + NODE_SIZE
+  const label_cross = cross_min - 16
+
+  const line_coords = o.countdown_line(along, cross_min, cross_max)
+  const label_pos = o.countdown_label_pos(along, label_cross)
+
+  countdownLayer.selectAll("line.countdown-line")
+    .data([line_coords])
+    .join("line")
+    .attr("class", "countdown-line")
+    .attr("x1", d => d.x1)
+    .attr("y1", d => d.y1)
+    .attr("x2", d => d.x2)
+    .attr("y2", d => d.y2)
+
+  countdownLayer.selectAll("text.countdown-label")
+    .data([label_pos])
+    .join("text")
+    .attr("class", "countdown-label")
+    .style("text-anchor", "middle")
+    .attr("x", d => d.x)
+    .attr("y", d => d.y)
+    .attr("transform", d => `rotate(${o.block_text_rotate}, ${d.x}, ${d.y})`)
+    .attr("dy", ".3em")
+    .text(cd.label)
 }
 
 function onBlockClick(c, d) {

@@ -93,3 +93,18 @@ rpc_host = "ssl://electrum.emzy.de"
 rpc_port = 50002
 implementation = "electrum"
 ```
+
+
+## Countdown to a block height
+
+Each network can optionally show a countdown to a specific block height (e.g. a
+halving) in the frontend. At most one countdown per network; when omitted,
+nothing is shown. The five blocks around the target height
+(`height - 2` to `height + 2`) are always kept in the API response once mined,
+regardless of `max_interesting_heights`.
+
+```toml
+[networks.countdown]
+height = 1050000
+label = "Halving"
+```

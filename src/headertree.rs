@@ -76,6 +76,7 @@ pub async fn strip_tree(
     tree: &Tree,
     max_interesting_heights: usize,
     tip_heights: BTreeSet<u64>,
+    countdown_height: Option<u64>,
 ) -> Vec<HeaderInfoJson> {
     let interesting_heights =
         sorted_interesting_heights(tree, max_interesting_heights, tip_heights).await;
@@ -85,6 +86,13 @@ pub async fn strip_tree(
     // Drop headers from our header tree that aren't 'interesting'.
     let mut striped_tree = tree_locked.0.filter_map(
         |_, header| {
+            // Always keep the blocks around a configured countdown height
+            // (height-2 ..= height+2), regardless of max_interesting_heights.
+            if let Some(ch) = countdown_height {
+                if header.height + 2 >= ch && header.height <= ch.saturating_add(2) {
+                    return Some(header);
+                }
+            }
             // Keep some surrounding headers for the headers we find interesting.
             for x in -2i64..=1 {
                 if interesting_heights.contains(&((header.height as i64 - x) as u64)) {
@@ -285,13 +293,13 @@ pub async fn recent_forks(tree: &Tree, how_many: usize) -> Vec<Fork> {
 
 #[cfg(test)]
 mod tests {
-    use super::stale_blocks;
+    use super::{stale_blocks, strip_tree};
     use crate::types::{HeaderInfo, Tree, TreeInfo};
     use corepc_client::bitcoin::blockdata::block::{Header, Version};
     use corepc_client::bitcoin::hashes::Hash;
     use corepc_client::bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
     use petgraph::graph::DiGraph;
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -438,5 +446,81 @@ mod tests {
         assert_eq!(stale[0].height, 6);
         assert_eq!(stale[1].height, 5);
         assert_eq!(stale[2].height, 4);
+    }
+
+    // Builds a linear chain of headers at heights 0..=max_height.
+    fn linear_chain(max_height: u64) -> Vec<HeaderInfo> {
+        let mut headers = vec![hi(0, header(BlockHash::all_zeros(), EASY_BITS, 0))];
+        for height in 1..=max_height {
+            let prev = headers.last().unwrap().header.block_hash();
+            headers.push(hi(height, header(prev, EASY_BITS, height as u32)));
+        }
+        headers
+    }
+
+    #[tokio::test]
+    async fn countdown_keeps_surrounding_five_blocks_bypassing_the_cap() {
+        // A long linear chain with a tiny max_interesting_heights, so without a
+        // countdown only heights near the tip would be kept.
+        let headers = linear_chain(20);
+        let tree = tree_from(&headers);
+
+        let result = strip_tree(&tree, 1, BTreeSet::new(), Some(10)).await;
+        let heights: Vec<u64> = result.iter().map(|h| h.height).collect();
+
+        for expected in 8..=12u64 {
+            assert!(
+                heights.contains(&expected),
+                "height {} should be kept around the countdown",
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn countdown_near_zero_does_not_underflow() {
+        let headers = linear_chain(10);
+        let tree = tree_from(&headers);
+
+        let result = strip_tree(&tree, 1, BTreeSet::new(), Some(1)).await;
+        let heights: Vec<u64> = result.iter().map(|h| h.height).collect();
+
+        for expected in 0..=3u64 {
+            assert!(
+                heights.contains(&expected),
+                "height {} should be kept around a countdown near zero",
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn countdown_above_tip_only_includes_mined_blocks() {
+        // Chain only reaches height 5; countdown target (10) and its window
+        // aren't mined yet, so they can't appear even though requested.
+        let headers = linear_chain(5);
+        let tree = tree_from(&headers);
+
+        let result = strip_tree(&tree, 1, BTreeSet::new(), Some(10)).await;
+        let heights: Vec<u64> = result.iter().map(|h| h.height).collect();
+
+        for not_yet_mined in 8..=12u64 {
+            assert!(!heights.contains(&not_yet_mined));
+        }
+    }
+
+    #[tokio::test]
+    async fn no_countdown_behaves_like_before() {
+        // No forks, so only the max height (20) is interesting; capped at 3
+        // means only heights 18..=20 (the -2..=1 window around 20 that
+        // actually exists in the chain) are kept, with no countdown involved.
+        let headers = linear_chain(20);
+        let tree = tree_from(&headers);
+
+        let result = strip_tree(&tree, 3, BTreeSet::new(), None).await;
+        let mut heights: Vec<u64> = result.iter().map(|h| h.height).collect();
+        heights.sort();
+
+        assert_eq!(heights, vec![18, 19, 20]);
     }
 }

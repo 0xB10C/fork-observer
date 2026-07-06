@@ -3,7 +3,7 @@ use crate::node::{BitcoinCoreNode, BtcdNode, Electrum, Esplora, Node, NodeInfo};
 use corepc_client::bitcoin::Network as BitcoinNetwork;
 use corepc_client::client_sync::Auth;
 use log::{error, info};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -68,6 +68,14 @@ pub struct PoolIdentification {
     pub network: Option<PoolIdentificationNetwork>,
 }
 
+/// A countdown to a specific block height, shown in the frontend. At most one
+/// per network; when unset for a network, no countdown is shown.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Countdown {
+    pub height: u64,
+    pub label: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct TomlNetwork {
     id: u32,
@@ -81,6 +89,7 @@ struct TomlNetwork {
     max_interesting_heights: usize,
     nodes: Vec<TomlNode>,
     pool_identification: Option<PoolIdentification>,
+    countdown: Option<Countdown>,
 }
 
 #[derive(Clone)]
@@ -93,6 +102,7 @@ pub struct Network {
     pub max_interesting_heights: usize,
     pub nodes: Vec<BoxedSyncSendNode>,
     pub pool_identification: PoolIdentification,
+    pub countdown: Option<Countdown>,
 }
 
 impl fmt::Display for TomlNetwork {
@@ -300,6 +310,7 @@ fn parse_toml_network(
         max_interesting_heights: toml_network.max_interesting_heights,
         nodes,
         pool_identification: toml_network.pool_identification.clone().unwrap_or_default(),
+        countdown: toml_network.countdown.clone(),
     })
 }
 
@@ -532,6 +543,79 @@ mod tests {
         )
         .expect("config should parse");
         assert_eq!(config.networks[0].slug, "tn4");
+    }
+
+    #[test]
+    fn countdown_is_parsed_when_present() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = "Testnet 4"
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [networks.countdown]
+                height = 105
+                label = "Halving"
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        )
+        .expect("config should parse");
+        let countdown = config.networks[0]
+            .countdown
+            .as_ref()
+            .expect("countdown should be set");
+        assert_eq!(countdown.height, 105);
+        assert_eq!(countdown.label, "Halving");
+    }
+
+    #[test]
+    fn countdown_is_none_when_absent() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = "Testnet 4"
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        )
+        .expect("config should parse");
+        assert!(config.networks[0].countdown.is_none());
     }
 
     #[test]

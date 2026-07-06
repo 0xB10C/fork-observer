@@ -15,8 +15,9 @@
 <body>
   <div class="container-fluid" style="display: flex; flex-direction: column; min-height: 100vh;">
     <main style="flex: 1;">
-      <div style="display: flex; flex-direction: column;">
+      <div style="display: flex; flex-direction: column; position: relative;">
         <svg style="flex:1; flex-basis: 98vh; height: 98vh;" id="drawing-area"></svg>
+        <div id="countdown-display" class="countdown-display" style="display: none"></div>
         <div>
           <label>Orientation <select name="orientation" id="orientation"></select></label>
         </div>

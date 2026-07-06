@@ -37,6 +37,7 @@ pub fn build_routes(
     let data_json = warp::get()
         .and(warp::path!("api" / u32 / "data.json"))
         .and(with_caches(caches.clone()))
+        .and(with_config_networks(config.networks.clone()))
         .and_then(data_response);
 
     let stale_json = warp::get()
@@ -141,16 +142,26 @@ pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallibl
     Ok(warp::reply::json(&InfoJsonResponse { footer }))
 }
 
-pub async fn data_response(network: u32, caches: Caches) -> Result<impl warp::Reply, Infallible> {
+pub async fn data_response(
+    network: u32,
+    caches: Caches,
+    networks: Vec<Network>,
+) -> Result<impl warp::Reply, Infallible> {
+    let countdown = networks
+        .iter()
+        .find(|n| n.id == network)
+        .and_then(|n| n.countdown.clone());
     let caches_locked = caches.lock().await;
     match caches_locked.get(&network) {
         Some(cache) => Ok(warp::reply::json(&DataJsonResponse {
             header_infos: cache.header_infos_json.clone(),
             nodes: cache.node_data.values().cloned().collect(),
+            countdown,
         })),
         None => Ok(warp::reply::json(&DataJsonResponse {
             header_infos: vec![],
             nodes: vec![],
+            countdown,
         })),
     }
 }
@@ -406,6 +417,7 @@ mod tests {
             max_interesting_heights: 100,
             nodes,
             pool_identification: PoolIdentification::default(),
+            countdown: None,
         }
     }
 
@@ -549,6 +561,36 @@ mod tests {
         assert_eq!(resp.status(), 200);
         let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
         assert_eq!(v["networks"][0]["slug"], "net0");
+    }
+
+    #[tokio::test]
+    async fn data_json_exposes_countdown_when_configured() {
+        let mut network = make_network(0, vec![]);
+        network.countdown = Some(crate::config::Countdown {
+            height: 105,
+            label: "Halving".to_string(),
+        });
+        let route = routes(caches_with_stale(0, vec![]), vec![network]);
+        let resp = warp::test::request()
+            .path("/api/0/data.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(v["countdown"]["height"], 105);
+        assert_eq!(v["countdown"]["label"], "Halving");
+    }
+
+    #[tokio::test]
+    async fn data_json_omits_countdown_when_not_configured() {
+        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let resp = warp::test::request()
+            .path("/api/0/data.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert!(v.get("countdown").is_none());
     }
 
     #[tokio::test]

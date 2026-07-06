@@ -50,6 +50,11 @@ max_interesting_heights = 100
     [networks.pool_identification]
     enable = true
     network = "Mainnet"
+    # Optional countdown to a specific block height, shown in the frontend
+    # (e.g. a halving). At most one per network; omit this table for none.
+    # [networks.countdown]
+    # height = 1050000
+    # label = "Halving"
 
     [[networks.nodes]]
     id = 0
