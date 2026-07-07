@@ -103,6 +103,14 @@ max_interesting_heights = 100
     rpc_host = "https://mempool.space/api"
     implementation = "mempoolspace"
 
+
+    [[networks.nodes]]
+    id = 5
+    name = "block-dn.org"
+    description = "public block-dn instance"
+    rpc_host = "https://block-dn.org"
+    implementation = "block-dn"
+
 [[networks]]
 id = 0xFFFFFFFE
 name = "FFFFFFFE testnetwork"
