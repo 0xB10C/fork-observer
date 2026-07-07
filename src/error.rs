@@ -128,6 +128,8 @@ pub enum ConfigError {
     DuplicateNodeId,
     DuplicateNetworkId,
     DuplicateNetworkSlug,
+    DuplicateRemoteNodeIdOffset,
+    InvalidRemoteForkObserver(String),
     TomlError(toml::de::Error),
     ReadError(io::Error),
     AddrError(AddrParseError),
@@ -144,6 +146,8 @@ impl fmt::Display for ConfigError {
             ConfigError::DuplicateNodeId => write!(f, "a node id has been used multiple times in the same network"),
             ConfigError::DuplicateNetworkId => write!(f, "a network id has been used multiple times"),
             ConfigError::DuplicateNetworkSlug => write!(f, "a network slug has been used multiple times (slugs must be unique; set an explicit `slug` for one of the networks)"),
+            ConfigError::DuplicateRemoteNodeIdOffset => write!(f, "a node_id_offset has been used multiple times by remote fork-observers in the same network"),
+            ConfigError::InvalidRemoteForkObserver(e) => write!(f, "invalid remote fork-observer configuration: {}", e),
             ConfigError::TomlError(e) => write!(f, "the TOML in the configuration file could not be parsed: {}", e),
             ConfigError::ReadError(e) => write!(f, "the configuration file could not be read: {}", e),
             ConfigError::AddrError(e) => write!(f, "the address could not be parsed: {}", e),
@@ -165,6 +169,8 @@ impl error::Error for ConfigError {
             ConfigError::DuplicateNodeId => None,
             ConfigError::DuplicateNetworkId => None,
             ConfigError::DuplicateNetworkSlug => None,
+            ConfigError::DuplicateRemoteNodeIdOffset => None,
+            ConfigError::InvalidRemoteForkObserver(_) => None,
         }
     }
 }

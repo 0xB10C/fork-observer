@@ -485,6 +485,18 @@ rect.block-miner-bg {
   vertical-align: middle;
 }
 
+/* marks a node imported from another fork-observer instance */
+.nt-via {
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.75rem;
+  color: var(--muted-soft);
+  border: 1px solid var(--border-soft);
+  vertical-align: middle;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .nt-desc {
   color: var(--muted-soft);
   font-size: 0.82rem;

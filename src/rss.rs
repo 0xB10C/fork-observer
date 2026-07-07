@@ -121,7 +121,7 @@ impl From<(&TipInfoJson, &Vec<NodeDataJson>)> for Item {
                 if invalid_block.1.len() > 1 { "s" } else { "" },
                 nodes
                     .iter()
-                    .map(|node| format!("{} (id={})", node.name, node.id))
+                    .map(|node| format!("{} (id={})", node.display_name(), node.id))
                     .collect::<Vec<String>>()
                     .join(", "),
             ),
@@ -174,19 +174,23 @@ pub async fn forks_response(
 impl Item {
     pub fn lagging_node_item(node: &NodeDataJson, height: u64) -> Item {
         Item {
-            title: format!("Node '{}' is lagging behind", node.name),
+            title: format!("Node '{}' is lagging behind", node.display_name()),
             description: format!(
                 "The node's active tip is on height {}, while other nodes consider a block with a height at least {} blocks higher their active tip. The node might still be synchronizing with the network or stuck.",
                 height,
                 THREASHOLD_NODE_LAGGING,
             ),
-            guid: format!("lagging-node-{}-on-{}", node.name, height),
+            guid: format!("lagging-node-{}-on-{}", node.display_name(), height),
         }
     }
 
     pub fn unreachable_node_item(node: &NodeDataJson) -> Item {
         Item {
-            title: format!("Node '{}' (id={}) is unreachable", node.name, node.id),
+            title: format!(
+                "Node '{}' (id={}) is unreachable",
+                node.display_name(),
+                node.id
+            ),
             description: format!(
                 "The RPC server of this node is not reachable. The node might be offline or there might be other networking issues. The nodes tip data was last updated at timestamp {} (zero indicates never).",
                 node.last_changed_timestamp,

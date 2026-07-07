@@ -111,6 +111,20 @@ max_interesting_heights = 100
     rpc_host = "https://block-dn.org"
     implementation = "block-dn"
 
+    # Show another fork-observer instance's nodes and headers alongside the
+    # ones configured above. The remote's data is fetched via its HTTP API
+    # every query_interval seconds and merged into this network's header tree.
+    # `node_id_offset` is added to the remote's node ids to avoid colliding
+    # with the node ids configured above; it must be unique per remote source
+    # and larger than any locally used node id. See the README for what is
+    # (and isn't) imported and verified.
+    # [[networks.forkobservers]]
+    # name = "b10c's observer"
+    # description = "Another fork-observer instance"
+    # url = "https://fork-observer.example.com"
+    # network_id = 1
+    # node_id_offset = 1000
+
 [[networks]]
 id = 0xFFFFFFFE
 name = "FFFFFFFE testnetwork"

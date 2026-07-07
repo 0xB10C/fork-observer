@@ -416,6 +416,7 @@ mod tests {
             min_fork_height: 0,
             max_interesting_heights: 100,
             nodes,
+            remote_forkobservers: vec![],
             pool_identification: PoolIdentification::default(),
             countdown: None,
         }

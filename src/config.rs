@@ -90,6 +90,7 @@ struct TomlNetwork {
     min_fork_height: u64,
     max_interesting_heights: usize,
     nodes: Vec<TomlNode>,
+    forkobservers: Option<Vec<TomlRemoteForkObserver>>,
     pool_identification: Option<PoolIdentification>,
     countdown: Option<Countdown>,
 }
@@ -103,8 +104,33 @@ pub struct Network {
     pub min_fork_height: u64,
     pub max_interesting_heights: usize,
     pub nodes: Vec<BoxedSyncSendNode>,
+    pub remote_forkobservers: Vec<RemoteForkObserver>,
     pub pool_identification: PoolIdentification,
     pub countdown: Option<Countdown>,
+}
+
+/// Another fork-observer instance used as a data source: its header and node
+/// information is fetched via its HTTP API and shown alongside the local nodes.
+#[derive(Debug, Deserialize, Clone)]
+struct TomlRemoteForkObserver {
+    name: String,
+    description: Option<String>,
+    url: String,
+    network_id: u32,
+    node_id_offset: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteForkObserver {
+    pub name: String,
+    pub description: String,
+    /// Base URL of the remote instance, normalized: carries a scheme and has
+    /// no trailing slash.
+    pub url: String,
+    /// The id of the network ON THE REMOTE instance to fetch data from.
+    pub network_id: u32,
+    /// Added to the remote node ids to avoid collisions with local node ids.
+    pub node_id_offset: u32,
 }
 
 impl fmt::Display for TomlNetwork {
@@ -315,6 +341,27 @@ fn parse_toml_network(
         slug = toml_network.id.to_string();
     }
 
+    let max_local_node_id = nodes.iter().map(|n| n.info().id).max();
+    let mut remote_forkobservers: Vec<RemoteForkObserver> = vec![];
+    let mut offsets: Vec<u32> = vec![];
+    for toml_remote in toml_network
+        .forkobservers
+        .clone()
+        .unwrap_or_default()
+        .iter()
+    {
+        let remote = parse_toml_remote_forkobserver(toml_remote, max_local_node_id)?;
+        if offsets.contains(&remote.node_id_offset) {
+            error!(
+                "Duplicate node_id_offset {}: The remote fork-observer '{}' could not be loaded.",
+                remote.node_id_offset, remote.name
+            );
+            return Err(ConfigError::DuplicateRemoteNodeIdOffset);
+        }
+        offsets.push(remote.node_id_offset);
+        remote_forkobservers.push(remote);
+    }
+
     Ok(Network {
         id: toml_network.id,
         name: toml_network.name.clone(),
@@ -323,8 +370,41 @@ fn parse_toml_network(
         min_fork_height: toml_network.min_fork_height,
         max_interesting_heights: toml_network.max_interesting_heights,
         nodes,
+        remote_forkobservers,
         pool_identification: toml_network.pool_identification.clone().unwrap_or_default(),
         countdown: toml_network.countdown.clone(),
+    })
+}
+
+fn parse_toml_remote_forkobserver(
+    toml_remote: &TomlRemoteForkObserver,
+    max_local_node_id: Option<u32>,
+) -> Result<RemoteForkObserver, ConfigError> {
+    if toml_remote.url.trim().is_empty() {
+        return Err(ConfigError::InvalidRemoteForkObserver(format!(
+            "the remote fork-observer '{}' has an empty url",
+            toml_remote.name
+        )));
+    }
+    // The offset is added to the remote node ids. Requiring it to be larger
+    // than every local node id makes a collision with a local node impossible,
+    // so the poller doesn't have to handle one.
+    if toml_remote.node_id_offset <= max_local_node_id.unwrap_or(0) {
+        return Err(ConfigError::InvalidRemoteForkObserver(format!(
+            "the remote fork-observer '{}' has a node_id_offset of {} - it must be larger than every node id in this network (the largest is {}) to avoid id collisions",
+            toml_remote.name,
+            toml_remote.node_id_offset,
+            max_local_node_id.unwrap_or(0),
+        )));
+    }
+    Ok(RemoteForkObserver {
+        name: toml_remote.name.clone(),
+        description: toml_remote.description.clone().unwrap_or_default(),
+        url: ensure_scheme(toml_remote.url.trim())
+            .trim_end_matches('/')
+            .to_string(),
+        network_id: toml_remote.network_id,
+        node_id_offset: toml_remote.node_id_offset,
     })
 }
 
@@ -774,6 +854,142 @@ mod tests {
             // test OK, as we expect this to error
         } else {
             panic!("Test did not error!");
+        }
+    }
+
+    #[test]
+    fn remote_forkobserver_parsing() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = "Mainnet"
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+
+                [[networks.forkobservers]]
+                name = "example observer"
+                url = "fork-observer.example.com/"
+                network_id = 7
+                node_id_offset = 1000
+        "#,
+        )
+        .expect("config with a remote fork-observer should parse");
+        let remotes = &config.networks[0].remote_forkobservers;
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "example observer");
+        // Scheme is added and the trailing slash is trimmed.
+        assert_eq!(remotes[0].url, "http://fork-observer.example.com");
+        assert_eq!(remotes[0].network_id, 7);
+        assert_eq!(remotes[0].node_id_offset, 1000);
+        assert_eq!(remotes[0].description, "");
+    }
+
+    #[test]
+    fn error_on_duplicate_remote_forkobserver_offset() {
+        match parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = "Mainnet"
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_port = 0
+                rpc_user = ""
+                rpc_password = ""
+
+                [[networks.forkobservers]]
+                name = "observer 1"
+                url = "https://one.example.com"
+                network_id = 1
+                node_id_offset = 1000
+
+                [[networks.forkobservers]]
+                name = "observer 2"
+                url = "https://two.example.com"
+                network_id = 1
+                node_id_offset = 1000
+        "#,
+        ) {
+            Err(ConfigError::DuplicateRemoteNodeIdOffset) => {
+                // test OK, as we expect this to error
+            }
+            _ => panic!("expected DuplicateRemoteNodeIdOffset error"),
+        }
+    }
+
+    #[test]
+    fn error_on_invalid_remote_forkobserver() {
+        for (url, node_id_offset) in [("https://example.com", 0), ("  ", 1000)] {
+            match parse_config(&format!(
+                r#"
+                database_path = ""
+                www_path = "./www"
+                query_interval = 15
+                address = "127.0.0.1:2323"
+                rss_base_url = ""
+                footer_html = ""
+
+                [[networks]]
+                id = 1
+                name = "Mainnet"
+                description = ""
+                min_fork_height = 0
+                max_interesting_heights = 0
+
+                    [[networks.nodes]]
+                    id = 0
+                    name = "Node A"
+                    description = ""
+                    rpc_host = "127.0.0.1"
+                    rpc_port = 0
+                    rpc_user = ""
+                    rpc_password = ""
+
+                    [[networks.forkobservers]]
+                    name = "observer"
+                    url = "{}"
+                    network_id = 1
+                    node_id_offset = {}
+            "#,
+                url, node_id_offset
+            )) {
+                Err(ConfigError::InvalidRemoteForkObserver(_)) => {
+                    // test OK, as we expect this to error
+                }
+                _ => panic!("expected InvalidRemoteForkObserver error"),
+            }
         }
     }
 
