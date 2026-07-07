@@ -57,7 +57,7 @@ impl HeaderInfo {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NetworkJson {
     pub id: u32,
     pub name: String,
@@ -76,12 +76,12 @@ impl NetworkJson {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct NetworksJsonResponse {
     pub networks: Vec<NetworkJson>,
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct HeaderInfoJson {
     pub id: usize,
     pub prev_id: usize,
@@ -128,7 +128,7 @@ pub struct InfoJsonResponse {
     pub footer: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct DataJsonResponse {
     pub header_infos: Vec<HeaderInfoJson>,
     pub nodes: Vec<NodeDataJson>,
@@ -161,7 +161,7 @@ pub struct StaleBlocksJsonResponse {
     pub stale_blocks: Vec<StaleBlockJson>,
 }
 
-#[derive(Serialize, Clone, Eq, Hash, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Eq, Hash, PartialEq, Debug)]
 pub struct TipInfoJson {
     pub hash: String,
     pub status: String,
@@ -184,7 +184,7 @@ impl TipInfoJson {
     }
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
 pub struct NodeDataJson {
     pub id: u32,
     pub name: String,
@@ -198,6 +198,14 @@ pub struct NodeDataJson {
     pub version: String,
     /// If the last getchaintips RPC reached the node.
     pub reachable: bool,
+    /// The name of the fork-observer instance this node entry was imported
+    /// from (see `remote_forkobserver`), or `None` for a node configured here.
+    /// Importing skips nodes that already have it set, so a node only ever
+    /// travels one hop from where it's configured. That's what keeps two
+    /// instances pointing at each other from accumulating each other's
+    /// imports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_source: Option<String>,
 }
 
 impl NodeDataJson {
@@ -217,6 +225,17 @@ impl NodeDataJson {
             last_changed_timestamp,
             version,
             reachable,
+            remote_source: None,
+        }
+    }
+
+    /// The node's name, qualified with the instance it was imported from for
+    /// remote nodes. Used where there's no room for styling (RSS feeds); the
+    /// frontend shows the two parts separately.
+    pub fn display_name(&self) -> String {
+        match &self.remote_source {
+            Some(remote) => format!("{} via {}", self.name, remote),
+            None => self.name.clone(),
         }
     }
 

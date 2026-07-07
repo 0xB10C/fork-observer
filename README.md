@@ -168,6 +168,41 @@ implementation = "electrum"
 this backend never reports forks, only the active tip. Only add it to a
 network that already has at least one Bitcoin Core (or btcd) node.
 
+## Connecting to another fork-observer instance
+
+A network can also import the nodes and headers of another fork-observer instance. This
+is fetched via the remote instance's HTTP API every `query_interval` seconds and merged
+into the local network's header tree, so the remote's nodes show up alongside the
+locally configured ones, marked with a `via <name>` label. `network_id` is the id of
+the network on the *remote* instance;
+`node_id_offset` is added to the remote's node ids to avoid colliding with locally
+configured node ids. It must be unique per remote source and larger than any node id
+used in this network.
+
+```toml
+[[networks.forkobservers]]
+name = "b10c's observer"
+description = "Another fork-observer instance"
+url = "https://fork-observer.example.com"
+network_id = 1
+node_id_offset = 1000
+```
+
+A node that a remote instance itself imported from yet another instance is never
+re-imported - propagation stops after one hop. This makes it safe to point two
+fork-observer instances at each other: each side only ever shows the other's own nodes,
+rather than the two accumulating each other's imports indefinitely.
+
+> [!NOTE]
+> A remote instance serves the same stripped-down header tree it shows in its own
+> frontend, not every header it knows: headers at heights it considers uninteresting
+> (see `max_interesting_heights`) are not part of the response and can't be imported.
+>
+> Imported headers are checked to hash to the block hash the remote reports, but
+> nothing beyond that is verified - heights and miners are taken at face value and
+> are written to the local database permanently. Only import from an instance you
+> trust as much as you'd trust one of your own nodes.
+
 ## Countdown to a block height
 
 Each network can optionally show a countdown to a specific block height (e.g. a

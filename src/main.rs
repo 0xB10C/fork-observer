@@ -23,6 +23,7 @@ mod error;
 mod headertree;
 mod jsonrpc;
 mod node;
+mod remote_forkobserver;
 mod rss;
 mod types;
 
@@ -139,10 +140,11 @@ async fn main() -> Result<(), MainError> {
         let (pool_id_tx, mut pool_id_rx) = unbounded_channel::<BlockHash>();
 
         info!(
-            "network '{}' (id={}) has {} nodes",
+            "network '{}' (id={}) has {} nodes and {} remote fork-observer source(s)",
             network.name,
             network.id,
-            network.nodes.len()
+            network.nodes.len(),
+            network.remote_forkobservers.len()
         );
 
         let tree: Tree = Arc::new(Mutex::new(
@@ -322,31 +324,11 @@ async fn main() -> Result<(), MainError> {
                         .await;
 
                         if tree_changed {
-                            let mut tip_heights: BTreeSet<u64> =
-                                tip_heights(network.id, &caches_clone).await;
-                            for tip in tips.iter() {
-                                tip_heights.insert(tip.height);
-                            }
-                            let header_infos_json = headertree::strip_tree(
+                            update_header_tree_cache(
+                                &network,
                                 &tree_clone,
-                                network.max_interesting_heights,
-                                tip_heights,
-                                network.countdown.as_ref().map(|c| c.height),
-                            )
-                            .await;
-                            let forks =
-                                headertree::recent_forks(&tree_clone, MAX_FORKS_IN_CACHE).await;
-                            let stale_blocks =
-                                headertree::stale_blocks(&tree_clone, MAX_STALE_BLOCKS).await;
-
-                            update_cache(
                                 &caches_clone,
-                                network.id,
-                                CacheUpdate::HeaderTree {
-                                    header_infos_json,
-                                    forks,
-                                    stale_blocks,
-                                },
+                                tips.iter().map(|t| t.height),
                                 &cache_changed_tx_cloned,
                             )
                             .await;
@@ -354,6 +336,18 @@ async fn main() -> Result<(), MainError> {
                     }
                 }
             });
+        }
+
+        for remote in network.remote_forkobservers.iter().cloned() {
+            task::spawn(remote_forkobserver::run_poller(
+                remote,
+                network.clone(),
+                tree.clone(),
+                db.clone(),
+                caches.clone(),
+                cache_changed_tx.clone(),
+                config.query_interval,
+            ));
         }
 
         // A one-shot thread trying to identify all unidentified miners. This
@@ -546,6 +540,42 @@ async fn tip_heights(network_id: u32, caches: &Caches) -> BTreeSet<u64> {
     tip_heights
 }
 
+/// Recomputes the stripped header tree, the recent forks and the stale blocks
+/// of a network and pushes them into the cache. Call this after new headers
+/// were inserted into the tree. `extra_tip_heights` are heights to keep in
+/// addition to the tips already in the cache (a caller that just learned about
+/// new tips might not have them in the cache yet).
+async fn update_header_tree_cache(
+    network: &config::Network,
+    tree: &Tree,
+    caches: &Caches,
+    extra_tip_heights: impl IntoIterator<Item = u64>,
+    cache_changed_tx: &broadcast::Sender<u32>,
+) {
+    let mut tip_heights: BTreeSet<u64> = tip_heights(network.id, caches).await;
+    tip_heights.extend(extra_tip_heights);
+    let header_infos_json = headertree::strip_tree(
+        tree,
+        network.max_interesting_heights,
+        tip_heights,
+        network.countdown.as_ref().map(|c| c.height),
+    )
+    .await;
+    let forks = headertree::recent_forks(tree, MAX_FORKS_IN_CACHE).await;
+    let stale_blocks = headertree::stale_blocks(tree, MAX_STALE_BLOCKS).await;
+    update_cache(
+        caches,
+        network.id,
+        CacheUpdate::HeaderTree {
+            header_infos_json,
+            forks,
+            stale_blocks,
+        },
+        cache_changed_tx,
+    )
+    .await;
+}
+
 #[derive(Debug)]
 enum CacheUpdate {
     HeaderMiner {
@@ -567,6 +597,14 @@ enum CacheUpdate {
     NodeVersion {
         node_id: u32,
         version: String,
+    },
+    /// Replaces the node entries injected by a remote fork-observer source:
+    /// `removed_node_ids` are dropped from the cache and `nodes` are inserted
+    /// (or updated) by id. The poller owns which ids are "its", so it computes
+    /// the delta each poll.
+    RemoteNodes {
+        removed_node_ids: Vec<u32>,
+        nodes: Vec<NodeDataJson>,
     },
 }
 
@@ -603,6 +641,17 @@ impl fmt::Display for CacheUpdate {
             }
             CacheUpdate::NodeReachability { node_id, reachable } => {
                 write!(f, "Setting node {} to reachable={}", node_id, reachable)
+            }
+            CacheUpdate::RemoteNodes {
+                removed_node_ids,
+                nodes,
+            } => {
+                write!(
+                    f,
+                    "Updating {} remote node(s), removing {} remote node(s)",
+                    nodes.len(),
+                    removed_node_ids.len()
+                )
             }
         }
     }
@@ -720,6 +769,19 @@ async fn update_cache(
                     .node_data
                     .entry(node_id)
                     .and_modify(|e| e.version(version));
+            });
+        }
+        CacheUpdate::RemoteNodes {
+            removed_node_ids,
+            nodes,
+        } => {
+            locked_cache.entry(network_id).and_modify(|network| {
+                for id in removed_node_ids.iter() {
+                    network.node_data.remove(id);
+                }
+                for node in nodes.into_iter() {
+                    network.node_data.insert(node.id, node);
+                }
             });
         }
     }
@@ -892,6 +954,83 @@ mod tests {
             get_test_node_reachable(&caches, network_id, node.id).await,
             true
         );
+    }
+
+    #[tokio::test]
+    async fn remote_nodes_update_inserts_replaces_and_removes() {
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        {
+            let mut locked_caches = caches.lock().await;
+            locked_caches.insert(
+                network_id,
+                Cache {
+                    header_infos_json: vec![],
+                    node_data: BTreeMap::new(),
+                    forks: vec![],
+                    stale_blocks: vec![],
+                    block_cache: HashMap::new(),
+                    recent_miners: vec![],
+                },
+            );
+        }
+
+        let node_info = |id: u32, name: &str| NodeInfo {
+            id,
+            name: name.to_string(),
+            description: "".to_string(),
+            implementation: "".to_string(),
+        };
+
+        // Insert two remote nodes.
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::RemoteNodes {
+                removed_node_ids: vec![],
+                nodes: vec![
+                    NodeDataJson::new(node_info(1000, "A"), &vec![], "".to_string(), 0, true),
+                    NodeDataJson::new(node_info(1001, "B"), &vec![], "".to_string(), 0, true),
+                ],
+            },
+            &dummy_sender,
+        )
+        .await;
+        {
+            let locked = caches.lock().await;
+            let node_data = &locked.get(&network_id).unwrap().node_data;
+            assert_eq!(node_data.len(), 2);
+            assert!(node_data.contains_key(&1000));
+            assert!(node_data.contains_key(&1001));
+        }
+
+        // Replace node 1000's data and remove node 1001.
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::RemoteNodes {
+                removed_node_ids: vec![1001],
+                nodes: vec![NodeDataJson::new(
+                    node_info(1000, "A renamed"),
+                    &vec![],
+                    "".to_string(),
+                    0,
+                    false,
+                )],
+            },
+            &dummy_sender,
+        )
+        .await;
+        {
+            let locked = caches.lock().await;
+            let node_data = &locked.get(&network_id).unwrap().node_data;
+            assert_eq!(node_data.len(), 1);
+            let node = node_data.get(&1000).unwrap();
+            assert_eq!(node.name, "A renamed");
+            assert_eq!(node.reachable, false);
+            assert!(!node_data.contains_key(&1001));
+        }
     }
 
     #[tokio::test]

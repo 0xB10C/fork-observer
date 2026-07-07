@@ -808,6 +808,14 @@ function get_active_hash_or_fake(node) {
   return "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdead"
 }
 
+// Nodes we didn't fetch ourselves but imported from another fork-observer
+// instance carry that instance's name. Mark them with a muted "via <instance>"
+// so it's clear the data is second-hand.
+function via_label(node) {
+  if (!node.remote_source) return ""
+  return `<span class="nt-via" title="imported from the fork-observer instance '${node.remote_source}'">via ${node.remote_source}</span>`
+}
+
 function ago(timestamp) {
   const rtf = new Intl.RelativeTimeFormat("en", {
     style: "narrow",
@@ -873,6 +881,7 @@ async function draw_nodes() {
         <td class="nt-name">
           <span class="node-status-dot ${d.reachable ? "is-up" : "is-down"}" title="${d.reachable ? "reachable" : "unreachable"}"></span>
           <span class="nt-name-text" title="${d.name}">${d.name}</span>
+          ${via_label(d)}
           ${d.reachable ? "" : "<span class='badge text-bg-danger'>unreachable</span>"}
           ${d.description ? `<div class="nt-desc" onclick="this.classList.toggle('nt-desc-open')">${d.description}</div>` : ""}
         </td>
