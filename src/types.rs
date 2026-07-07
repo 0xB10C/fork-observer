@@ -246,17 +246,15 @@ pub struct DataChanged {
     pub network_id: u32,
 }
 
+/// Deserialized via `From<String>` so that a status we don't know yet becomes
+/// `Unknown` instead of failing the whole `getchaintips` response.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(from = "String")]
 pub enum ChainTipStatus {
-    #[serde(rename = "active")]
     Active,
-    #[serde(rename = "invalid")]
     Invalid,
-    #[serde(rename = "valid-fork")]
     ValidFork,
-    #[serde(rename = "headers-only")]
     HeadersOnly,
-    #[serde(rename = "valid-headers")]
     ValidHeaders,
     Unknown,
 }

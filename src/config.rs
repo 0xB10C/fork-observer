@@ -1,5 +1,5 @@
 use crate::error::ConfigError;
-use crate::node::{BitcoinCoreNode, BtcdNode, Electrum, Esplora, Node, NodeInfo};
+use crate::node::{BitcoinCoreNode, BtcdNode, Electrum, Esplora, MempoolSpace, Node, NodeInfo};
 use corepc_client::bitcoin::Network as BitcoinNetwork;
 use corepc_client::client_sync::Auth;
 use log::{error, info};
@@ -160,6 +160,9 @@ pub enum Backend {
     Esplora,
     /// An Electrum server as backend.
     Electrum,
+    /// A mempool.space instance, additionally exposing stale chain tips via
+    /// its `/api/v1/chain-tips` endpoint.
+    MempoolSpace,
 }
 
 impl FromStr for Backend {
@@ -173,6 +176,9 @@ impl FromStr for Backend {
             "btcd" => Ok(Backend::Btcd),
             "esplora" => Ok(Backend::Esplora),
             "electrum" => Ok(Backend::Electrum),
+            "mempoolspace" => Ok(Backend::MempoolSpace),
+            "mempool.space" => Ok(Backend::MempoolSpace),
+            "mempool" => Ok(Backend::MempoolSpace),
             _ => Err(ConfigError::UnknownImplementation),
         }
     }
@@ -185,6 +191,7 @@ impl fmt::Display for Backend {
             Backend::Btcd => write!(f, "btcd"),
             Backend::Esplora => write!(f, "esplora"),
             Backend::Electrum => write!(f, "electrum"),
+            Backend::MempoolSpace => write!(f, "mempool.space"),
         }
     }
 }
@@ -393,6 +400,7 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
             ))
         }
         Backend::Esplora => Arc::new(Esplora::new(node_info, toml_node.rpc_host.clone())),
+        Backend::MempoolSpace => Arc::new(MempoolSpace::new(node_info, toml_node.rpc_host.clone())),
         Backend::Electrum => {
             let url = format!(
                 "{}:{}",
@@ -798,6 +806,57 @@ mod tests {
             Err(e) => {
                 panic!("Esplora backend config invalid: {}", e);
             }
+        }
+    }
+
+    #[test]
+    fn mempool_space_backend_test() {
+        match parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 5
+                name = "mempool.space"
+                description = "mempool.space public API"
+                rpc_host = "https://mempool.space/api"
+                implementation = "mempoolspace"
+        "#,
+        ) {
+            Ok(config) => {
+                let network = &config.networks[0];
+                let node: &BoxedSyncSendNode = &network.nodes[0];
+                let node_info = node.info();
+                assert_eq!(node_info.name, "mempool.space");
+                assert_eq!(node_info.id, 5);
+                assert_eq!(node_info.implementation, "mempool.space");
+            }
+            Err(e) => {
+                panic!("mempool.space backend config invalid: {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn backend_from_str_accepts_mempool_space_aliases() {
+        for alias in ["mempoolspace", "mempool.space", "mempool", "MempoolSpace"] {
+            assert!(
+                matches!(alias.parse::<Backend>(), Ok(Backend::MempoolSpace)),
+                "expected '{}' to parse as Backend::MempoolSpace",
+                alias
+            );
         }
     }
 }

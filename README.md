@@ -60,21 +60,64 @@ rpcwhitelist=forkobserver:getchaintips,getblockheader,getblockhash,getblock
 
 ## Connecting to an Esplora REST API
 
-Block explorers like blockstream.info and mempool.space are based on [esplora].
-While they don't offer a `getchaintips`-like API endpoint, it can be useful to
-know which blocks these explores consider to be the tip. A esplora backend can,
-for example, be configured using the following "node" configuration.
+Block explorers like blockstream.info are based on [esplora]. While they don't
+offer a `getchaintips`-like API endpoint, it can be useful to know which block
+these explorers consider to be the tip. A esplora backend can, for example, be
+configured using the following "node" configuration.
+
+**Limitation:** Esplora never reports stale/fork blocks, only the active tip.
+Only add it to a network that already has at least one Bitcoin Core (or btcd)
+node.
 
 ```toml
 [[networks.nodes]]
 id = 2
-name = "mempool.space"
-description = "mempool.space REST API"
-rpc_host = "https://mempool.space/api"
+name = "blockstream.info"
+description = "blockstream.info REST API"
+rpc_host = "https://blockstream.info/api"
 implementation = "esplora"
 ```
 
 [esplora]: https://github.com/Blockstream/esplora
+
+
+## Connecting to mempool.space
+
+mempool.space additionally exposes a `getchaintips`-like `/api/v1/chain-tips`
+endpoint, so a `mempoolspace` backend reports stale/fork chain tips as well as
+the active one (unlike the generic `esplora` backend above, which can only
+report the current active tip). Note that this endpoint is not yet stabilized
+by the mempool.space project.
+
+```toml
+[[networks.nodes]]
+id = 4
+name = "mempool.space"
+description = "mempool.space public API"
+rpc_host = "https://mempool.space/api"
+implementation = "mempoolspace"
+```
+
+Use `rpc_host = "https://mempool.space/testnet/api"` (or `/signet/api`) to
+connect to a different network.
+
+**Limitations:** fork branches are only fetched for the tips
+`/api/v1/chain-tips` currently reports, and mempool.space serves no block data
+for the `headers-only` tips among them, so this backend can't reconstruct fork
+history on its own. Only add it to a network that already has at least one
+Bitcoin Core (or btcd) node.
+
+> [!NOTE]
+> Loading the full header tree from a mempool.space instance is neither
+> supported nor recommended. This is a public, rate-limited API with no bulk
+> header endpoint, so headers are fetched one at a time.
+>
+> In the recommended setup this costs almost nothing: all nodes of a network
+> share one header tree, so the Bitcoin Core node supplies the active chain and
+> this backend stops at the first header it already knows - normally after a
+> single request per new block. Backfilling a long stretch of history from
+> mempool.space alone, on the other hand, is slow and will run into rate limits,
+> so keep `min_fork_height` close to the current tip.
 
 
 ## Connecting to an Electrum server
@@ -94,6 +137,9 @@ rpc_port = 50002
 implementation = "electrum"
 ```
 
+**Limitation:** Electrum has no protocol call for stale/fork block headers, so
+this backend never reports forks, only the active tip. Only add it to a
+network that already has at least one Bitcoin Core (or btcd) node.
 
 ## Countdown to a block height
 

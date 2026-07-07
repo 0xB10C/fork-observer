@@ -81,6 +81,8 @@ max_interesting_heights = 100
     rpc_user = "forkobserver"
     rpc_password = ""
 
+    # Electrum never reports stale/fork blocks (see README) - only add it to a
+    # network that already has at least one Bitcoin Core (or btcd) node.
     [[networks.nodes]]
     id = 3
     name = "Electrum Emzy"
@@ -88,6 +90,18 @@ max_interesting_heights = 100
     rpc_host = "ssl://electrum.emzy.de"
     rpc_port = 50002
     implementation = "electrum"
+
+    # Reports fork tips, but can't reconstruct fork history on its own (see
+    # README) - only add it to a network that already has at least one Bitcoin
+    # Core (or btcd) node. Keep query_interval conservative and min_fork_height
+    # close to the tip: this is a public, rate-limited API.
+    [[networks.nodes]]
+    id = 4
+    name = "mempool.space"
+    description = "mempool.space public API"
+    # For testnet, use "https://mempool.space/testnet/api" instead.
+    rpc_host = "https://mempool.space/api"
+    implementation = "mempoolspace"
 
 [[networks]]
 id = 0xFFFFFFFE
