@@ -120,6 +120,33 @@ Bitcoin Core (or btcd) node.
 > so keep `min_fork_height` close to the current tip.
 
 
+## Connecting to a block-dn server
+
+[block-dn] serves blockchain data (chain tip, headers, blocks) over plain
+HTTP(S), designed to be easy to front with a CDN for light clients. Like
+Esplora, it has no `getchaintips`-like endpoint, so fork-observer only shows
+its single active tip - this is most useful alongside at least one Bitcoin
+Core or btcd node on the same network. Public instances are available for
+mainnet, testnet3, testnet4 and signet.
+
+```toml
+[[networks.nodes]]
+id = 5
+name = "block-dn.org"
+description = "public block-dn instance"
+rpc_host = "https://block-dn.org"
+implementation = "block-dn"
+```
+
+**Limitation:** headers are read out of block-dn's `/headers/<start-height>`
+files, which fork-observer assumes hold 100,000 headers each - the value the
+public mainnet, testnet3, testnet4 and signet instances use. A block-dn instance
+started with `--regtest` writes 2,000 headers per file instead and is not
+supported.
+
+[block-dn]: https://block-dn.org/
+
+
 ## Connecting to an Electrum server
 
 The fork-observer tool can connect to public and private Electrum servers.
