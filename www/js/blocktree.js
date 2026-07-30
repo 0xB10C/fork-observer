@@ -868,7 +868,7 @@ async function draw_nodes() {
       .html(d => {
         const height = get_active_height_or_0(d)
         const hash = get_active_hash_or_fake(d)
-        const version = d.version.replaceAll("/", "").replaceAll("Satoshi:", "").replace("unknown", "(version unknown)")
+        const version = d.version == "unknown" ? `${d.implementation} (version unknown)` : d.version
         return `
         <td class="nt-name">
           <span class="node-status-dot ${d.reachable ? "is-up" : "is-down"}" title="${d.reachable ? "reachable" : "unreachable"}"></span>
@@ -876,7 +876,7 @@ async function draw_nodes() {
           ${d.reachable ? "" : "<span class='badge text-bg-danger'>unreachable</span>"}
           ${d.description ? `<div class="nt-desc" onclick="this.classList.toggle('nt-desc-open')">${d.description}</div>` : ""}
         </td>
-        <td class="nt-impl">${d.implementation} ${version}</td>
+        <td class="nt-impl">${version}</td>
         <td class="text-muted-soft nt-time"><span class="relativeTimestamp" data-timestamp=${d.last_changed_timestamp}>${ago(d.last_changed_timestamp)}</span></td>
         <td class="nt-num"><span class="height-chip">${height}</span></td>
         <td><code class="hash-chip" title="click to copy full tip hash" onclick="copyToClipboard('${hash}', 'tip hash')">…${hash.substring(44, 64)}</code></td>
