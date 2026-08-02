@@ -403,7 +403,7 @@ mod tests {
 
     fn test_node(id: u32, name: &str) -> NodeDataJson {
         NodeDataJson::new(
-            crate::node::NodeInfo {
+            crate::backend::NodeInfo {
                 id,
                 name: name.to_string(),
                 description: "".to_string(),

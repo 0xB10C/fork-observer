@@ -17,12 +17,12 @@ use tokio::task;
 use tokio::time::{interval, sleep, Duration};
 
 mod api;
+mod backend;
 mod config;
 mod db;
 mod error;
 mod headertree;
 mod jsonrpc;
-mod node;
 mod remote_forkobserver;
 mod rss;
 mod types;
@@ -876,7 +876,7 @@ async fn insert_new_headers_into_tree(tree: &Tree, new_headers: &[HeaderInfo]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::NodeInfo;
+    use crate::backend::NodeInfo;
 
     async fn get_test_node_reachable(caches: &Caches, net_id: u32, node_id: u32) -> bool {
         let locked_caches = caches.lock().await;

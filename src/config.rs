@@ -1,7 +1,7 @@
-use crate::error::ConfigError;
-use crate::node::{
+use crate::backend::{
     BitcoinCoreNode, BlockDn, BtcdNode, Electrum, Esplora, MempoolSpace, Node, NodeInfo,
 };
+use crate::error::ConfigError;
 use corepc_client::bitcoin::Network as BitcoinNetwork;
 use corepc_client::client_sync::Auth;
 use log::{error, info};
