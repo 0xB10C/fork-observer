@@ -4,8 +4,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::backend::NodeInfo;
 use crate::config::{Countdown, Network};
-use crate::node::NodeInfo;
 
 use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::BlockHash;

@@ -379,8 +379,8 @@ pub fn with_slugs(
 #[cfg(test)]
 mod tests {
     use super::build_routes;
+    use crate::backend::{BitcoinCoreNode, NodeInfo};
     use crate::config::{BoxedSyncSendNode, Config, Network, PoolIdentification};
-    use crate::node::{BitcoinCoreNode, NodeInfo};
     use crate::types::{Cache, Caches, NetworkJson, StaleBlockJson};
     use corepc_client::bitcoin::consensus::deserialize;
     use corepc_client::bitcoin::{Block, BlockHash};
