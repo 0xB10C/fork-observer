@@ -99,6 +99,27 @@ let lastTipPos = { x: 0, y: 0 }
 // See the end of draw().
 let viewAnchor = null
 
+// Blocks that come from the stratum jobs feed rather than from our own nodes: the one
+// being mined, and the one that was just found and that pools are already building on.
+// Both are drawn the same way - solid and pulsing - and only their tag tells them
+// apart. Drawing them solid also keeps the links from showing through the block.
+// The keys are the statuses build_mining_headers() gives those blocks.
+const MINING_TAGS = {
+  "mining": {
+    text: "being mined",
+    title: () => "Pools are working on this block right now, according to the stratum jobs feed.",
+  },
+  "just-found": {
+    text: "just found",
+    title: d => "Pools are already mining on top of block " + d.data.data.real_hash +
+      ", so it exists — but none of our nodes have reported it yet.",
+  },
+}
+
+function from_stratum_feed(header) {
+  return header.status in MINING_TAGS
+}
+
 // size a group's background rect to fit the text next to it, with `px`/`py` of padding.
 // Both are only measurable once the text has been laid out, hence the getBBox().
 function fit_rect_to_text(group, px, py) {
@@ -200,10 +221,16 @@ let countdownLayer = g
 let miningDrawCtx = null
 
 // invert the current stratum jobs (state_stratum_jobs, one entry per pool, kept up to
-// date in main.js) into a map of prev_hash -> { parent, pool_names }: the pools mining
-// on each block we recognise. Expired pools are pruned here so the set stays current
+// date in main.js) into a map of prev_hash -> { parent, just_found, pool_names }: the
+// pools mining on each block. Expired pools are pruned here so the set stays current
 // without a separate timer.
-function current_mining_by_prev(header_infos) {
+//
+// `parent` is the header the to-be-mined block hangs off. Normally that is the block
+// the pools name in their job. When we don't know that block it is our tip instead, and
+// `just_found` says a stand-in for the block the feed told us about goes in between:
+// that happens for a few seconds after every block, because pools hear about it through
+// their own infrastructure well before a node has received, validated and relayed it.
+function current_mining_by_prev(header_infos, max_height) {
   let result = new Map()
   if (!MINING_ENABLED || state_stratum_jobs.size === 0) {
     return result
@@ -212,6 +239,8 @@ function current_mining_by_prev(header_infos) {
   // index the real headers by hash so we can resolve a job's parent block
   let by_hash = new Map()
   header_infos.forEach(h => by_hash.set(h.hash, h))
+  // the block every job builds on sits one below the height being mined
+  let tip = header_infos.filter(h => h.height == max_height)[0]
 
   state_stratum_jobs.forEach((job, pool_name) => {
     // drop pools we haven't heard from in a while
@@ -219,12 +248,19 @@ function current_mining_by_prev(header_infos) {
       state_stratum_jobs.delete(pool_name)
       return
     }
-    // only show to-be-mined blocks that build on a block we actually know about
     let parent = by_hash.get(job.prev_hash)
-    if (parent === undefined) return
+    // A parent we don't know is only worth drawing when the feed places it exactly one
+    // block past our tip, i.e. it is the block that was just found. Anything further
+    // ahead (or behind) would mean speculating about a chain we know nothing about, so
+    // those jobs are dropped.
+    let just_found = parent === undefined && tip !== undefined && job.height == max_height + 2
+    if (parent === undefined && !just_found) return
+    // the pair then hangs off our tip, with the stand-in block in between
+    if (just_found) parent = tip
+
     let entry = result.get(job.prev_hash)
     if (entry === undefined) {
-      entry = { parent, pool_names: [] }
+      entry = { parent, just_found, pool_names: [] }
       result.set(job.prev_hash, entry)
     }
     entry.pool_names.push(pool_name)
@@ -234,26 +270,47 @@ function current_mining_by_prev(header_infos) {
   return result
 }
 
-// build synthetic "being mined" header objects to inject into the tree. One
-// to-be-mined block per prev_hash we recognise, aggregating all pools mining on it.
-function build_mining_headers(header_infos) {
+// build synthetic header objects to inject into the tree: one to-be-mined block per
+// prev_hash, aggregating all pools mining on it, plus - for pools that have already
+// moved on to a block we haven't seen - a "just found" block standing in for it, so
+// the to-be-mined block has something to hang off.
+function build_mining_headers(header_infos, max_height) {
   let mining_headers = []
-  current_mining_by_prev(header_infos).forEach(({ parent, pool_names }, prev_hash) => {
-    mining_headers.push({
-      id: "mining-" + prev_hash,
-      prev_id: parent.id,
-      height: parent.height + 1,
-      hash: "mining-" + prev_hash,
-      prev_blockhash: prev_hash,
-      // pool names are shown in a force-positioned cloud around the block, so the
-      // block itself carries no miner label
-      miner: "",
-      // not MIN_DIFFICULTY, so it doesn't get the accent-colored stroke
-      difficulty_int: 0,
-      status: "mining",
-      mining_pools: pool_names,
+  current_mining_by_prev(header_infos, max_height)
+    .forEach(({ parent, just_found, pool_names }, prev_hash) => {
+      if (just_found) {
+        // The feed gave us this block's real hash, kept in real_hash. The `hash` used
+        // for identity is prefixed so it can't collide with the real header once a node
+        // reports it: the blocks are keyed by hash, and sharing a key would morph this
+        // one into the real block while leaving its "not seen yet" styling behind.
+        // With a distinct key it is simply removed and the real block drawn instead.
+        mining_headers.push({
+          id: "found-" + prev_hash,
+          prev_id: parent.id,
+          height: parent.height + 1,
+          hash: "found-" + prev_hash,
+          real_hash: prev_hash,
+          prev_blockhash: parent.hash,
+          miner: "",
+          difficulty_int: 0,
+          status: "just-found",
+        })
+      }
+      mining_headers.push({
+        id: "mining-" + prev_hash,
+        prev_id: just_found ? "found-" + prev_hash : parent.id,
+        height: parent.height + (just_found ? 2 : 1),
+        hash: "mining-" + prev_hash,
+        prev_blockhash: prev_hash,
+        // pool names are shown in a force-positioned cloud around the block, so the
+        // block itself carries no miner label
+        miner: "",
+        // not MIN_DIFFICULTY, so it doesn't get the accent-colored stroke
+        difficulty_int: 0,
+        status: "mining",
+        mining_pools: pool_names,
+      })
     })
-  })
   return mining_headers
 }
 
@@ -268,7 +325,7 @@ function refresh_mining() {
     draw({ preserveView: true, reason: "jobs (first draw)" })
     return
   }
-  let desired = current_mining_by_prev(state_data.header_infos)
+  let desired = current_mining_by_prev(state_data.header_infos, miningDrawCtx.max_height)
   let current_keys = miningDrawCtx.toBeMinedByPrev
   let same = desired.size === current_keys.size &&
     Array.from(desired.keys()).every(k => current_keys.has(k))
@@ -312,10 +369,11 @@ function preprocess_data(data) {
     header_info.is_tip = status != undefined
   })
 
-  // synthetic "being mined" blocks from the stratum jobs feed, injected as children
-  // of the block each pool builds on. max_height (below) stays based on the real
-  // headers only, so these are not treated as the animated newest block.
-  let mining_headers = build_mining_headers(header_infos)
+  // synthetic blocks from the stratum jobs feed, injected as children of the block
+  // each pool builds on. max_height stays based on the real headers only, so these are
+  // not treated as the animated newest block.
+  const max_height = Math.max(...header_infos.map(d => d.height))
+  let mining_headers = build_mining_headers(header_infos, max_height)
 
   var treeData = d3
     .stratify()
@@ -369,7 +427,7 @@ function preprocess_data(data) {
   // sliding back and forth for no visible reason. Both runs walk the same stripped
   // tree, so every real block is in both and htoi above stays valid for either.
   const real_root = treemap(
-    d3.hierarchy(treeData, d => (d.children || []).filter(c => c.data.status != "mining"))
+    d3.hierarchy(treeData, d => (d.children || []).filter(c => !from_stratum_feed(c.data)))
       .sort(sort_blocks))
   let real_x = new Map()
   real_root.descendants().forEach(d => real_x.set(d.data.data.hash, d.x))
@@ -385,7 +443,6 @@ function preprocess_data(data) {
     shift.set(d, s)
     d.x += s
   })
-  const max_height = Math.max(...header_infos.map(d => d.height))
 
   return [root_node, max_height, htoi]
 }
@@ -421,7 +478,7 @@ function draw(opts) {
       enter => {
         let back = enter.append("g")
           .attr("class", "block-back")
-          .classed("being-mined", d => d.data.data.status == "mining")
+          .classed("being-mined", d => from_stratum_feed(d.data.data))
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
         const half = BLOCK_SIZE / 2
         const DEPTH = BLOCK_DEPTH
@@ -459,7 +516,7 @@ function draw(opts) {
           .attr("fill", "transparent")
           .attr("stroke-dashoffset", (d, x, y) => y[x].getTotalLength())
           .attr("stroke-opacity", 1)
-          .classed("being-mined", d => d.target.data.data.status == "mining")
+          .classed("being-mined", d => from_stratum_feed(d.target.data.data))
           .transition(d3.transition().duration(300))
           .attr("stroke-dashoffset", 0)
           .attr("stroke-opacity", 0.2)
@@ -509,7 +566,7 @@ function draw(opts) {
       enter => {
         let newBlocks = enter.append("g")
           .classed("block", true)
-          .classed("being-mined", d => d.data.data.status == "mining")
+          .classed("being-mined", d => from_stratum_feed(d.data.data))
           .attr("id", d => "block-" + d.data.data.height + "-" + d.data.data.hash)
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
           .attr("x", d => o.x(d, htoi))
@@ -525,7 +582,7 @@ function draw(opts) {
           .attr("stroke-width", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? 3 : 1)
           .attr("stroke-linejoin", "round")
           .attr("stroke-opacity", 1)
-          .classed("being-mined", d => d.data.data.status == "mining")
+          .classed("being-mined", d => from_stratum_feed(d.data.data))
 
         block_backgrounds.filter(d => d.data.data.height != max_height || initialDraw)
           .attr("x", -BLOCK_SIZE/2)
@@ -553,16 +610,18 @@ function draw(opts) {
           .classed("block-miner", true)
           .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
 
-        // "being mined" tag above to-be-mined blocks, styled like the tip-status boxes so it
-        // reads as a status label. Lives in the block group, so it persists (and isn't
-        // re-rendered) on the frequent pool-only refreshes.
-        let mining_tag = block_child_group.filter(d => d.data.data.status == "mining")
+        // status tag below the blocks that come from the stratum feed, styled like the
+        // tip-status boxes so it reads as a status label. Lives in the block group, so
+        // it persists (and isn't re-rendered) on the frequent pool-only refreshes.
+        let mining_tag = block_child_group.filter(d => d.data.data.status in MINING_TAGS)
           .append("g")
-          .attr("class", "mining-tag")
+          .attr("class", d => "mining-tag mining-tag-" + d.data.data.status)
           .attr("transform", "translate(" + -BLOCK_SIZE/2 + "," + (+(BLOCK_SIZE / 2) + BLOCK_DEPTH) + ")")
         mining_tag.append("rect").attr("class", "mining-tag-bg")
         mining_tag.append("text").attr("class", "mining-tag-text")
-          .attr("text-anchor", "left").attr("dy", ".35em").text("being mined..")
+          .attr("text-anchor", "left").attr("dy", ".35em")
+          .text(d => MINING_TAGS[d.data.data.status].text)
+          .append("title").text(d => MINING_TAGS[d.data.data.status].title(d))
         mining_tag.each(function () { fit_rect_to_text(d3.select(this), 1, 1) })
 
         if (!initialDraw) {
@@ -620,7 +679,7 @@ function draw(opts) {
   let toBeMinedByPrev = new Map()
   root_node.descendants().filter(d => d.data.data.status == "mining")
     .forEach(d => toBeMinedByPrev.set(d.data.data.prev_blockhash, d))
-  miningDrawCtx = { root_node, htoi, toBeMinedByPrev }
+  miningDrawCtx = { root_node, htoi, max_height, toBeMinedByPrev }
 
   // size the miner background box to fit its (already positioned) text
   recalc_miner_boxes()
@@ -629,7 +688,7 @@ function draw(opts) {
   // whole group is rotated like the miner text so it sits on the opposite side.
   let node_groups = g
     .selectAll(".tip-info")
-    .data(root_node.descendants().filter(d => d.data.data.status != "in-chain" && d.data.data.status != "mining"),
+    .data(root_node.descendants().filter(d => d.data.data.status != "in-chain" && !from_stratum_feed(d.data.data)),
       d => `${d.data.data.hash}-${d.data.data.height}`)
     .join("g")
     .classed("tip-info", true)
@@ -1087,8 +1146,8 @@ function onBlockClick(c, d) {
   let blockGroup = d3.select(c.target.parentElement.parentElement)
   // only react to clicks on an actual block group
   if (blockGroup.attr("class") == null || !blockGroup.attr("class").startsWith("block")) return
-  // to-be-mined blocks have no real header data to show in the info card
-  if (d.data.data.status == "mining") return
+  // blocks that only come from the stratum feed have no header data for the info card
+  if (from_stratum_feed(d.data.data)) return
 
   // toggle: if this block already has an open description, close it
   let existing = descLayer.selectAll(".block-description")

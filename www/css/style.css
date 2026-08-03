@@ -39,7 +39,7 @@
     --block-top: #34353c;
     --block-side: #15161a;
     --accent: #f7931a;
-    --mining-pulse: #aab0b8;
+    --mining-pulse: #555;
     --text-color: white;
     --block-to-block-link-color: white;
     --block-description-link-color: lightgray;
@@ -70,7 +70,7 @@
   --block-top: #34353c;
   --block-side: #15161a;
   --accent: #f7931a;
-  --mining-pulse: #aab0b8;
+  --mining-pulse: #555;
   --text-color: white;
   --block-to-block-link-color: white;
   --block-description-link-color: lightgray;
@@ -244,7 +244,7 @@ path.link.link-block-block.being-mined {
  50% { stroke: var(--mining-pulse); }
 }
 
-/* status tag below a block that comes from the stratum feed. Unlike the tip-status
+/* status tag above a block that comes from the stratum feed. Unlike the tip-status
    boxes - whose fill is a bright per-status colour, so they can carry dark text in
    either theme - this one has no colour of its own, so it takes the same surface and
    muted label colours as the pool names it sits among. */
