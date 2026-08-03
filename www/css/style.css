@@ -10,11 +10,14 @@
   --block-top: #e7e9ee;
   --block-side: #c7ccd5;
   --accent: gray;
+  /* what blocks from the stratum feed pulse toward. Deliberately not --accent: that
+     marks minimum-difficulty blocks, and is orange in dark mode. */
+  --mining-pulse: gray;
   --text-color: black;
   --block-to-block-link-color: black;
   --block-description-link-color: gray;
   --block-description-bg: #f8f9fa;
-  --block-miner-color: rgb(122, 122, 122);
+  --block-miner-color: rgb(85, 85, 85);
   --node-indicatior-stroke: black;
 
   --tip-status-color-active: #79FF00;
@@ -36,6 +39,7 @@
     --block-top: #34353c;
     --block-side: #15161a;
     --accent: #f7931a;
+    --mining-pulse: #aab0b8;
     --text-color: white;
     --block-to-block-link-color: white;
     --block-description-link-color: lightgray;
@@ -66,6 +70,7 @@
   --block-top: #34353c;
   --block-side: #15161a;
   --accent: #f7931a;
+  --mining-pulse: #aab0b8;
   --text-color: white;
   --block-to-block-link-color: white;
   --block-description-link-color: lightgray;
@@ -186,6 +191,90 @@ text.block-text {
  fill: var(--text-color);
  text-anchor: middle;
  font-size: 11px;
+}
+
+/* "being mined" blocks (from the stratum jobs feed): a solid block whose whole cube
+   (front + both 3D faces + edges) and its incoming link pulse in unison toward a
+   neutral grey to read as "in progress". Colours (not opacity) are animated so the
+   block stays opaque and the dashed link never shows through it. All parts share the
+   same duration so the pulse looks like one motion. */
+.block.being-mined rect.block-background {
+ animation: mining-pulse-front 2.4s ease-in-out infinite;
+}
+
+.block-back.being-mined polygon.block-face-top {
+ animation: mining-pulse-top 2.4s ease-in-out infinite;
+}
+
+.block-back.being-mined polygon.block-face-side {
+ animation: mining-pulse-side 2.4s ease-in-out infinite;
+}
+
+.block-back.being-mined path.block-edges {
+ animation: mining-pulse-stroke 2.4s ease-in-out infinite;
+}
+
+path.link.link-block-block.being-mined {
+ stroke-opacity: 0.6;
+ animation: mining-pulse-link 2.4s ease-in-out infinite;
+}
+
+@keyframes mining-pulse-front {
+ 0%, 100% { fill: var(--surface-bg); }
+ 50% { fill: color-mix(in srgb, var(--mining-pulse) 32%, var(--surface-bg)); }
+}
+
+@keyframes mining-pulse-top {
+ 0%, 100% { fill: var(--block-top); }
+ 50% { fill: color-mix(in srgb, var(--mining-pulse) 45%, var(--block-top)); }
+}
+
+@keyframes mining-pulse-side {
+ 0%, 100% { fill: var(--block-side); }
+ 50% { fill: color-mix(in srgb, var(--mining-pulse) 45%, var(--block-side)); }
+}
+
+@keyframes mining-pulse-stroke {
+ 0%, 100% { stroke: var(--block-stroke); }
+ 50% { stroke: var(--mining-pulse); }
+}
+
+@keyframes mining-pulse-link {
+ 0%, 100% { stroke: var(--block-to-block-link-color); }
+ 50% { stroke: var(--mining-pulse); }
+}
+
+/* status tag below a block that comes from the stratum feed. Unlike the tip-status
+   boxes - whose fill is a bright per-status colour, so they can carry dark text in
+   either theme - this one has no colour of its own, so it takes the same surface and
+   muted label colours as the pool names it sits among. */
+.mining-tag-bg {
+ fill: var(--surface-bg);
+ stroke: var(--block-stroke);
+ stroke-width: 0.5px;
+}
+
+.mining-tag-text {
+ fill: var(--block-miner-color);
+ font-size: 8px;
+}
+
+/* force-positioned pool-name labels around a being-mined block */
+.mining-pool-link {
+ stroke: var(--block-stroke);
+ stroke-width: 1px;
+ opacity: 0.5;
+}
+
+.mining-pool-bg {
+ fill: var(--surface-bg);
+ stroke: var(--block-stroke);
+ stroke-width: 0.5px;
+}
+
+.mining-pool-text {
+ fill: var(--block-miner-color);
+ font-size: 8px;
 }
 
 text.block-miner {
