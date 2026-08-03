@@ -28,6 +28,9 @@ const PAGE_NAME = "fork-observer"
 var state_selected_network_id = 0
 var state_networks = []
 var state_data = {}
+// update_cooling_down: an update ran within the last UPDATE_COOLDOWN_MS.
+// update_scheduled: more events arrived while cooling down, so run one more after.
+var update_cooling_down = false
 var update_scheduled = false
 var state_sound_enabled = false
 // hash of the active chain tip as of the last update, or null if we haven't seen one
@@ -227,7 +230,6 @@ networkSelect.on("input", async function() {
 
 async function update() {
   console.debug("called update()")
-  update_scheduled = false
   await fetch_data()
   check_tip_changed()
   await draw_nodes()
@@ -295,20 +297,33 @@ document.addEventListener("keydown", (e) => {
   }
 })
 
+// When a new block is found every node reports it within a moment of the others, so
+// the events arrive in a burst. Fetch on the first one immediately - waiting only
+// delays showing the block - and then hold off for this long, fetching once more at
+// the end if more events came in, so the later nodes' tips aren't missed.
+const UPDATE_COOLDOWN_MS = 500
+
 changeSSE.addEventListener("cache_changed", (e) => {
   let data = JSON.parse(e.data)
   console.debug("server side event: the data for one of the networks changed: ", data)
-  if(data.network_id == state_selected_network_id) {
-    console.debug("server side event: the data for current network changed: ", data)
-    if (!update_scheduled) {
-      // wait for 500ms before fetching data
-      // this avoid fetching data in rapid succession when a new block is found
-      setTimeout(update, 500);
-      update_scheduled = true;
-    } else {
-      console.debug("server side event: update for the current network already sheduled: ", data)
-    }
+  if(data.network_id != state_selected_network_id) return
+  console.debug("server side event: the data for current network changed: ", data)
+
+  if (update_cooling_down) {
+    // an update ran just now; remember to run one more once the window is over
+    update_scheduled = true
+    console.debug("server side event: update for the current network already sheduled: ", data)
+    return
   }
+  update_cooling_down = true
+  update()
+  setTimeout(() => {
+    update_cooling_down = false
+    if (update_scheduled) {
+      update_scheduled = false
+      update()
+    }
+  }, UPDATE_COOLDOWN_MS)
 })
 
 
@@ -344,26 +359,41 @@ function stratum_prevhash_to_display(hex) {
 // is what makes that replacement automatic: keyed the other way round, a pool that
 // switched to a new block would keep haunting the old one until its TTL ran out, and
 // look like it was mining two blocks at once.
+// Returns true when the job moves this pool onto a block no other pool was mining on,
+// i.e. when it changes which blocks are drawn rather than just who is on them.
 function record_stratum_job(job) {
-  if (job == null || !job.prev_hash || !job.pool_name) return
+  if (job == null || !job.prev_hash || !job.pool_name) return false
+  let prev_hash = stratum_prevhash_to_display(job.prev_hash)
+  let known = false
+  state_stratum_jobs.forEach(other => { if (other.prev_hash == prev_hash) known = true })
   state_stratum_jobs.set(job.pool_name, {
-    prev_hash: stratum_prevhash_to_display(job.prev_hash),
+    prev_hash: prev_hash,
     last_seen: Date.now(),
   })
+  return !known
 }
 
-// jobs arrive several times a second; coalesce them into at most one redraw per
-// window and never recenter the viewport for them.
-function schedule_stratum_redraw() {
+// how long to coalesce jobs that only shuffle pools between blocks we already draw
+const STRATUM_REDRAW_COALESCE_MS = 300
+
+// Jobs arrive several times a second, so they are coalesced into at most one redraw
+// per window (and never recenter the viewport). The exception is a job that puts a
+// pool on a block we aren't drawing yet - the first pool to switch after a new block
+// is found - which redraws straight away, since that is the moment the display is
+// out of date and worth updating. refresh_mining() only does a full redraw when the
+// set of being-mined blocks changes; otherwise it just re-lays-out the pool cloud,
+// leaving the to-be-mined blocks (and their pulse animation) untouched.
+function schedule_stratum_redraw(immediate) {
+  if (immediate) {
+    refresh_mining()
+    return
+  }
   if (stratum_redraw_scheduled) return
   stratum_redraw_scheduled = true
   setTimeout(() => {
     stratum_redraw_scheduled = false
-    // refresh_mining() only does a full redraw when the set of being-mined blocks
-    // changes; otherwise it just re-lays-out the pool cloud, leaving the
-    // to-be-mined blocks (and their pulse animation) untouched.
     refresh_mining()
-  }, 1500)
+  }, STRATUM_REDRAW_COALESCE_MS)
 }
 
 let stratumSource = null
@@ -379,8 +409,8 @@ function connect_stratum() {
   stratumSource.addEventListener("message", (e) => {
     let job
     try { job = JSON.parse(e.data) } catch (_) { return }
-    record_stratum_job(job)
-    schedule_stratum_redraw()
+    let new_block = record_stratum_job(job)
+    schedule_stratum_redraw(new_block)
   })
   stratumSource.addEventListener("error", (e) => {
     console.debug("stratum jobs stream error, browser will retry", e)
