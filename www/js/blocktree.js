@@ -8,6 +8,7 @@ const orientationSelect = d3.select("#orientation")
 
 const orientations = {
   "bottom-to-top": {
+    name: "bottom-to-top",
     x: (d, _) => d.x,
     y: (d, htoi) => -htoi[d.data.data.height] * NODE_SIZE,
     // start the link half a depth beyond the parent's top edge, over the middle of
@@ -24,6 +25,8 @@ const orientations = {
     // where the tip block should land in the viewport on the initial draw: the chain
     // grows downward, so put the tip near the top to show less empty space.
     tip_anchor: (w, h) => [w/2, h*0.25],
+    // one block slot further along the chain, i.e. where the next block will appear
+    next_slot: {x: 0, y: -NODE_SIZE},
     // the along-chain axis is y (growing negative), so the countdown marker is a
     // horizontal line at a fixed y spanning the cross axis (x).
     countdown_along: (idx) => -idx * NODE_SIZE,
@@ -31,6 +34,7 @@ const orientations = {
     countdown_label_pos: (along, cross_min) => ({x: cross_min, y: along}),
   },
   "left-to-right": {
+    name: "left-to-right",
     x: (d, htoi) => htoi[d.data.data.height] * NODE_SIZE,
     y: (d, _) => d.x,
     // start the link half a depth beyond the parent's right edge, over the middle of
@@ -46,6 +50,8 @@ const orientations = {
     // where the tip block should land in the viewport on the initial draw: the chain
     // grows rightward, so put the tip near the right to show less empty space.
     tip_anchor: (w, h) => [w*0.75, h/2],
+    // one block slot further along the chain, i.e. where the next block will appear
+    next_slot: {x: NODE_SIZE, y: 0},
     // the along-chain axis is x, so the countdown marker is a vertical line at a
     // fixed x spanning the cross axis (y).
     countdown_along: (idx) => idx * NODE_SIZE,
@@ -86,13 +92,71 @@ let o = orientations["left-to-right"];
 // bring the view back to it after the user pans/zooms away
 let lastTipPos = { x: 0, y: 0 }
 
+// what the camera is currently anchored on: the tip hash it points at, plus the
+// orientation that tip was laid out in. Null before the first draw. This is
+// deliberately not the same as lastTipPos: the camera only follows when there is
+// genuinely something else to look at, not on every change of the point we focus on.
+// See the end of draw().
+let viewAnchor = null
+
+// whether the mining feature is on (?mining, see main.js). blocktree.js is loaded
+// first, so guard against the constant not being there at all.
+function mining_enabled() {
+  return typeof MINING_ENABLED !== "undefined" && MINING_ENABLED
+}
+
+// size a group's background rect to fit the text next to it, with `px`/`py` of padding.
+// Both are only measurable once the text has been laid out, hence the getBBox().
+function fit_rect_to_text(group, px, py) {
+  let bb = group.select("text").node().getBBox()
+  group.select("rect")
+    .attr("x", bb.x - px).attr("y", bb.y - py)
+    .attr("width", bb.width + 2 * px).attr("height", bb.height + 2 * py)
+}
+
+// TEMPORARY: logging for the "the view keeps moving" bug. Two different things read as
+// the view moving: the camera panning, and the blocks sliding underneath a camera that
+// stayed put. Both are logged, so a jump can be attributed to one or the other.
+// Remove this (and its call sites) once the bug is understood.
+const VIEW_DEBUG = true
+function log_view(what, info) {
+  if (VIEW_DEBUG) console.log("[view] " + what, info)
+}
+
+// positions of the real blocks at the last draw, to detect the layout shifting under
+// the camera. Part of the TEMPORARY logging above.
+let lastBlockPos = new Map()
+function log_layout_shift(root_node, htoi) {
+  if (!VIEW_DEBUG) return
+  let now = new Map(), moved = [], max = 0
+  root_node.descendants().forEach(d => {
+    let key = d.data.data.hash
+    let pos = [o.x(d, htoi), o.y(d, htoi)]
+    now.set(key, pos)
+    let was = lastBlockPos.get(key)
+    if (was === undefined) return
+    let dx = pos[0] - was[0], dy = pos[1] - was[1]
+    if (dx || dy) {
+      moved.push({ h: d.data.data.height, status: d.data.data.status, dx, dy })
+      max = Math.max(max, Math.abs(dx), Math.abs(dy))
+    }
+  })
+  lastBlockPos = now
+  if (moved.length) log_view("layout shifted", { count: moved.length, max, moved: moved.slice(0, 8) })
+}
+
 let svg = d3
     .select("#drawing-area")
 
 let initialDraw = true
 
 // enables zoom and panning
-const zoom = d3.zoom().scaleExtent([0.15, 5]).on( "zoom", e => {
+const zoom = d3.zoom().scaleExtent([0.15, 5])
+  // interpolate transitions in a straight line. d3's default (interpolateZoom) flies
+  // the camera along an arc that zooms out and back in again, which for the short
+  // pans we do here reads as the view lurching away and returning.
+  .interpolate(d3.interpolate)
+  .on( "zoom", e => {
   g.attr("transform", e.transform)
   // re-measure the text-fitted boxes; their metrics can be stale if they were first
   // sized before the text was fully laid out
@@ -110,6 +174,19 @@ let g = svg
 let connectorLayer = g
     .append("g")
     .attr("id", "description-connectors")
+
+// layer for the connector lines from a being-mined block to its pool labels. Like
+// connectorLayer it is never raised, so the lines stay below the blocks and appear to
+// come out from behind the to-be-mined block.
+let miningLinkLayer = g
+    .append("g")
+    .attr("id", "mining-links")
+
+// layer for the force-positioned pool-name labels around "being mined" blocks. It is
+// raised above the blocks on every draw so the labels stay readable.
+let miningLabelLayer = g
+    .append("g")
+    .attr("id", "mining-labels")
 
 // overlay layer that always holds the open block descriptions (info boxes). It is
 // raised to the top on every draw so the boxes are never painted over by blocks or
@@ -196,7 +273,8 @@ function preprocess_data(data) {
   return [root_node, max_height, htoi]
 }
 
-function draw() {
+function draw(opts) {
+  opts = opts || {}
   let data = state_data
 
   // nothing to draw if there are no headers
@@ -205,6 +283,16 @@ function draw() {
   }
 
   const [root_node, max_height, htoi] = preprocess_data(data)
+
+  log_layout_shift(root_node, htoi)
+
+  // An orientation switch moves every block into a different coordinate space, tens of
+  // thousands of pixels away. Animating that flies the camera - and slides the blocks -
+  // through empty space for the better part of a second, which just reads as the view
+  // having gone blank. So a switch snaps into place instead, the way the first draw
+  // does; there is no continuity between the two layouts to preserve anyway.
+  const snap = initialDraw || !!opts.snap
+  const move = (sel, ms) => snap ? sel : sel.transition(d3.transition().duration(ms))
 
   // the 3D extrusion (top + right faces) lives in its own layer below the links, so
   // a link can pass over a block's depth and tuck behind its front face — making it
@@ -216,6 +304,7 @@ function draw() {
       enter => {
         let back = enter.append("g")
           .attr("class", "block-back")
+          .classed("being-mined", d => d.data.data.status == "mining")
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
         const half = BLOCK_SIZE / 2
         const DEPTH = BLOCK_DEPTH
@@ -234,7 +323,7 @@ function draw() {
         return back
       },
       update => {
-        update.transition(d3.transition().duration(600))
+        move(update, 600)
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
         return update
       }
@@ -261,8 +350,7 @@ function draw() {
           .attr("stroke-opacity", 1)
       },
       update => {
-        update
-          .transition(d3.transition().duration(600))
+        move(update, 600)
           .attr("d", o.linkDir(htoi))
           .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
           .attr("stroke-dashoffset", 0)
@@ -289,8 +377,7 @@ function draw() {
         return blocksNotShown
       },
       update => {
-        update
-          .transition(d3.transition().duration(600))
+        move(update, 600)
           .attr("x", d => hidden_text_x(d, htoi))
           .attr("y", d => hidden_text_y(d, htoi))
           .attr("transform", d => `rotate(${o.block_text_rotate}, ${hidden_text_x(d, htoi)},${hidden_text_y(d, htoi)})`)
@@ -305,6 +392,7 @@ function draw() {
       enter => {
         let newBlocks = enter.append("g")
           .classed("block", true)
+          .classed("being-mined", d => d.data.data.status == "mining")
           .attr("id", d => "block-" + d.data.data.height + "-" + d.data.data.hash)
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
           .attr("x", d => o.x(d, htoi))
@@ -319,7 +407,7 @@ function draw() {
           .attr("stroke", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? "var(--accent)" : "var(--block-stroke)")
           .attr("stroke-width", d => d.data.data.difficulty_int == MIN_DIFFICULTY ? 3 : 1)
           .attr("stroke-linejoin", "round")
-          .attr("stroke-opacity", d => d.data.data.status == "mining" ? 0.2 : 1)
+          .attr("stroke-opacity", 1)
           .classed("being-mined", d => d.data.data.status == "mining")
 
         block_backgrounds.filter(d => d.data.data.height != max_height || initialDraw)
@@ -348,6 +436,18 @@ function draw() {
           .classed("block-miner", true)
           .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
 
+        // "being mined" tag above to-be-mined blocks, styled like the tip-status boxes so it
+        // reads as a status label. Lives in the block group, so it persists (and isn't
+        // re-rendered) on the frequent pool-only refreshes.
+        let mining_tag = block_child_group.filter(d => d.data.data.status == "mining")
+          .append("g")
+          .attr("class", "mining-tag")
+          .attr("transform", "translate(" + -BLOCK_SIZE/2 + "," + (+(BLOCK_SIZE / 2) + BLOCK_DEPTH) + ")")
+        mining_tag.append("rect").attr("class", "mining-tag-bg")
+        mining_tag.append("text").attr("class", "mining-tag-text")
+          .attr("text-anchor", "left").attr("dy", ".35em").text("being mined..")
+        mining_tag.each(function () { fit_rect_to_text(d3.select(this), 1, 1) })
+
         if (!initialDraw) {
           block_backgrounds
             .filter(d => d.data.data.height == max_height)
@@ -375,8 +475,7 @@ function draw() {
         return newBlocks
       },
       update => {
-        update
-          .transition(d3.transition().duration(600))
+        move(update, 600)
           .attr("transform", d => "translate(" + o.x(d, htoi) + "," + o.y(d, htoi) + ")")
         // keep the stored anchor coordinates in sync (info boxes read these), or
         // they'd stay at the previous orientation's position after a switch
@@ -391,6 +490,13 @@ function draw() {
         return update
       }
     );
+
+  // pool names orbiting each "being mined" block, laid out with a force simulation
+  if (opts.clearPoolCloud) {
+    clear_mining_pool_clouds()
+  } else {
+    draw_mining_pool_clouds(root_node, htoi)
+  }
 
   // size the miner background box to fit its (already positioned) text
   recalc_miner_boxes()
@@ -429,10 +535,22 @@ function draw() {
 
   let offset_x = 0;
   let offset_y = 0;
-  let max_height_tip = root_node.leaves().filter(d => d.data.data.height == max_height)[0]
+  // the real tip at max_height. Not necessarily a leaf(): a to-be-mined block is
+  // injected as its child, so filter descendants by height instead of using leaves().
+  let max_height_tip = root_node.descendants().filter(d => d.data.data.status != "mining" && d.data.data.height == max_height)[0]
   if (max_height_tip !== undefined) {
     offset_x = o.x(max_height_tip, htoi);
     offset_y = o.y(max_height_tip, htoi);
+    // With the mining feature on, center one slot past the tip - where the to-be-mined
+    // block sits (and where the next block will appear) - so it and its pool cloud are
+    // in view. This deliberately depends only on the mode, not on whether a to-be-mined
+    // block happens to exist right now: pools switch jobs constantly, so anchoring on
+    // the block itself dragged the view back and forth by a block slot as it came and
+    // went.
+    if (mining_enabled()) {
+      offset_x += o.next_slot.x;
+      offset_y += o.next_slot.y;
+    }
   }
 
   draw_countdown(htoi, max_height, root_node)
@@ -446,6 +564,7 @@ function draw() {
   blocks.raise()
   node_groups.raise()
   countdownLayer.raise()
+  miningLabelLayer.raise()
 
   // keep open descriptions (and their connectors) anchored to their block as the
   // layout shifts, and raise the overlay so the info boxes stay on top of everything
@@ -468,16 +587,37 @@ function draw() {
 
   lastTipPos = { x: offset_x, y: offset_y }
 
-  zoom.scaleBy(svg, 1);
-  let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
-  zoom.translateTo(svg.transition(d3.transition().duration(initialDraw ? 0 : 750)), offset_x, offset_y, o.tip_anchor(svgSize.width, svgSize.height))
+  // Panning the camera is disruptive, so only do it when there is genuinely something
+  // else to look at: a new tip, a reorg, or a switch of orientation - which moves every
+  // block into a different coordinate space and would otherwise leave the camera
+  // pointing at empty space.
+  let tip_hash = max_height_tip === undefined ? null : max_height_tip.data.data.hash
+  let anchor = tip_hash + "|" + o.name
+  let follow = initialDraw || viewAnchor === null || viewAnchor != anchor
 
-  initialDraw = false
+  log_view("draw", {
+    reason: opts.reason || "?",
+    orientation: o.name,
+    tip: tip_hash && tip_hash.substring(56),
+    max_height,
+    offset: [offset_x, offset_y],
+    viewAnchor, anchor, follow,
+  })
+
+  if (follow) {
+    viewAnchor = anchor
+    zoom.scaleBy(svg, 1);
+    let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
+    zoom.translateTo(svg.transition(d3.transition().duration(snap ? 0 : 750)), offset_x, offset_y, o.tip_anchor(svgSize.width, svgSize.height))
+    initialDraw = false
+  }
 }
 
-// bring the view back to the tip, anchored where the initial draw placed it. Keeps
-// the current zoom level; just re-pans.
+// bring the view back to whatever the last draw focused on (the tip, or the block
+// being mined on top of it), anchored where the initial draw placed it. Keeps the
+// current zoom level; just re-pans.
 function recenter() {
+  log_view("recenter", { to: lastTipPos, orientation: o.name })
   let svgSize = d3.select("#drawing-area").node().getBoundingClientRect();
   zoom.translateTo(svg.transition(d3.transition().duration(500)), lastTipPos.x, lastTipPos.y, o.tip_anchor(svgSize.width, svgSize.height))
 }
@@ -486,6 +626,163 @@ function recenter() {
 function closeAllDescriptions() {
   descLayer.selectAll(".block-description").remove()
   connectorLayer.selectAll(".link-block-description").remove()
+}
+
+// radius of the ring the labels are pulled toward, around the block centre
+const MINING_CLOUD_RADIUS = BLOCK_SIZE * 3
+
+// persistent force layout for the pool-name clouds. Kept across redraws so labels keep
+// their positions (and keep gently drifting) instead of teleporting each frame.
+let miningSim = null
+let miningLabelNodes = new Map() // key -> { key, name, bx, by, x, y }
+// which labels, around which blocks, the simulation was last reheated for
+let miningCloudKey = null
+
+// pull each label toward a ring of `radius` around ITS OWN block centre (bx, by).
+// d3.forceRadial only supports one shared centre, so we roll our own.
+function forcePerNodeRadial(radius, strength) {
+  let nodes
+  function force(alpha) {
+    for (const d of nodes) {
+      const dx = d.x - d.bx, dy = d.y - d.by
+      const r = Math.sqrt(dx * dx + dy * dy) || 1e-6
+      const k = (radius - r) * strength * alpha / r
+      d.vx += dx * k
+      d.vy += dy * k
+    }
+  }
+  force.initialize = n => { nodes = n }
+  return force
+}
+
+// push labels away from block centres so they don't sit on top of older blocks
+function forceAvoidBlocks(blocks, minDist, strength) {
+  let nodes
+  function force(alpha) {
+    for (const d of nodes) {
+      for (const b of blocks) {
+        const dx = d.x - b.x, dy = d.y - b.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1e-6
+        if (dist < minDist) {
+          const k = (minDist - dist) * strength * alpha / dist
+          d.vx += dx * k
+          d.vy += dy * k
+        }
+      }
+    }
+  }
+  force.initialize = n => { nodes = n }
+  return force
+}
+
+// tick handler: move the labels and their connector lines to the simulation positions
+function mining_cloud_tick() {
+  miningLinkLayer.selectAll("line.mining-pool-link")
+    .attr("x1", d => d.bx).attr("y1", d => d.by)
+    .attr("x2", d => d.x).attr("y2", d => d.y)
+  miningLabelLayer.selectAll("g.mining-pool")
+    .attr("transform", d => "translate(" + d.x + "," + d.y + ")")
+}
+
+// throw the pool-name cloud away. The labels are held in place by a running force
+// simulation in the coordinates of the orientation they were laid out in, so carrying
+// them over to another one sends them flying across the viewport. Jobs arrive several
+// times a second, so the cloud is rebuilt almost immediately - seeded fresh around its
+// block in the new orientation.
+function clear_mining_pool_clouds() {
+  if (miningSim) miningSim.stop()
+  miningLabelNodes = new Map()
+  miningCloudKey = null
+  miningLinkLayer.selectAll("line.mining-pool-link").remove()
+  miningLabelLayer.selectAll("g.mining-pool").remove()
+}
+
+// lay out each being-mined block's pool names in a live force cloud around it:
+// repulsion + collision keep names apart, a per-node radial pull keeps them ringed
+// around their block, and a repelling force keeps them off the other blocks. Node
+// objects persist across redraws so positions are continuous, and the simulation is
+// gently reheated each draw so the labels keep drifting.
+function draw_mining_pool_clouds(root_node, htoi) {
+  let mining_nodes = root_node.descendants().filter(d => d.data.data.status == "mining")
+
+  // obstacles: every real block centre, for the avoid force
+  let obstacles = root_node.descendants()
+    .filter(d => d.data.data.status != "mining")
+    .map(d => ({ x: o.x(d, htoi), y: o.y(d, htoi) }))
+
+  // resolve the desired labels into persistent node objects (keyed by block + name)
+  let wanted = new Map()
+  mining_nodes.forEach(node => {
+    const cx = o.x(node, htoi), cy = o.y(node, htoi)
+    // every pool mining on this block gets its own label, however many there are
+    const labels = node.data.data.mining_pools
+    const n = labels.length
+    labels.forEach((name, i) => {
+      const key = node.data.data.hash + "|" + name
+      let d = miningLabelNodes.get(key)
+      if (d === undefined) {
+        // seed a new label on the ring near its block so it eases into place
+        const a = (i / n) * 2 * Math.PI
+        d = { key, x: cx + MINING_CLOUD_RADIUS * Math.cos(a), y: cy + MINING_CLOUD_RADIUS * Math.sin(a) }
+      }
+      d.name = name
+      d.bx = cx
+      d.by = cy
+      wanted.set(key, d)
+    })
+  })
+  miningLabelNodes = wanted
+  let nodeArray = Array.from(wanted.values())
+
+  // connector lines (in the lower layer, so they come out from behind the block) and
+  // label groups, keyed so they persist across draws
+  miningLinkLayer.selectAll("line.mining-pool-link")
+    .data(nodeArray, d => d.key)
+    .join(enter => enter.append("line").attr("class", "mining-pool-link"))
+
+  miningLabelLayer.selectAll("g.mining-pool")
+    .data(nodeArray, d => d.key)
+    .join(enter => {
+      let group = enter.append("g").attr("class", "mining-pool")
+      group.append("rect").attr("class", "mining-pool-bg")
+      group.append("text").attr("class", "mining-pool-text")
+        .attr("text-anchor", "middle").attr("dy", ".35em")
+      return group
+    })
+
+  // (re)set label text and size the background to fit it (names can change)
+  miningLabelLayer.selectAll("g.mining-pool").each(function (d) {
+    let group = d3.select(this)
+    group.select("text").text(d.name)
+    fit_rect_to_text(group, 3, 1)
+  })
+
+  if (nodeArray.length == 0) {
+    if (miningSim) miningSim.stop()
+    return
+  }
+
+  const char_w = 5.2 // rough width per character at 8px, for collision sizing
+  if (miningSim === null) {
+    miningSim = d3.forceSimulation().on("tick", mining_cloud_tick)
+  }
+  miningSim.nodes(nodeArray)
+  miningSim
+    .force("charge", d3.forceManyBody().strength(-20))
+    .force("collide", d3.forceCollide().radius(d => (d.name.length * char_w) / 2 + 7))
+    .force("radial", forcePerNodeRadial(MINING_CLOUD_RADIUS, 0.12))
+    .force("avoid", forceAvoidBlocks(obstacles, BLOCK_SIZE * 3, 0.6))
+  // Gentle reheat so labels drift into place rather than snapping - but only when the
+  // cloud actually changed. Jobs arrive several times a second and mostly just repeat
+  // what we already draw; reheating on every one of them kept the labels permanently
+  // in motion instead of letting them come to rest.
+  let cloud_key = nodeArray.map(d => d.key + "@" + d.bx + "," + d.by).sort().join("|")
+  if (cloud_key !== miningCloudKey) {
+    miningCloudKey = cloud_key
+    miningSim.alpha(0.4).restart()
+  }
+  // place everything immediately so new labels/lines don't flash at the origin
+  mining_cloud_tick()
 }
 
 // size each miner background box to fit its (already positioned) text. Text metrics
@@ -660,6 +957,8 @@ function onBlockClick(c, d) {
   let blockGroup = d3.select(c.target.parentElement.parentElement)
   // only react to clicks on an actual block group
   if (blockGroup.attr("class") == null || !blockGroup.attr("class").startsWith("block")) return
+  // to-be-mined blocks have no real header data to show in the info card
+  if (d.data.data.status == "mining") return
 
   // toggle: if this block already has an open description, close it
   let existing = descLayer.selectAll(".block-description")
@@ -737,7 +1036,7 @@ function onBlockClick(c, d) {
 
   // The full block can only be fetched (via the API) for stale blocks: those
   // that are a tip on some node but not the active chain. The active tip and
-  // ghost "mining" blocks are not served, so we don't offer a link for them.
+  // to-be-mined blocks are not served, so we don't offer a link for them.
   let is_stale = Array.isArray(d.data.data.status)
     && !d.data.data.status.some(s => s.status == "active");
   // The `download` attribute renames the fetched file to `<height>-<hash>.<ext>`.
@@ -894,7 +1193,7 @@ async function draw_nodes() {
 
 orientationSelect.on("input", async function() {
   o = orientations[this.value]
-  await draw()
+  await draw({ reason: "orientation changed", snap: true, clearPoolCloud: true })
 })
 
 // Set the orientation by checking the screen width and height
