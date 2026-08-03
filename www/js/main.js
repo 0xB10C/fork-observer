@@ -338,9 +338,10 @@ const STRATUM_SSE_URL = "https://stream.stratum.work/"
 // forget a pool entirely if we haven't heard a job from it within this window, so
 // pools that stop sending (or disappear from the feed) don't linger forever.
 const STRATUM_JOB_TTL_MS = 120000
-// pool_name -> { prev_hash, last_seen }: the one block each pool is currently mining
-// on. Read by build_mining_headers() in blocktree.js on every draw, which groups it
-// the other way round, by the block being mined on.
+// pool_name -> { prev_hash, height, last_seen }: the one block each pool is currently
+// mining on, and the height it is mining at (= that block's height + 1). Read by
+// build_mining_headers() in blocktree.js on every draw, which groups it the other way
+// round, by the block being mined on.
 var state_stratum_jobs = new Map()
 let stratum_redraw_scheduled = false
 
@@ -368,6 +369,7 @@ function record_stratum_job(job) {
   state_stratum_jobs.forEach(other => { if (other.prev_hash == prev_hash) known = true })
   state_stratum_jobs.set(job.pool_name, {
     prev_hash: prev_hash,
+    height: job.height,
     last_seen: Date.now(),
   })
   return !known
