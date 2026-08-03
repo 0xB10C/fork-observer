@@ -13,6 +13,8 @@ const rssInvalidBlocks = d3.select("#rss_invalid_blocks")
 const rssLaggingNodes = d3.select("#rss_lagging_nodes")
 const rssUnreachableNodes = d3.select("#rss_unreachable_nodes")
 
+const soundCheckbox = d3.select("#sound")
+
 const SEARCH_PARAM_NETWORK = "network"
 
 // TODO: should be queried via the API as info
@@ -22,6 +24,10 @@ var state_selected_network_id = 0
 var state_networks = []
 var state_data = {}
 var update_scheduled = false
+var state_sound_enabled = false
+// hash of the active chain tip as of the last update, or null if we haven't seen one
+// yet (initial load, or right after switching networks)
+var state_tip_hash = null
 
 async function fetch_info() {
   console.debug("called fetch_info()")
@@ -53,6 +59,9 @@ async function fetch_networks() {
 
 function update_network() {
   console.debug("called update_network()")
+  // the tip of the previously selected network says nothing about the new one, so
+  // forget it to avoid a spurious sound on the first update after switching
+  state_tip_hash = null
   let current_network = state_networks.filter(net => net.id == state_selected_network_id)[0]
   document.title = PAGE_NAME + " - " + current_network.name;
   networkInfoName.text(current_network.name)
@@ -95,6 +104,116 @@ function set_initial_network() {
       .property("selected", d => d.id == state_selected_network_id)
 }
 
+// The notification sound, synthesized with the Web Audio API so no audio file has to
+// be shipped and served. A dry "tock", like a knock on a wooden desk: a short tone
+// that drops slightly in pitch as it dies away. The drop has to be small and quick —
+// a wide pitch glide, upward especially, is what turns a knock into a wet bubble.
+const SOUND_POP = {
+  freq_start: 620,
+  freq_end: 430,
+  bend: 0.03,      // seconds the pitch takes to settle
+  duration: 0.11,  // seconds until the tone has decayed away
+}
+// the tock is the fundamental plus a quiet, very short overtone. The overtone is only
+// there for the click of the attack, which is the part that carries over background
+// noise and keeps the sound from turning into a soft thud.
+const SOUND_PARTIALS = [
+  { ratio: 1, volume: 0.6, decay: 1 },
+  { ratio: 3, volume: 0.12, decay: 0.2 },
+]
+
+let audioCtx = null
+
+// The context is created on the first play, which only ever happens from the
+// checkbox click or, once enabled, from a tip change. Browsers require a user
+// gesture before audio can start, and the click provides it. A context can also be
+// suspended again later (e.g. a backgrounded tab), hence the resume.
+function ensure_audio_context() {
+  if (audioCtx === null) {
+    let AudioCtx = window.AudioContext || window.webkitAudioContext
+    if (AudioCtx === undefined) {
+      console.warn("no Web Audio API support: cannot play the chain tip sound")
+      return null
+    }
+    audioCtx = new AudioCtx()
+  }
+  if (audioCtx.state == "suspended") {
+    audioCtx.resume().catch(console.debug)
+  }
+  return audioCtx
+}
+
+function play_sound() {
+  let ctx = ensure_audio_context()
+  if (ctx === null) return
+
+  let start = ctx.currentTime
+  SOUND_PARTIALS.forEach(partial => {
+    let osc = ctx.createOscillator()
+    osc.type = "sine"
+    osc.frequency.setValueAtTime(SOUND_POP.freq_start * partial.ratio, start)
+    osc.frequency.exponentialRampToValueAtTime(SOUND_POP.freq_end * partial.ratio, start + SOUND_POP.bend)
+
+    // near-instant attack followed by an exponential decay, so it bursts rather than
+    // fades in. Exponential ramps can't touch zero, hence the small non-zero start
+    // and end values.
+    let stop = start + SOUND_POP.duration * partial.decay
+    let gain = ctx.createGain()
+    gain.gain.setValueAtTime(0.0001, start)
+    gain.gain.exponentialRampToValueAtTime(partial.volume, start + 0.004)
+    gain.gain.exponentialRampToValueAtTime(0.0001, stop)
+
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start(start)
+    osc.stop(stop + 0.02)
+  })
+}
+
+// The hash of the current chain tip: the highest tip our nodes consider active. Ties
+// (multiple nodes active on different blocks of the same height) are broken by hash,
+// so the same situation always produces the same result.
+function current_tip_hash() {
+  let best = null
+  if (state_data.nodes == undefined) return null
+  state_data.nodes.forEach(node => {
+    node.tips.filter(tip => tip.status == "active").forEach(tip => {
+      if (best == null || tip.height > best.height ||
+          (tip.height == best.height && tip.hash < best.hash)) {
+        best = tip
+      }
+    })
+  })
+  return best == null ? null : best.hash
+}
+
+// Called after every data update. Plays the sound when the tip moved on to a
+// different block: a new block, or a reorg away from the block we knew.
+function check_tip_changed() {
+  let tip_hash = current_tip_hash()
+  if (tip_hash == null) return
+  if (state_sound_enabled && state_tip_hash != null && tip_hash != state_tip_hash) {
+    console.debug("chain tip changed from", state_tip_hash, "to", tip_hash)
+    play_sound()
+  }
+  state_tip_hash = tip_hash
+}
+
+function set_initial_sound() {
+  console.debug("called set_initial_sound()")
+  // Some browsers restore the checkbox across a reload, but audio can only start
+  // after a user gesture, so a restored checkmark would promise a sound we can't
+  // play. Start unchecked instead, so the checkbox always reflects reality.
+  soundCheckbox.property("checked", false)
+  state_sound_enabled = false
+}
+
+soundCheckbox.on("input", function() {
+  state_sound_enabled = this.checked
+  // play the sound once on enabling, so it's clear what to listen for
+  if (state_sound_enabled) play_sound()
+})
+
 networkSelect.on("input", async function() {
   state_selected_network_id = networkSelect.node().value
   update_network()
@@ -105,12 +224,14 @@ async function update() {
   console.debug("called update()")
   update_scheduled = false
   await fetch_data()
+  check_tip_changed()
   await draw_nodes()
   await draw()
 }
 
 async function run() {
   console.debug("called run()")
+  set_initial_sound()
   await fetch_networks()
   await fetch_info()
   await update()
