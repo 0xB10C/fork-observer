@@ -1143,9 +1143,12 @@ function draw_countdown(htoi, max_height, root_node) {
 }
 
 function onBlockClick(c, d) {
-  let blockGroup = d3.select(c.target.parentElement.parentElement)
+  // the block group, whatever depth inside it was clicked. It is the group that
+  // carries the block's absolute x/y attrs, which the description is anchored on,
+  // so walking up to it is not optional - a nearer ancestor has no coordinates.
+  let blockGroup = d3.select(c.target.closest("g.block"))
   // only react to clicks on an actual block group
-  if (blockGroup.attr("class") == null || !blockGroup.attr("class").startsWith("block")) return
+  if (blockGroup.empty()) return
   // blocks that only come from the stratum feed have no header data for the info card
   if (from_stratum_feed(d.data.data)) return
 
