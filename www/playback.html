@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta name="color-scheme" content="dark light">
+  <meta charset="utf-8">
+  <title>fork-observer - playback</title>
+  <meta name="author" content="">
+  <meta name="description" content="">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="static/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-0evHe/X+R7YkIZDRvuzKMRqM+OrBnVFBL6DOitfPri4tjfHxaWutUpFmBp4vmVor">
+  <link href="static/css/style.css" rel="stylesheet">
+</head>
+
+<body>
+  <div class="container-fluid app-shell">
+    <header class="app-header">
+      <nav class="navbar py-2">
+        <a class="navbar-brand d-flex align-items-center gap-2 m-0" href=".">
+          <img src="static/img/logo.svg" width="30" height="30" class="d-inline-block align-top invert" alt="">
+          <span class="fw-semibold">fork-observer</span>
+        </a>
+        <div class="d-flex align-items-center gap-3">
+          <label class="d-flex align-items-center gap-2 m-0">
+            <span class="small text-muted-soft">Network</span>
+            <select name="network" id="network" class="form-select form-select-sm"></select>
+          </label>
+        </div>
+      </nav>
+    </header>
+    <main class="flex-grow-1">
+      <div class="toolbar">
+        <div class="toolbar-info">
+          <h1 class="h3 mb-1">Playback</h1>
+          <p class="text-muted-soft mb-0" id="playback-subtitle">
+            Replays the activity log onto the header tree: what each node's tips looked like at
+            the time of every logged event.
+          </p>
+        </div>
+        <div class="toolbar-controls">
+          <label class="d-flex align-items-center gap-2 m-0">
+            <span class="small text-muted-soft">orientation</span>
+            <select name="orientation" id="orientation" class="form-select form-select-sm"></select>
+          </label>
+        </div>
+      </div>
+
+      <div class="playback-bar">
+        <div class="playback-buttons">
+          <button type="button" class="btn-plain" id="to-start" title="jump to the oldest loaded event (Home)">|◀</button>
+          <button type="button" class="btn-plain" id="step-back" title="one event back (←)">◀</button>
+          <button type="button" class="btn-plain btn-play" id="play" title="play / pause (space)">▶ play</button>
+          <button type="button" class="btn-plain" id="step-forward" title="one event forward (→)">▶</button>
+          <button type="button" class="btn-plain" id="to-end" title="jump to now (End)">▶|</button>
+        </div>
+        <input type="range" class="playback-slider" id="position" min="0" max="0" value="0" step="1">
+        <label class="d-flex align-items-center gap-2 m-0">
+          <span class="small text-muted-soft">speed</span>
+          <select id="speed" class="form-select form-select-sm">
+            <option value="1500">slow</option>
+            <option value="700" selected>normal</option>
+            <option value="300">fast</option>
+            <option value="100">very fast</option>
+          </select>
+        </label>
+        <button type="button" class="btn-plain" id="load-older" title="load another page of older events from the activity database">load older</button>
+      </div>
+
+      <div class="playback-now" id="playback-now"></div>
+
+      <div class="playback-stage">
+        <div class="playback-viz">
+          <div class="viz-wrap">
+            <svg class="viz border" id="drawing-area"></svg>
+            <div class="playback-timestamp" id="playback-timestamp"></div>
+            <button type="button" class="viz-recenter" id="recenter" title="Recenter on the chain tip" onclick="recenter()">re-center</button>
+            <div id="countdown-display" class="countdown-display" style="display: none"></div>
+          </div>
+        </div>
+        <aside class="playback-events" id="playback-events"></aside>
+      </div>
+
+      <section class="nodes-section mt-3">
+        <h2 class="h5 mb-2">Nodes at this point in time</h2>
+        <span class="text-muted-soft small">Only the nodes with logged events: a node without
+          them would show its current state at every position of the replay.</span>
+        <div class="node-table-wrap" id="node_infos"></div>
+      </section>
+
+      <details class="text-muted mt-3">
+        <summary>How the past states are reconstructed</summary>
+        <p class="small mb-0 mt-2">
+          The activity log records changes, not snapshots. The state shown here is the current
+          state of the nodes with every loaded event undone, one at a time, back to the position
+          on the slider. That is exact for what the events describe, with two gaps:
+          <code>getchaintips</code> results that silently drop a fork tip produce no event, so
+          such a tip stays visible for longer than it should; and a reorg onto a branch the node
+          already knew as a fork tip drops that tip instead of restoring its earlier status.
+        </p>
+        <p class="small mb-0 mt-2">
+          <code>data.json</code> only carries the blocks the backend still finds interesting, and
+          the tree draws each run it dropped as a "N blocks hidden" link. Those runs are straight
+          lines of blocks, one per height, so a block an event names — the event carries its hash
+          and its height — is put back at the position its height gives it inside the run. Such
+          blocks are drawn <span class="legend-reconstructed">flat and greyed</span>, because only
+          their hash and height are known, and clicking them shows no header. Blocks the events
+          can't place, such as a fork tip whose branch point no event mentions, are still missing;
+          the event line above says so when it refers to one.
+        </p>
+      </details>
+    </main>
+    <footer class="app-footer mt-4">
+      <div class="row text-center align-items-center">
+        <div class="col-lg-6 p-3">
+          <a target="_blank" rel="noopener" href="https://github.com/0xb10c/fork-observer" class="footer-link">
+            <img src="static/img/GitHub-Mark-64px.png" class="invert" width=24 height=24 alt="GitHub logo">
+            <span>fork-observer</span>
+          </a>
+          <span class="text-muted-soft small d-block">Issues, Feature Ideas, and Self-Hosting Instructions</span>
+        </div>
+        <div class="col-lg-6 p-3">
+          <span class="text-muted-soft" id="footer-custom"></span>
+        </div>
+      </div>
+    </footer>
+  </div>
+  <div id="toast" class="toast-msg"></div>
+</body>
+
+<script src="static/js/d3.v7.min.js"></script>
+<script src="static/js/blocktree.js"></script>
+<script src="static/js/activity-events.js"></script>
+<script src="static/js/playback.js"></script>
+</html>

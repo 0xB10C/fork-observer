@@ -594,7 +594,10 @@ function draw(opts) {
           .attr("transform", d => `rotate(${o.block_text_rotate}, ${hidden_text_x(d, htoi)},${hidden_text_y(d, htoi)})`)
 
         blocksNotShown.append("tspan")
-          .text(d => (d.target.data.data.height - d.source.data.data.height -1) + " blocks hidden")
+          .text(d => {
+            let hidden = d.target.data.data.height - d.source.data.data.height - 1
+            return hidden + (hidden == 1 ? " block hidden" : " blocks hidden")
+          })
           .attr("dy", ".3em")
         return blocksNotShown
       },
@@ -1122,6 +1125,13 @@ function findNextInteresting(node) {
 }
 
 function isInteresting(node) {
+  if (node.data.keep_visible) {
+    // Set by the activity playback on the blocks its events are about. Without
+    // it the tree collapses a block back into a "blocks hidden" run the moment
+    // the tip moves past it, so replaying would hide the block the step before
+    // had just brought in.
+    return true
+  }
   if (node.children === undefined) {
     // the node is a tip
     return true

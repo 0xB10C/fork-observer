@@ -692,3 +692,436 @@ rect.block-miner-bg {
 .footer-link:hover {
   color: var(--accent);
 }
+
+/* ---------------------------------------------------------------------------
+   Activity log pages (activity.html, playback.html)
+   --------------------------------------------------------------------------- */
+
+/* an unadorned button that matches the pill/chip look of the rest of the UI */
+.btn-plain {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted-soft);
+  background: var(--surface-bg);
+  border: 1px solid var(--border-soft);
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-plain:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-plain:disabled {
+  opacity: 0.5;
+}
+
+/* ---------------------------------------------------------------------------
+   Activity log list
+   --------------------------------------------------------------------------- */
+
+.activity-search {
+  width: 16rem;
+  max-width: 100%;
+  background: var(--surface-bg);
+  color: var(--text-color);
+  border: 1px solid var(--border-soft);
+  border-radius: 0;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.5rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: var(--surface-bg);
+  border: 1px solid var(--border-soft);
+}
+
+.filter-group {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.filter-label {
+  font-size: 0.78rem;
+  color: var(--muted-soft);
+  min-width: 3rem;
+}
+
+.filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/* a filter toggle. On (the default) it carries the color of what it selects,
+   off it fades into the background. */
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.08rem 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-color);
+  background: transparent;
+  border: 1px solid var(--pill-color, var(--border-soft));
+  border-left-width: 4px;
+  transition: opacity 0.15s ease;
+}
+
+.filter-pill.is-off {
+  color: var(--muted-soft);
+  border-color: var(--border-soft);
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.activity-status {
+  margin-bottom: 0.35rem;
+}
+
+.activity-list {
+  border: 1px solid var(--border-soft);
+  background: var(--surface-bg);
+}
+
+.activity-day {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted-soft);
+  background: var(--body-bg);
+  border-bottom: 1px solid var(--border-soft);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.activity-row {
+  display: grid;
+  grid-template-columns: 7.5rem 9.5rem 12rem minmax(0, 1fr) 4rem;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 4px solid var(--event-color, transparent);
+  font-size: 0.9rem;
+}
+
+.activity-row:last-child {
+  border-bottom: none;
+}
+
+.activity-row:hover {
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-bg));
+}
+
+/* events that arrived while the page was open */
+.activity-row.is-fresh {
+  animation: activity-fresh 4s ease-out;
+}
+
+@keyframes activity-fresh {
+  from { background: color-mix(in srgb, var(--event-color) 35%, var(--surface-bg)); }
+  to { background: transparent; }
+}
+
+.ev-time {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.ev-clock {
+  font-variant-numeric: tabular-nums;
+}
+
+.ev-ago {
+  font-size: 0.75rem;
+  color: var(--muted-soft);
+}
+
+.ev-badge {
+  display: inline-block;
+  padding: 0.08rem 0.45rem;
+  font-size: 0.78rem;
+  color: #1a1a1a;
+  background: var(--event-color, var(--muted-soft));
+  white-space: nowrap;
+}
+
+.ev-node {
+  color: var(--muted-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ev-detail {
+  min-width: 0;
+}
+
+.ev-id {
+  font-size: 0.75rem;
+  color: var(--muted-soft);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ev-num {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.ev-mono,
+.ev-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+}
+
+.ev-block {
+  white-space: nowrap;
+}
+
+.ev-hash {
+  margin-left: 0.25rem;
+  padding: 0 0.25rem;
+  color: var(--muted-soft);
+  background: color-mix(in srgb, var(--muted-soft) 12%, transparent);
+}
+
+.status-chip {
+  padding: 0 0.35rem;
+  color: #1a1a1a;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.activity-empty {
+  padding: 1.5rem 0.75rem;
+  margin: 0;
+}
+
+.activity-more {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+@media (max-width: 991.98px) {
+  .activity-row {
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+    row-gap: 0.15rem;
+  }
+  .ev-id {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Activity playback
+   --------------------------------------------------------------------------- */
+
+.playback-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface-bg);
+  border: 1px solid var(--border-soft);
+}
+
+.playback-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.playback-buttons .btn-plain {
+  min-width: 2.2rem;
+}
+
+.btn-play.is-playing {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.playback-slider {
+  flex: 1 1 12rem;
+  accent-color: var(--accent);
+}
+
+.playback-now {
+  padding: 0.4rem 0.75rem;
+  margin-top: -1px;
+  background: var(--surface-bg);
+  border: 1px solid var(--border-soft);
+  font-size: 0.9rem;
+}
+
+.pb-now-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.75rem;
+  border-left: 4px solid var(--event-color, transparent);
+  padding-left: 0.5rem;
+}
+
+.pb-now-node {
+  font-weight: 600;
+}
+
+.pb-now-detail {
+  flex: 1 1 20rem;
+}
+
+.pb-now-time {
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+/* The moment the replay is showing, over the tree - that is where you are
+   looking while it plays, not at the event line above it. Same corner and size
+   as the countdown display, which a replay never has. */
+.playback-timestamp {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  z-index: 10;
+}
+
+.pb-timestamp-time {
+  display: block;
+  font-size: 1.75rem;
+}
+
+.pb-timestamp-date {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted-soft);
+}
+
+.playback-stage {
+  display: flex;
+  align-items: stretch;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.playback-viz {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* the events of the replay, next to the tree, current one marked */
+.playback-events {
+  /* the offset parent the current event is scrolled to the middle against */
+  position: relative;
+  flex: 0 0 24rem;
+  max-height: 78vh;
+  overflow-y: auto;
+  background: var(--surface-bg);
+  border: 1px solid var(--border-soft);
+}
+
+.pb-event {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  gap: 0 0.4rem;
+  width: 100%;
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 4px solid var(--event-color, transparent);
+  font-size: 0.82rem;
+  color: var(--text-color);
+}
+
+.pb-event:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-bg));
+}
+
+/* events that haven't been replayed yet are dimmed: they are the future */
+.pb-event.is-future {
+  opacity: 0.4;
+}
+
+.pb-event.is-current {
+  background: color-mix(in srgb, var(--event-color) 22%, var(--surface-bg));
+}
+
+.pb-event-kind {
+  color: var(--muted-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pb-event-node {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pb-event-detail {
+  grid-column: 2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* the panel is narrow, so a "height …hash" pair may have to break across
+   lines rather than run out of the panel */
+.pb-event .ev-block {
+  white-space: normal;
+}
+
+.pb-event .ev-hash {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1199.98px) {
+  .playback-stage {
+    flex-direction: column;
+  }
+  .playback-events {
+    flex: 1 1 auto;
+    max-height: 24rem;
+  }
+}
+
+/* Blocks that data.json doesn't carry (anymore) and that the playback put back
+   from the activity log. Only their hash and height are known, so they get a
+   flat grey face and a muted height and open no block info box - an ordinary
+   cube otherwise, which is what they stand for. */
+.block.playback-reconstructed rect.block-background {
+  fill: var(--block-top);
+}
+
+.block.playback-reconstructed {
+  pointer-events: none;
+}
+
+.block.playback-reconstructed text.block-text {
+  fill: var(--muted-soft);
+}
+
+/* sample of a reconstructed block's face, used in the playback legend */
+.legend-reconstructed {
+  padding: 0 0.35rem;
+  color: var(--muted-soft);
+  background: var(--block-top);
+  border: 1px solid var(--block-stroke);
+}

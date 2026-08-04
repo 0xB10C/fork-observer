@@ -30,6 +30,12 @@ pub fn build_routes(
     let fullscreen_html = warp::get()
         .and(warp::path!("fullscreen"))
         .and(warp::fs::file(config.www_path.join("fullscreen.html")));
+    let activity_html = warp::get()
+        .and(warp::path!("activity"))
+        .and(warp::fs::file(config.www_path.join("activity.html")));
+    let playback_html = warp::get()
+        .and(warp::path!("playback"))
+        .and(warp::fs::file(config.www_path.join("playback.html")));
 
     let info_json = warp::get()
         .and(warp::path!("api" / "info.json"))
@@ -132,6 +138,8 @@ pub fn build_routes(
     www_dir
         .or(index_html)
         .or(fullscreen_html)
+        .or(activity_html)
+        .or(playback_html)
         .or(data_json)
         .or(stale_json)
         .or(activity_json)
