@@ -86,6 +86,45 @@ const status_order = {
   "invalid": 4,
 }
 
+// BIP 9 signalling. A block signals for a deployment when the top three bits of its
+// version are 001 and the deployment's bit is set. Versions outside that range carry
+// no signal however their bits happen to fall — the legacy version 1 to 4 blocks
+// would otherwise read as signalling for bits 0, 1 and 2.
+//
+// Bits are reused between deployments: bit 4 carried BIP 91 in July 2017 before
+// BIP-110 took it. That is not worth guarding against here, since fork-observer only
+// ever draws the recent tip of the chain, never 2017.
+const VERSIONBITS_TOP_MASK = 0xe0000000
+const VERSIONBITS_TOP_BITS = 0x20000000
+
+// Deployments that get a chip on the block, keyed by the version bit they use. `chip`
+// has to fit on a 50px block face, so it stays short; `name` goes in the block info
+// card and `title` in the chip's tooltip.
+const SIGNALLING_DEPLOYMENTS = {
+  4: {
+    chip: "BIP-110",
+    name: "BIP-110 (bit 4)",
+    title: "Signals for BIP-110 — Reduced Data Temporary Softfork — on version bit 4.",
+  },
+}
+
+// signalling chip: a small box on the block face, one per deployment being signalled
+const CHIP_H = 9        // height of one chip
+const CHIP_PAD_X = 2    // horizontal padding inside a chip
+const CHIP_GAP = 2      // gap between stacked chips
+const CHIP_INSET = 3    // distance from the block's bottom-left corner
+
+// the deployments a block signals for, in bit order. Empty for the vast majority of
+// blocks, which is what the chip's presence is meant to stand out against.
+function signalled_deployments(header) {
+  if (((header.version & VERSIONBITS_TOP_MASK) >>> 0) != VERSIONBITS_TOP_BITS) return []
+  return Object.keys(SIGNALLING_DEPLOYMENTS)
+    .map(Number)
+    .sort(d3.ascending)
+    .filter(bit => (header.version & (1 << bit)) != 0)
+    .map(bit => SIGNALLING_DEPLOYMENTS[bit])
+}
+
 let o = orientations["left-to-right"];
 
 // absolute position of the current tip, remembered so the "recenter" button can
@@ -177,6 +216,7 @@ const zoom = d3.zoom().scaleExtent([0.15, 5])
   // sized before the text was fully laid out
   recalc_miner_boxes()
   recalc_tip_boxes()
+  recalc_signal_chips()
 })
 svg.call(zoom)
 
@@ -624,6 +664,22 @@ function draw(opts) {
           .append("title").text(d => MINING_TAGS[d.data.data.status].title(d))
         mining_tag.each(function () { fit_rect_to_text(d3.select(this), 1, 1) })
 
+        // signalling chips, stacked in the bottom-left of the block face — the one
+        // corner nothing else uses, and inside the block so they need no per-
+        // orientation placement. The container is bound to the block (not to a
+        // deployment) so it can be faded in with the rest of a new block below; it
+        // stays empty for the blocks that signal for nothing.
+        let signal_group = block_child_group.append("g").attr("class", "signal-chips")
+        signal_group.selectAll("g.signal-chip")
+          .data(d => signalled_deployments(d.data.data), d => d.chip)
+          .join(enter => {
+            let chip = enter.append("g").attr("class", "signal-chip")
+            chip.append("rect").attr("class", "signal-chip-bg")
+            chip.append("text").attr("class", "signal-chip-text").attr("dy", ".35em").text(d => d.chip)
+            chip.append("title").text(d => d.title)
+            return chip
+          })
+
         if (!initialDraw) {
           block_backgrounds
             .filter(d => d.data.data.height == max_height)
@@ -636,6 +692,12 @@ function draw(opts) {
             .attr("transform", "scale(1)")
 
           miner_group
+            .filter(d => d.data.data.height == max_height)
+            .style("opacity", 0)
+            .transition(d3.transition().duration(600))
+            .style("opacity", 1)
+
+          signal_group
             .filter(d => d.data.data.height == max_height)
             .style("opacity", 0)
             .transition(d3.transition().duration(600))
@@ -683,6 +745,7 @@ function draw(opts) {
 
   // size the miner background box to fit its (already positioned) text
   recalc_miner_boxes()
+  recalc_signal_chips()
 
   // tip info label: a stack of colored "Nx status" boxes next to each tip block. the
   // whole group is rotated like the miner text so it sits on the opposite side.
@@ -1005,6 +1068,24 @@ function recalc_tip_boxes() {
   })
 }
 
+// size each signalling chip to its text and stack the chips up from the bottom-left
+// corner of the block face. Runs on draw and on zoom, for the same text-metric reason
+// as recalc_miner_boxes().
+function recalc_signal_chips() {
+  g.selectAll("g.signal-chips").each(function () {
+    let chips = d3.select(this).selectAll("g.signal-chip")
+    let n = chips.size()
+    chips.each(function (d, j) {
+      let chip = d3.select(this)
+      let w = chip.select("text").node().getComputedTextLength() + 2 * CHIP_PAD_X
+      let top_y = BLOCK_SIZE/2 - CHIP_INSET - CHIP_H - (n - 1 - j) * (CHIP_H + CHIP_GAP)
+      chip.attr("transform", "translate(" + (-BLOCK_SIZE/2 + CHIP_INSET) + "," + top_y + ")")
+      chip.select("rect").attr("x", 0).attr("y", 0).attr("width", w).attr("height", CHIP_H)
+      chip.select("text").attr("x", CHIP_PAD_X).attr("y", CHIP_H/2)
+    })
+  })
+}
+
 // recursivly collapses linear branches of blocks longer than x,
 // starting from the root until all tips are reached.
 function stripUninteresting(node, x) {
@@ -1226,6 +1307,9 @@ function onBlockClick(c, d) {
     })
   }
 
+  // version-bit deployments this block signals for, as a comma separated list
+  let signalling = signalled_deployments(d.data.data).map(dep => dep.name).join(", ")
+
   // The full block can only be fetched (via the API) for stale blocks: those
   // that are a tip on some node but not the active chain. The active tip and
   // to-be-mined blocks are not served, so we don't offer a link for them.
@@ -1265,6 +1349,7 @@ function onBlockClick(c, d) {
                 <div class="row">
                   <span class="col-2">timestamp</span><span class="col-4">${d.data.data.time}</span>
                   <span class="col-2">version</span><span class="col-4 font-monospace">0x${d.data.data.version.toString(16)}</span>
+                  ${ signalling != "" ? '<span class="col-2">signalling</span><span class="col-4">' + signalling + '</span>' : '' }
                   <span class="col-2">nonce</span><span class="col-4 font-monospace">0x${d.data.data.nonce.toString(16)}</span>
                   <span class="col-2">bits</span><span class="col-4 font-monospace">0x${d.data.data.bits.toString(16)}</span>
                   <span class="col-2">difficulty</span><span class="col-4 font-monospace">${d.data.data.difficulty_int}</span>
