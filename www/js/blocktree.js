@@ -466,15 +466,23 @@ function preprocess_data(data) {
   // Pools switch jobs several times a second, so that showed up as the whole tree
   // sliding back and forth for no visible reason. Both runs walk the same stripped
   // tree, so every real block is in both and htoi above stays valid for either.
+  //
+  // Only the feed blocks ahead of our tip are left out that way. One at or below it
+  // competes with a block we already have, so it is a fork and is laid out with the
+  // real blocks - which separates it from its sibling like any other fork, instead of
+  // leaving it half a slot away and drawn over it. That moves the chain, but so would
+  // the confirmed block it stands in for.
+  const beyond_our_tip = d => from_stratum_feed(d.data) && d.data.height > max_height
   const real_root = treemap(
-    d3.hierarchy(treeData, d => (d.children || []).filter(c => !from_stratum_feed(c.data)))
+    d3.hierarchy(treeData, d => (d.children || []).filter(c => !beyond_our_tip(c)))
       .sort(sort_blocks))
   let real_x = new Map()
   real_root.descendants().forEach(d => real_x.set(d.data.data.hash, d.x))
 
   // Pin every real block back to where it sits without the feed. The synthetic ones
-  // aren't in that layout, so they take the shift of the block they hang off - which
-  // keeps them lined up with it and keeps any siblings as far apart as they were.
+  // ahead of the tip aren't in that layout, so they take the shift of the block they
+  // hang off - which keeps them lined up with it and keeps any siblings as far apart
+  // as they were.
   // eachBefore visits parents first, so a node's shift is always known by then.
   let shift = new Map()
   root_node.eachBefore(d => {
