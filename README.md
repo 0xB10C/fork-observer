@@ -216,3 +216,48 @@ regardless of `max_interesting_heights`.
 height = 1050000
 label = "Halving"
 ```
+
+## Activity log
+
+fork-observer can keep a timestamped, per-node activity log recording, for
+example, active tip changes, reorgs, newly appearing fork tips, invalid
+blocks, nodes becoming unreachable/reachable, and nodes lagging behind their
+peers. The log lives in its own SQLite database (separate from the headers
+database) and is enabled by adding an
+`[activity]` section to the configuration; nodes then opt in individually
+with `activity_log = true` (see `config.toml.example`).
+
+Recent events are served, newest first, via:
+
+```
+GET /api/<network_id>/activity.json?before=<id>
+```
+
+A request serves a fixed 100 events. Requests without `before` are served
+from an in-memory cache of recent events; passing the smallest `id` of the
+previous response as `before` paginates into the database.
+
+Two pages in the web interface show the log:
+
+- `/activity` lists the events of a network, newest first, filterable by
+  event kind, node, and free text, and pages further into the past with the
+  `before` cursor.
+- `/playback` replays the events onto the header tree: it reconstructs what
+  each node's tips looked like at the time of every logged event by undoing
+  events from the current state backwards, and steps or plays through them.
+  Because the log records changes rather than snapshots, the reconstruction
+  is approximate where events are missing - a fork tip a node silently stops
+  reporting produces no event, and a reorg onto a branch that was already
+  known as a fork tip drops that tip instead of restoring its old status.
+  Blocks that `data.json` no longer carries, because they stopped being
+  interesting, are put back from the events that name them: the runs the tree
+  draws as "N blocks hidden" are straight lines of blocks, one per height, so
+  a block's height says where in such a run it belongs. These blocks are drawn
+  flat and greyed, as only their hash and height are known.
+
+With `retention_days` (globally, or per network via
+`activity_retention_days`) configured, events older than the retention are
+periodically moved into monthly `activity-archive-YYYY-MM.sqlite` files in
+`archive_directory` and purged from the live database. The archive files use
+the same schema as the live database, so archived events remain queryable
+with regular SQLite tooling.
