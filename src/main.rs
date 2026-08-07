@@ -22,6 +22,7 @@ mod backend;
 mod config;
 mod db;
 mod error;
+mod forkmonitor;
 mod headertree;
 mod jsonrpc;
 mod remote_forkobserver;

@@ -231,6 +231,7 @@ networkSelect.on("input", async function() {
 async function update() {
   console.debug("called update()")
   await fetch_data()
+  merge_forkmonitor_nodes()
   check_tip_changed()
   await draw_nodes()
   await draw({ reason: "update" })
@@ -424,4 +425,152 @@ if (MINING_ENABLED) {
   connect_stratum()
 } else {
   console.debug("mining jobs feed disabled; add ?mining to the URL to enable it")
+}
+
+
+// --- forkmonitor.info nodes -------------------------------------------------
+//
+// Opt-in via ?forkmonitor: adds the nodes run by forkmonitor.info to the node
+// table and to the block tree, marked "via forkmonitor.info" the same way nodes
+// imported from another fork-observer instance are. They are synthesized here in
+// the frontend, so nothing about them is stored or enters our header tree: their
+// API reports a tip hash and height but no block headers, which means their tip
+// only shows up in the tree when one of our own nodes has the block too. When
+// they lag behind (they poll their nodes on their own schedule) their tip is
+// simply not drawn.
+//
+// This is a temporary look at someone else's nodes. The data comes through our
+// own backend, which proxies forkmonitor.info's API because it sends no CORS
+// headers (see src/forkmonitor.rs).
+const FORKMONITOR_ENABLED = new URLSearchParams(window.location.search).has("forkmonitor")
+const FORKMONITOR_URL = "api/forkmonitor/chaintips.json"
+// The proxy caches for 10s, so polling much faster would mostly re-fetch what we
+// already have.
+const FORKMONITOR_POLL_MS = 15000
+// Used while the networks are still loading, so the nodes don't stay missing for
+// a whole poll interval on the first load.
+const FORKMONITOR_RETRY_MS = 500
+// What the "via" label in the node table reads.
+const FORKMONITOR_SOURCE = "forkmonitor.info"
+// Keeps the synthesized node ids clear of the configured ones and of the
+// node_id_offset ranges used for imports from other fork-observer instances.
+const FORKMONITOR_NODE_ID_OFFSET = 900000
+
+// the nodes synthesized from the last response, merged into state_data on every
+// update, and a fingerprint of them to only redraw when something changed
+var state_forkmonitor_nodes = []
+var state_forkmonitor_signature = null
+
+function escape_html(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ))
+}
+
+// forkmonitor.info only follows Bitcoin mainnet, so its tips say nothing about
+// the other networks we might be showing.
+function forkmonitor_shows_this_network() {
+  let network = state_networks.find(net => net.id == state_selected_network_id)
+  return network != undefined && network.slug.includes("main")
+}
+
+// Turns the chaintips response into node entries shaped like the ones our own
+// API returns, so that the node table and the tree can draw them as they draw
+// any other node.
+function forkmonitor_nodes(chaintips) {
+  let nodes = []
+  if (!Array.isArray(chaintips)) return nodes
+  chaintips.forEach(chaintip => {
+    (chaintip.nodes || []).forEach(node => {
+      nodes.push({
+        id: FORKMONITOR_NODE_ID_OFFSET + node.id,
+        // These end up in the node table's HTML as-is, and unlike our own node
+        // names they are not ours, so escape them here.
+        name: escape_html(node.name_with_version),
+        description: "",
+        implementation: escape_html(node.client_type),
+        // forkmonitor reports the version as part of the name, so the client
+        // type is all that is left for the implementation column
+        version: escape_html(node.client_type),
+        tips: [{
+          hash: chaintip.block.hash,
+          height: chaintip.block.height,
+          status: "active",
+        }],
+        // when forkmonitor first saw the block, which is the closest thing it
+        // has to the "tip changed" timestamp we show for our own nodes
+        last_changed_timestamp: Math.floor(Date.parse(chaintip.block.created_at) / 1000) || 0,
+        reachable: node.unreachable_since == null,
+        remote_source: FORKMONITOR_SOURCE,
+      })
+    })
+  })
+  return nodes
+}
+
+// Adds the forkmonitor nodes to the data we just fetched. Called after every
+// fetch_data(), which replaces state_data wholesale.
+function merge_forkmonitor_nodes() {
+  if (!FORKMONITOR_ENABLED) return
+  if (state_data.nodes == undefined) return
+  if (!forkmonitor_shows_this_network()) return
+  state_data.nodes = state_data.nodes
+    .filter(node => node.remote_source != FORKMONITOR_SOURCE)
+    .concat(state_forkmonitor_nodes)
+}
+
+async function fetch_forkmonitor() {
+  let response
+  try {
+    response = await fetch(FORKMONITOR_URL)
+  } catch (e) {
+    console.error("could not fetch the forkmonitor.info chaintips", e)
+    return
+  }
+  if (!response.ok) {
+    console.error("could not fetch the forkmonitor.info chaintips:", response.status,
+      await response.text().catch(() => ""))
+    return
+  }
+  let chaintips
+  try {
+    chaintips = await response.json()
+  } catch (e) {
+    console.error("could not parse the forkmonitor.info chaintips", e)
+    return
+  }
+
+  state_forkmonitor_nodes = forkmonitor_nodes(chaintips)
+  let signature = state_forkmonitor_nodes
+    .map(node => `${node.id}:${node.tips[0].hash}:${node.reachable}`).sort().join()
+  // how long ago our backend fetched this from forkmonitor.info
+  let age = parseInt(response.headers.get("x-forkmonitor-age"), 10)
+  console.debug(`forkmonitor.info: ${state_forkmonitor_nodes.length} nodes,`,
+    `fetched ${isNaN(age) ? "?" : age}s ago`)
+
+  // nothing moved since the last poll, so leave the drawing alone
+  if (signature == state_forkmonitor_signature) return
+  state_forkmonitor_signature = signature
+
+  merge_forkmonitor_nodes()
+  if (state_data.header_infos == undefined) return
+  await draw_nodes()
+  draw({ reason: "forkmonitor.info tips changed", preserveView: true })
+}
+
+function poll_forkmonitor() {
+  // Wait for the networks before the first fetch: until we know which one is
+  // selected we can't tell whether this data applies to it.
+  if (state_networks.length == 0) {
+    setTimeout(poll_forkmonitor, FORKMONITOR_RETRY_MS)
+    return
+  }
+  fetch_forkmonitor().finally(() => setTimeout(poll_forkmonitor, FORKMONITOR_POLL_MS))
+}
+
+// only show the forkmonitor.info nodes when opted in via ?forkmonitor
+if (FORKMONITOR_ENABLED) {
+  poll_forkmonitor()
+} else {
+  console.debug("forkmonitor.info nodes hidden; add ?forkmonitor to the URL to show them")
 }
