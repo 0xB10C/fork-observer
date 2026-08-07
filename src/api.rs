@@ -1,4 +1,5 @@
 use crate::config::{Config, Network};
+use crate::forkmonitor;
 use crate::rss;
 use crate::types::{
     Caches, DataChanged, DataJsonResponse, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
@@ -89,6 +90,13 @@ pub fn build_routes(
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and_then(rss::unreachable_nodes_response);
 
+    // Proxies forkmonitor.info's chaintips API, which the frontend can't fetch
+    // itself. See src/forkmonitor.rs.
+    let forkmonitor_chaintips = warp::get()
+        .and(warp::path!("api" / "forkmonitor" / "chaintips.json"))
+        .and(forkmonitor::with_cache(forkmonitor::new_cache()))
+        .and_then(forkmonitor::chaintips_response);
+
     let networks_json = warp::get()
         .and(warp::path!("api" / "networks.json"))
         .and(with_networks(network_infos.to_vec()))
@@ -130,6 +138,7 @@ pub fn build_routes(
         .or(block_bin)
         .or(info_json)
         .or(networks_json)
+        .or(forkmonitor_chaintips)
         .or(change_sse)
         .or(forks_rss)
         .or(lagging_nodes_rss)
