@@ -21,6 +21,10 @@ const SEARCH_PARAM_NETWORK = "network"
 // ?mining. Declared up here because blocktree.js reads it while drawing, which can
 // happen before the bottom of this file has run.
 const MINING_ENABLED = new URLSearchParams(window.location.search).has("mining")
+// Which jobs feed to take the being-mined blocks from. Plain ?mining (or
+// ?mining=stratum.work) uses the default feed; ?mining=miningpool.observer switches
+// to the second one, which exists to cross-check the first while this is under test.
+const MINING_FEED = new URLSearchParams(window.location.search).get("mining") || ""
 
 // TODO: should be queried via the API as info
 const PAGE_NAME = "fork-observer"
@@ -335,6 +339,11 @@ run()
 // ---------------------------------------------------------------------------
 
 const STRATUM_SSE_URL = "https://stream.stratum.work/"
+// A second feed carrying the same jobs over a WebSocket, kept around for testing so
+// the two can be compared against each other. Both are consumed into the same
+// state_stratum_jobs map, so nothing downstream of record_stratum_job() knows or
+// cares which one is running.
+const STRATUM_WS_URL = "wss://stratum.miningpool.observer/jobs"
 // forget a pool entirely if we haven't heard a job from it within this window, so
 // pools that stop sending (or disappear from the feed) don't linger forever.
 const STRATUM_JOB_TTL_MS = 120000
@@ -345,15 +354,45 @@ const STRATUM_JOB_TTL_MS = 120000
 var state_stratum_jobs = new Map()
 let stratum_redraw_scheduled = false
 
-// the feed's prev_hash lists the header's 4-byte words in header (little-endian)
-// order; reversing the word order gives the big-endian display hash used
-// everywhere else in the app (header_infos[].hash), so to-be-mined blocks
-// resolve against the real tree.
+// the stratum.work feed's prev_hash lists the header's 4-byte words in header
+// (little-endian) order; reversing the word order gives the big-endian display hash
+// used everywhere else in the app (header_infos[].hash), so to-be-mined blocks
+// resolve against the real tree. The miningpool.observer feed sends that display
+// hash directly, so it needs no conversion.
 function stratum_prevhash_to_display(hex) {
   let words = []
   for (let i = 0; i < hex.length; i += 8) words.push(hex.slice(i, i + 8))
   return words.reverse().join("")
 }
+
+// The two feeds differ only in how they spell a job, so each one is boiled down to
+// the three fields we draw from: which pool, which block it builds on (display hash)
+// and at which height. Everything either feed sends on top of that - stratum.work's
+// coinbase halves and extranonce sizes, miningpool.observer's coinbase_tag and
+// coinbase_sum - is not drawn, so it is dropped here rather than carried around.
+// Returns null for anything that isn't a job, which includes stratum.work's
+// one-time {"type":"connection"} greeting.
+const STRATUM_FEEDS = {
+  "stratum.work": {
+    url: STRATUM_SSE_URL,
+    connect: connect_stratum_sse,
+    parse: job => job == null || !job.prev_hash || !job.pool_name ? null : {
+      pool_name: job.pool_name,
+      prev_hash: stratum_prevhash_to_display(job.prev_hash),
+      height: job.height,
+    },
+  },
+  "miningpool.observer": {
+    url: STRATUM_WS_URL,
+    connect: connect_stratum_ws,
+    parse: job => job == null || !job.prev_hash || !job.pool_name ? null : {
+      pool_name: job.pool_name,
+      prev_hash: job.prev_hash,
+      height: job.height,
+    },
+  },
+}
+const DEFAULT_STRATUM_FEED = "stratum.work"
 
 // A pool mines on exactly one block at a time, so a new job replaces whatever we knew
 // about that pool. Keying the state by pool (rather than by the block being mined on)
@@ -363,12 +402,11 @@ function stratum_prevhash_to_display(hex) {
 // Returns true when the job moves this pool onto a block no other pool was mining on,
 // i.e. when it changes which blocks are drawn rather than just who is on them.
 function record_stratum_job(job) {
-  if (job == null || !job.prev_hash || !job.pool_name) return false
-  let prev_hash = stratum_prevhash_to_display(job.prev_hash)
+  if (job == null) return false
   let known = false
-  state_stratum_jobs.forEach(other => { if (other.prev_hash == prev_hash) known = true })
+  state_stratum_jobs.forEach(other => { if (other.prev_hash == job.prev_hash) known = true })
   state_stratum_jobs.set(job.pool_name, {
-    prev_hash: prev_hash,
+    prev_hash: job.prev_hash,
     height: job.height,
     last_seen: Date.now(),
   })
@@ -398,30 +436,68 @@ function schedule_stratum_redraw(immediate) {
   }, STRATUM_REDRAW_COALESCE_MS)
 }
 
+// shared by both transports: parse one message with the running feed's parser, record
+// it, and redraw if that changed anything.
+function handle_stratum_message(feed, data) {
+  let job
+  try { job = JSON.parse(data) } catch (_) { return }
+  let parsed = feed.parse(job)
+  if (parsed === null) return
+  schedule_stratum_redraw(record_stratum_job(parsed))
+}
+
 let stratumSource = null
-function connect_stratum() {
+function connect_stratum_sse(feed) {
   try {
     // EventSource reconnects on its own after an error (with the server's
     // requested retry delay, or a browser default), so no manual backoff here.
-    stratumSource = new EventSource(STRATUM_SSE_URL)
+    stratumSource = new EventSource(feed.url)
   } catch (e) {
     console.error("could not open stratum jobs stream", e)
     return
   }
-  stratumSource.addEventListener("message", (e) => {
-    let job
-    try { job = JSON.parse(e.data) } catch (_) { return }
-    let new_block = record_stratum_job(job)
-    schedule_stratum_redraw(new_block)
-  })
+  stratumSource.addEventListener("message", (e) => handle_stratum_message(feed, e.data))
   stratumSource.addEventListener("error", (e) => {
     console.debug("stratum jobs stream error, browser will retry", e)
   })
 }
 
+// unlike EventSource, a WebSocket does not reconnect itself, so a dropped socket is
+// retried here with a capped exponential backoff.
+const STRATUM_WS_BACKOFF_START_MS = 1000
+const STRATUM_WS_BACKOFF_MAX_MS = 30000
+let stratumSocket = null
+let stratumBackoff = STRATUM_WS_BACKOFF_START_MS
+function connect_stratum_ws(feed) {
+  try {
+    stratumSocket = new WebSocket(feed.url)
+  } catch (e) {
+    console.error("could not open stratum jobs socket", e)
+    return
+  }
+  stratumSocket.addEventListener("open", () => { stratumBackoff = STRATUM_WS_BACKOFF_START_MS })
+  stratumSocket.addEventListener("message", (e) => handle_stratum_message(feed, e.data))
+  stratumSocket.addEventListener("close", () => {
+    console.debug("stratum jobs socket closed, reconnecting in", stratumBackoff, "ms")
+    setTimeout(() => connect_stratum_ws(feed), stratumBackoff)
+    stratumBackoff = Math.min(stratumBackoff * 2, STRATUM_WS_BACKOFF_MAX_MS)
+  })
+  // an error is always followed by a close, which is where the reconnect happens
+  stratumSocket.addEventListener("error", () => stratumSocket.close())
+}
+
 // only connect (and thus show any being-mined blocks) when opted in via ?mining
 if (MINING_ENABLED) {
-  connect_stratum()
+  let name = MINING_FEED == "" ? DEFAULT_STRATUM_FEED : MINING_FEED
+  let feed = STRATUM_FEEDS[name]
+  if (feed === undefined) {
+    console.error(`unknown mining jobs feed "${name}", falling back to ${DEFAULT_STRATUM_FEED};` +
+      ` known feeds: ${Object.keys(STRATUM_FEEDS).join(", ")}`)
+    name = DEFAULT_STRATUM_FEED
+    feed = STRATUM_FEEDS[name]
+  }
+  console.debug(`using the ${name} mining jobs feed at ${feed.url}`)
+  feed.connect(feed)
 } else {
   console.debug("mining jobs feed disabled; add ?mining to the URL to enable it")
 }
