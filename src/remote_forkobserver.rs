@@ -20,7 +20,7 @@ use crate::db;
 use crate::error::FetchError;
 use crate::types::{
     Caches, DataJsonResponse, Db, HeaderInfo, HeaderInfoJson, NetworksJsonResponse, NodeDataJson,
-    Tree,
+    Tree, TreeInfo,
 };
 
 /// The remote's data.json can be considerably larger than a node RPC reply,
@@ -93,6 +93,48 @@ fn header_infos_from_json(
         .collect()
 }
 
+/// Inserts the headers we can hang off a block we already have, lowest first,
+/// and returns the ones that ended up in the tree.
+///
+/// The remote serves its *stripped* header tree, which has gaps by design. It
+/// does keep the blocks around every fork though, so a fork block it knows and
+/// we don't comes with the block it forked off. Going from the lowest height up
+/// means a header's parent is already in the tree by the time we get to it -
+/// either it was there all along, or it came from this same batch.
+///
+/// Headers we can't connect are skipped. Inserting them would leave orphan
+/// blocks in the tree, and an orphan breaks the assumption the header fetching
+/// relies on: that knowing a block means knowing everything below it. A node
+/// walking down the chain stops at the first block it knows, so an orphan makes
+/// it stop on top of a hole it then never fills - splitting the tree for good
+/// and leaving the blocks above the hole looking like they came out of nowhere.
+/// We lose nothing by skipping them: without the blocks in between we can't tell
+/// where they belong anyway.
+fn insert_connectable_headers(
+    tree: &mut TreeInfo,
+    header_infos: Vec<HeaderInfo>,
+) -> Vec<HeaderInfo> {
+    let mut by_height = header_infos;
+    by_height.sort_by_key(|h| h.height);
+
+    let mut inserted: Vec<HeaderInfo> = Vec::new();
+    for header_info in by_height {
+        let hash = header_info.header.block_hash();
+        if tree.1.contains_key(&hash) {
+            continue; // we already have it
+        }
+        let idx_prev = match tree.1.get(&header_info.header.prev_blockhash) {
+            Some(idx) => *idx,
+            None => continue, // nothing to hang it off
+        };
+        let idx = tree.0.add_node(header_info.clone());
+        tree.1.insert(hash, idx);
+        tree.0.update_edge(idx_prev, idx, false);
+        inserted.push(header_info);
+    }
+    inserted
+}
+
 /// Prepares the remote's nodes to be shown alongside the local nodes: node ids
 /// are offset to avoid collisions with local node ids and the remote's name is
 /// recorded so the frontend can mark where the node came from. Nodes the remote
@@ -156,19 +198,15 @@ async fn poll_once(
     .await?;
     let header_infos = header_infos_from_json(&data.header_infos, network.min_fork_height)?;
 
-    // Only insert and persist headers we don't know about yet. This avoids
-    // re-writing the (unchanged) remote headers to the database on every poll.
+    // Skipping the headers we already have also keeps us from re-writing the
+    // (unchanged) remote headers to the database on every poll.
     let new_headers: Vec<HeaderInfo> = {
-        let tree_locked = tree.lock().await;
-        header_infos
-            .into_iter()
-            .filter(|h| !tree_locked.1.contains_key(&h.header.block_hash()))
-            .collect()
+        let mut tree_locked = tree.lock().await;
+        insert_connectable_headers(&mut tree_locked, header_infos)
     };
 
-    let mut tree_changed = false;
-    if !new_headers.is_empty() {
-        tree_changed = crate::insert_new_headers_into_tree(tree, &new_headers).await;
+    let tree_changed = !new_headers.is_empty();
+    if tree_changed {
         match db::write_to_db(&new_headers, db.clone(), network.id).await {
             Ok(_) => info!(
                 "Written {} headers to database for network '{}' from remote fork-observer '{}'",
@@ -391,6 +429,134 @@ mod tests {
         assert_eq!(kept, vec![b]);
     }
 
+    fn hi(height: u64, header: Header) -> HeaderInfo {
+        HeaderInfo {
+            height,
+            header,
+            miner: String::new(),
+        }
+    }
+
+    // A tree holding the given headers, linked up by their prev_blockhash.
+    fn tree_of(headers: &[HeaderInfo]) -> TreeInfo {
+        let mut graph: petgraph::graph::DiGraph<HeaderInfo, bool> = petgraph::graph::DiGraph::new();
+        let mut index: HashMap<BlockHash, _> = HashMap::new();
+        for h in headers {
+            index.insert(h.header.block_hash(), graph.add_node(h.clone()));
+        }
+        for h in headers {
+            let current = index[&h.header.block_hash()];
+            if let Some(prev) = index.get(&h.header.prev_blockhash) {
+                graph.update_edge(*prev, current, false);
+            }
+        }
+        (graph, index)
+    }
+
+    // A chain of headers at heights 0..=max_height.
+    fn chain(max_height: u64) -> Vec<HeaderInfo> {
+        let mut headers = vec![hi(0, header(BlockHash::all_zeros(), 0))];
+        for height in 1..=max_height {
+            let prev = headers.last().unwrap().header.block_hash();
+            headers.push(hi(height, header(prev, height as u32)));
+        }
+        headers
+    }
+
+    // The number of blocks in the tree that have no parent in it. The whole point
+    // of the filtering is that this stays at one.
+    fn root_count(tree: &TreeInfo) -> usize {
+        tree.0.externals(petgraph::Direction::Incoming).count()
+    }
+
+    // The case the remote import exists for: it knows a fork we don't. Its
+    // stripped tree carries the block the fork forked off, so we can place it.
+    #[test]
+    fn inserts_a_fork_anchored_in_our_tree() {
+        let ours = chain(5);
+        let mut tree = tree_of(&ours);
+        // The remote sends us blocks around the fork at height 4, including the
+        // stale block we've never seen.
+        let stale = hi(4, header(ours[3].header.block_hash(), 40));
+        let remote = vec![ours[2].clone(), ours[3].clone(), stale.clone()];
+
+        let inserted = insert_connectable_headers(&mut tree, remote);
+
+        assert_eq!(inserted, vec![stale.clone()]);
+        assert!(tree.1.contains_key(&stale.header.block_hash()));
+        assert_eq!(root_count(&tree), 1);
+    }
+
+    // A run of blocks the remote knows, of which we have none: the lowest one
+    // anchors on a block we have, so the whole run comes along.
+    #[test]
+    fn inserts_a_whole_run_lowest_first() {
+        let full = chain(8);
+        let mut tree = tree_of(&full[0..=5]);
+        // Handed to us highest first, to show the order doesn't matter.
+        let remote = vec![full[8].clone(), full[7].clone(), full[6].clone()];
+
+        let inserted = insert_connectable_headers(&mut tree, remote);
+
+        assert_eq!(
+            inserted,
+            vec![full[6].clone(), full[7].clone(), full[8].clone()]
+        );
+        assert_eq!(root_count(&tree), 1);
+    }
+
+    // Headers we can't place are skipped rather than left in the tree as orphans.
+    #[test]
+    fn skips_what_it_cannot_anchor() {
+        let full = chain(10);
+        let mut tree = tree_of(&full[0..=3]);
+        // Blocks 6..=8 are a run, but block 5 (which would anchor it) is missing.
+        let remote = vec![full[6].clone(), full[7].clone(), full[8].clone()];
+
+        let inserted = insert_connectable_headers(&mut tree, remote);
+
+        assert!(
+            inserted.is_empty(),
+            "expected nothing to be inserted, got heights {:?}",
+            inserted.iter().map(|h| h.height).collect::<Vec<u64>>()
+        );
+        assert_eq!(tree.0.node_count(), 4);
+        assert_eq!(root_count(&tree), 1);
+    }
+
+    // A gap inside the remote's batch only cuts off what's above the gap.
+    #[test]
+    fn stops_at_a_gap() {
+        let full = chain(10);
+        let mut tree = tree_of(&full[0..=3]);
+        // 4 and 5 connect, 7 and 8 sit above the missing 6.
+        let remote = vec![
+            full[4].clone(),
+            full[5].clone(),
+            full[7].clone(),
+            full[8].clone(),
+        ];
+
+        let inserted = insert_connectable_headers(&mut tree, remote);
+
+        assert_eq!(inserted, vec![full[4].clone(), full[5].clone()]);
+        assert_eq!(root_count(&tree), 1);
+    }
+
+    // Headers we already have are neither inserted twice nor reported as new, so
+    // an unchanged remote response doesn't rewrite the database every poll.
+    #[test]
+    fn does_not_reinsert_headers_we_already_have() {
+        let full = chain(5);
+        let mut tree = tree_of(&full);
+
+        let inserted = insert_connectable_headers(&mut tree, full.clone());
+
+        assert!(inserted.is_empty());
+        assert_eq!(tree.0.node_count(), full.len());
+        assert_eq!(root_count(&tree), 1);
+    }
+
     fn test_remote(node_id_offset: u32) -> RemoteForkObserver {
         RemoteForkObserver {
             name: "remote".to_string(),
@@ -469,13 +635,6 @@ mod tests {
             countdown: None,
             pool_identification: PoolIdentification::default(),
         }
-    }
-
-    async fn empty_tree() -> Tree {
-        Arc::new(Mutex::new((
-            petgraph::graph::DiGraph::new(),
-            HashMap::new(),
-        )))
     }
 
     async fn memory_db() -> Db {
@@ -569,7 +728,9 @@ mod tests {
         remote.network_id = remote_network_id;
 
         let network = test_network(1);
-        let tree = empty_tree().await;
+        // We already know `root` (a local node fetched it), which is what lets us
+        // place `child`. Headers we can't anchor aren't imported.
+        let tree: Tree = Arc::new(Mutex::new(tree_of(&[root.clone()])));
         let db = memory_db().await;
         let caches = empty_caches(network.id).await;
         let (cache_changed_tx, mut cache_changed_rx) = broadcast::channel(16);
@@ -587,18 +748,25 @@ mod tests {
         .await
         .expect("poll_once should succeed against the fixture server");
 
-        // The remote's headers landed in the tree.
+        // The remote's header landed in the tree, connected to what we had.
         {
             let tree_locked = tree.lock().await;
-            assert!(tree_locked.1.contains_key(&root.header.block_hash()));
             assert!(tree_locked.1.contains_key(&child.header.block_hash()));
+            assert_eq!(
+                tree_locked
+                    .0
+                    .externals(petgraph::Direction::Incoming)
+                    .count(),
+                1,
+                "the tree should stay a single connected tree"
+            );
         }
 
-        // ... and were persisted under the local network id.
+        // ... and was persisted under the local network id.
         let restored = db::load_treeinfos(db.clone(), network.id)
             .await
             .expect("tree should reload from the database");
-        assert_eq!(restored.1.len(), 2);
+        assert_eq!(restored.1.len(), 1);
 
         // The remote node shows up with an offset id and its source instance.
         {
