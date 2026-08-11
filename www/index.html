@@ -54,14 +54,14 @@
         <button type="button" class="viz-recenter" id="recenter" title="Recenter on the chain tip" onclick="recenter()">re-center</button>
         <div id="countdown-display" class="countdown-display" style="display: none"></div>
       </div>
-      <details class="text-muted">
-        <summary>Tip status legend</summary>
-        <span class="legend-item tip-status-color-background-active">active</span><span class="px-1">This is the tip of the active main chain, which is certainly valid.</span></li>
-        <span class="legend-item tip-status-color-background-valid-fork">valid-fork</span><span class="px-1">This branch is not part of the active chain, but is fully validated.</span></li>
-        <span class="legend-item tip-status-color-background-valid-headers">valid-headers</span><span class="px-1">All blocks are available for this branch, but they were never fully validated.</span></li>
-        <span class="legend-item tip-status-color-background-headers-only">headers-only</span><span class="px-1">Not all blocks for this branch are available, but the headers are valid.</span></li>
-        <span class="legend-item tip-status-color-background-invalid">invalid</span><span class="px-1">This branch contains at least one invalid block.</span>
-      </details>
+      <small>
+        <span>per node tip status:</span>
+        <span class="legend-item tip-status-color-background-active">active</span><span class="px-1">tip of the active main chain, which is certainly valid.</span></li>
+        <span class="legend-item tip-status-color-background-valid-fork">valid-fork</span><span class="px-1">not part of the active chain, but is fully validated.</span></li>
+        <span class="legend-item tip-status-color-background-valid-headers">valid-headers</span><span class="px-1">blocks are available for this branch, but they were never fully validated.</span></li>
+        <span class="legend-item tip-status-color-background-headers-only">headers-only</span><span class="px-1">not all blocks for this branch are available, but the headers are valid.</span></li>
+        <span class="legend-item tip-status-color-background-invalid">invalid</span><span class="px-1">branch contains at least one invalid block.</span>
+      </small>
       <section class="nodes-section mt-3">
         <h2 class="h5 mb-2">Nodes</h2>
         <span>List of nodes attached to this fork-observer instance.</span>
