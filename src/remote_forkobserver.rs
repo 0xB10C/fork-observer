@@ -350,7 +350,7 @@ pub async fn run_poller(
 mod tests {
     use super::*;
     use crate::config::PoolIdentification;
-    use crate::types::{Cache, HeaderInfoJson, NetworkJson, NodeDataJson};
+    use crate::types::{caches_from, Cache, HeaderInfoJson, NetworkJson, NodeDataJson};
     use corepc_client::bitcoin::hashes::Hash;
     use rusqlite::Connection;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -649,12 +649,10 @@ mod tests {
     }
 
     async fn empty_caches(network_id: u32) -> Caches {
-        let mut map = BTreeMap::new();
-        map.insert(
+        caches_from([(
             network_id,
             Cache::new(vec![], BTreeMap::new(), vec![], vec![], None),
-        );
-        Arc::new(Mutex::new(map))
+        )])
     }
 
     /// Serves a fixture `networks.json` + `data.json` on an ephemeral local
@@ -765,8 +763,8 @@ mod tests {
 
         // The remote node shows up with an offset id and its source instance.
         {
-            let locked_caches = caches.lock().await;
-            let node_data = &locked_caches.get(&network.id).unwrap().node_data;
+            let cache = caches.get(&network.id).unwrap().read().await;
+            let node_data = &cache.node_data;
             assert_eq!(node_data.len(), 1);
             let node = node_data.get(&1000).expect("offset id 1000 should exist");
             assert_eq!(node.name, "Remote Node");

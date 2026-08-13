@@ -20,9 +20,8 @@ use tokio::time::{sleep, Duration};
 use fork_observer::activity::{self, Activity, ActivityEvent, ActivityEventKind};
 use fork_observer::api;
 use fork_observer::cache::{
-    active_tip_heights, insert_new_headers_into_tree, is_node_reachable, load_node_version,
-    populate_cache, send_activity, tip_heights, update_cache, update_header_tree_cache,
-    CacheUpdate, MINER_UNKNOWN,
+    self, active_tip_heights, insert_new_headers_into_tree, is_node_reachable, load_node_version,
+    send_activity, tip_heights, update_cache, update_header_tree_cache, CacheUpdate, MINER_UNKNOWN,
 };
 use fork_observer::config;
 use fork_observer::db;
@@ -31,7 +30,7 @@ use fork_observer::headertree;
 use fork_observer::remote_forkobserver;
 use fork_observer::types::{Caches, ChainTip, Db, HeaderInfo, NetworkJson, Tree};
 
-async fn startup() -> Result<(config::Config, Db, Caches, Option<Activity>), MainError> {
+async fn startup() -> Result<(config::Config, Db, Option<Activity>), MainError> {
     let config: config::Config = match config::load_config() {
         Ok(config) => {
             info!("Configuration loaded");
@@ -58,7 +57,6 @@ async fn startup() -> Result<(config::Config, Db, Caches, Option<Activity>), Mai
     };
 
     let db: Db = Arc::new(Mutex::new(connection));
-    let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
 
     match db::setup_db(db.clone()).await {
         Ok(_) => info!("Database setup successful"),
@@ -107,19 +105,41 @@ async fn startup() -> Result<(config::Config, Db, Caches, Option<Activity>), Mai
         None => None,
     };
 
-    Ok((config, db, caches, activity))
+    Ok((config, db, activity))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-    let (config, db, caches, activity) = startup().await?;
+    let (config, db, activity) = startup().await?;
 
     // A channel to notify about changes via ServerSentEvents to clients.
     let (cache_changed_tx, _) = broadcast::channel(16);
     let cache_changed_tx_warp = cache_changed_tx.clone();
     let network_infos: Vec<NetworkJson> = config.networks.iter().map(NetworkJson::new).collect();
     let db_clone = db.clone();
+
+    // Load every network's header tree and build its cache up front. The set of
+    // networks comes from the configuration and doesn't change while we run, so
+    // the map of caches can be built once here and then shared without a lock
+    // around it - a request for one network never waits on another's writer.
+    let mut networks_with_trees: Vec<(config::Network, Tree)> = vec![];
+    for network in config.networks.iter().cloned() {
+        let tree: Tree = Arc::new(Mutex::new(
+            match db::load_treeinfos(db_clone.clone(), network.id).await {
+                Ok(tree) => tree,
+                Err(e) => {
+                    error!(
+                        "Could not load tree_infos (headers) from the database {:?}: {}",
+                        config.database_path, e
+                    );
+                    return Err(e.into());
+                }
+            },
+        ));
+        networks_with_trees.push((network, tree));
+    }
+    let caches: Caches = cache::build_caches(&networks_with_trees).await;
 
     // Activity log: preload the in-memory ring buffers with recent events,
     // spawn the writer task the event generation sites send into, and (when
@@ -157,8 +177,7 @@ async fn main() -> Result<(), MainError> {
         }
     }
 
-    for network in config.networks.iter().cloned() {
-        let network = network.clone();
+    for (network, tree) in networks_with_trees.into_iter() {
         let (pool_id_tx, mut pool_id_rx) = unbounded_channel::<BlockHash>();
 
         info!(
@@ -168,21 +187,6 @@ async fn main() -> Result<(), MainError> {
             network.nodes.len(),
             network.remote_forkobservers.len()
         );
-
-        let tree: Tree = Arc::new(Mutex::new(
-            match db::load_treeinfos(db_clone.clone(), network.id).await {
-                Ok(tree) => tree,
-                Err(e) => {
-                    error!(
-                        "Could not load tree_infos (headers) from the database {:?}: {}",
-                        config.database_path, e
-                    );
-                    return Err(e.into());
-                }
-            },
-        ));
-
-        populate_cache(&network, &tree, &caches).await;
 
         // Lagging/caught-up state of this network's nodes, shared by its node
         // tasks: a stuck node can't observe itself falling behind, so lagging

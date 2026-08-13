@@ -167,12 +167,9 @@ pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallibl
 /// Under load that's the difference between requests queueing up behind each
 /// other and them not noticing each other at all.
 pub async fn data_response(network: u32, caches: Caches) -> Result<impl warp::Reply, Infallible> {
-    let body = {
-        let caches_locked = caches.lock().await;
-        match caches_locked.get(&network) {
-            Some(cache) => cache.data_json.clone(),
-            None => Bytes::from_static(EMPTY_DATA_JSON),
-        }
+    let body = match caches.get(&network) {
+        Some(cache) => cache.read().await.data_json.clone(),
+        None => Bytes::from_static(EMPTY_DATA_JSON),
     };
     Ok(warp::http::Response::builder()
         .header("content-type", "application/json")
@@ -188,9 +185,8 @@ pub async fn stale_blocks_response(
     network: u32,
     caches: Caches,
 ) -> Result<impl warp::Reply, Infallible> {
-    let caches_locked = caches.lock().await;
-    let stale_blocks = match caches_locked.get(&network) {
-        Some(cache) => cache.stale_blocks.clone(),
+    let stale_blocks = match caches.get(&network) {
+        Some(cache) => cache.read().await.stale_blocks.clone(),
         None => vec![],
     };
     Ok(warp::reply::json(&StaleBlocksJsonResponse { stale_blocks }))
@@ -261,9 +257,9 @@ pub async fn block_response(
     //   Some(None)        - we already asked every node and none had it
     //   None              - not yet fetched
     let cached = {
-        let caches_locked = caches.lock().await;
-        match caches_locked.get(&network_id) {
+        match caches.get(&network_id) {
             Some(cache) => {
+                let cache = cache.read().await;
                 if !cache
                     .stale_blocks
                     .iter()
@@ -312,8 +308,8 @@ pub async fn block_response(
             // Cache the result (only while the block is still stale, so we don't
             // reintroduce an entry that was concurrently pruned).
             {
-                let mut caches_locked = caches.lock().await;
-                if let Some(cache) = caches_locked.get_mut(&network_id) {
+                if let Some(cache) = caches.get(&network_id) {
+                    let mut cache = cache.write().await;
                     if cache
                         .stale_blocks
                         .iter()
@@ -439,7 +435,9 @@ mod tests {
     use super::build_routes;
     use crate::backend::{BitcoinCoreNode, NodeInfo};
     use crate::config::{BoxedSyncSendNode, Config, Countdown, Network, PoolIdentification};
-    use crate::types::{Cache, Caches, NetworkJson, NodeDataJson, StaleBlockJson, Tree};
+    use crate::types::{
+        caches_from, Cache, Caches, NetworkJson, NodeDataJson, StaleBlockJson, Tree,
+    };
     use corepc_client::bitcoin::consensus::deserialize;
     use corepc_client::bitcoin::{Block, BlockHash};
     use corepc_client::client_sync::Auth;
@@ -459,12 +457,10 @@ mod tests {
         stale_blocks: Vec<StaleBlockJson>,
         countdown: Option<Countdown>,
     ) -> Caches {
-        let mut map = BTreeMap::new();
-        map.insert(
+        caches_from([(
             network_id,
             Cache::new(vec![], BTreeMap::new(), vec![], stale_blocks, countdown),
-        );
-        Arc::new(Mutex::new(map))
+        )])
     }
 
     fn make_network(id: u32, nodes: Vec<BoxedSyncSendNode>) -> Network {
@@ -642,12 +638,10 @@ mod tests {
     }
 
     // The cache a network gets at startup, so that these tests cover the whole
-    // path from the configuration through `populate_cache` into the response.
+    // path from the configuration through `build_cache` into the response.
     async fn populated_caches(network: &Network) -> Caches {
-        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
         let tree: Tree = Arc::new(Mutex::new((DiGraph::new(), HashMap::new())));
-        crate::cache::populate_cache(network, &tree, &caches).await;
-        caches
+        caches_from([(network.id, crate::cache::build_cache(network, &tree).await)])
     }
 
     #[tokio::test]
@@ -687,8 +681,7 @@ mod tests {
     async fn data_json_serves_the_cached_headers_and_nodes() {
         let caches = caches_with_stale(0, vec![]);
         {
-            let mut locked = caches.lock().await;
-            let cache = locked.get_mut(&0).unwrap();
+            let mut cache = caches.get(&0).unwrap().write().await;
             cache.node_data.insert(
                 7,
                 NodeDataJson::new(node_info(7, "a node"), &vec![], "v1".to_string(), 42, true),
@@ -989,10 +982,8 @@ mod tests {
 
         // The cache now holds the raw block bytes.
         {
-            let locked = caches.lock().await;
-            let cached = locked
-                .get(&0)
-                .unwrap()
+            let cache = caches.get(&0).unwrap().read().await;
+            let cached = cache
                 .block_cache
                 .get(&hash)
                 .cloned()
@@ -1035,13 +1026,8 @@ mod tests {
 
         // The failure is remembered as `None` so we don't retry the nodes.
         {
-            let locked = caches.lock().await;
-            let entry = locked
-                .get(&0)
-                .unwrap()
-                .block_cache
-                .get(&block_hash)
-                .cloned();
+            let cache = caches.get(&0).unwrap().read().await;
+            let entry = cache.block_cache.get(&block_hash).cloned();
             assert_eq!(entry, Some(None));
         }
 

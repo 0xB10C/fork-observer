@@ -136,9 +136,9 @@ pub async fn forks_response(
     network_infos: Vec<NetworkJson>,
     base_url: String,
 ) -> Result<impl warp::Reply, Infallible> {
-    let caches_locked = caches.lock().await;
-    match caches_locked.get(&network_id) {
+    match caches.get(&network_id) {
         Some(cache) => {
+            let cache = cache.read().await;
             let mut network_name = "";
             if let Some(network) = network_infos
                 .iter()
@@ -206,9 +206,9 @@ pub async fn lagging_nodes_response(
     network_infos: Vec<NetworkJson>,
     base_url: String,
 ) -> Result<impl warp::Reply, Infallible> {
-    let caches_locked = caches.lock().await;
-    match caches_locked.get(&network_id) {
+    match caches.get(&network_id) {
         Some(cache) => {
+            let cache = cache.read().await;
             let mut network_name = "";
             if let Some(network) = network_infos
                 .iter()
@@ -280,10 +280,9 @@ pub async fn invalid_blocks_response(
     network_infos: Vec<NetworkJson>,
     base_url: String,
 ) -> Result<impl warp::Reply, Infallible> {
-    let caches_locked = caches.lock().await;
-
-    match caches_locked.get(&network_id) {
+    match caches.get(&network_id) {
         Some(cache) => {
+            let cache = cache.read().await;
             let mut network_name = "";
             if let Some(network) = network_infos
                 .iter()
@@ -344,10 +343,9 @@ pub async fn unreachable_nodes_response(
     network_infos: Vec<NetworkJson>,
     base_url: String,
 ) -> Result<impl warp::Reply, Infallible> {
-    let caches_locked = caches.lock().await;
-
-    match caches_locked.get(&network_id) {
+    match caches.get(&network_id) {
         Some(cache) => {
+            let cache = cache.read().await;
             let mut network_name = "";
             if let Some(network) = network_infos
                 .iter()

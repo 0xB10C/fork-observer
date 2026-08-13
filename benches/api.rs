@@ -12,7 +12,7 @@
 //! Run with `cargo bench`, compare against the previous run with
 //! `cargo bench -- --baseline <name>`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,11 +25,12 @@ use fork_observer::api::build_routes;
 use fork_observer::cache::{update_cache, CacheUpdate, MAX_STALE_BLOCKS};
 use fork_observer::config::{Config, Network, PoolIdentification};
 use fork_observer::types::{
-    Cache, Caches, ChainTip, ChainTipStatus, HeaderInfo, HeaderInfoJson, NetworkJson, NodeDataJson,
-    StaleBlockJson,
+    caches_from, Cache, Caches, ChainTip, ChainTipStatus, HeaderInfo, HeaderInfoJson, NetworkJson,
+    NodeDataJson, StaleBlockJson,
 };
 use tokio::runtime::Runtime;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use warp::Filter;
 use warp::Rejection;
 use warp::Reply;
@@ -142,11 +143,7 @@ fn fake_cache() -> Cache {
 
 /// A caches map holding `networks` identically shaped networks (ids 0..n).
 fn fake_caches(networks: usize) -> Caches {
-    let mut map = BTreeMap::new();
-    for id in 0..networks as u32 {
-        map.insert(id, fake_cache());
-    }
-    Arc::new(Mutex::new(map))
+    caches_from((0..networks as u32).map(|id| (id, fake_cache())))
 }
 
 fn fake_network(id: u32) -> Network {
@@ -263,36 +260,45 @@ fn bench_data_json_concurrent(c: &mut Criterion) {
     group.finish();
 }
 
-/// Readers on network 0 while network 1 is being written to. A cache that is
-/// shared across networks makes these block each other; a per-network cache
-/// should not.
+/// A task that keeps writing to one network's cache until told to stop, at
+/// roughly the rate the node tasks of a busy network do during a block burst.
+///
+/// It sleeps between updates on purpose: as a busy loop it saturates a worker
+/// thread, and then the benchmark measures readers losing the CPU to it rather
+/// than what we want to know, which is whether they wait on its lock.
+fn spawn_writer(
+    rt: &Runtime,
+    caches: Caches,
+    network_id: u32,
+    stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    rt.spawn(async move {
+        let (tx, _rx) = broadcast::channel(16);
+        let tips = fake_tips(TIPS_PER_NODE);
+        while !stop.load(Ordering::Relaxed) {
+            update_cache(
+                &caches,
+                network_id,
+                CacheUpdate::NodeTips {
+                    node_id: 0,
+                    tips: tips.clone(),
+                },
+                &tx,
+            )
+            .await;
+            tokio::time::sleep(Duration::from_micros(500)).await;
+        }
+    })
+}
+
+/// Readers on network 0 while network 1 is being written to.
 fn bench_data_json_while_other_network_writes(c: &mut Criterion) {
     let rt = multi_thread_runtime();
     let caches = fake_caches(2);
     let route = routes(&caches, 2);
 
     let stop = Arc::new(AtomicBool::new(false));
-    let writer = {
-        let caches = caches.clone();
-        let stop = stop.clone();
-        rt.spawn(async move {
-            let (tx, _rx) = broadcast::channel(16);
-            let tips = fake_tips(TIPS_PER_NODE);
-            while !stop.load(Ordering::Relaxed) {
-                update_cache(
-                    &caches,
-                    1,
-                    CacheUpdate::NodeTips {
-                        node_id: 0,
-                        tips: tips.clone(),
-                    },
-                    &tx,
-                )
-                .await;
-                tokio::task::yield_now().await;
-            }
-        })
-    };
+    let writer = spawn_writer(&rt, caches.clone(), 1, stop.clone());
 
     let mut group = c.benchmark_group("data.json");
     group.throughput(Throughput::Elements(CONCURRENCY as u64));
@@ -304,6 +310,50 @@ fn bench_data_json_while_other_network_writes(c: &mut Criterion) {
 
     stop.store(true, Ordering::Relaxed);
     rt.block_on(async { writer.await.unwrap() });
+}
+
+/// The multi-network case: requests spread over every network, each of which is
+/// also being written to. This is the shape a real instance has - fork.observer
+/// serves mainnet, signet and testnet4 from one process - and it is what a cache
+/// shared across networks serializes and a per-network cache does not.
+fn bench_data_json_across_networks(c: &mut Criterion) {
+    const NETWORKS: usize = 4;
+    let rt = multi_thread_runtime();
+    let caches = fake_caches(NETWORKS);
+    let route = routes(&caches, NETWORKS);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writers: Vec<JoinHandle<()>> = (0..NETWORKS as u32)
+        .map(|network_id| spawn_writer(&rt, caches.clone(), network_id, stop.clone()))
+        .collect();
+
+    let mut group = c.benchmark_group("data.json");
+    group.throughput(Throughput::Elements(CONCURRENCY as u64));
+    group.bench_function("concurrent_across_networks", |b| {
+        b.to_async(&rt).iter(|| {
+            let route = route.clone();
+            async move {
+                let handles: Vec<_> = (0..CONCURRENCY)
+                    .map(|i| {
+                        let route = route.clone();
+                        let path = format!("/api/{}/data.json", i % NETWORKS);
+                        tokio::spawn(async move { request(&route, &path).await })
+                    })
+                    .collect();
+                for handle in handles {
+                    handle.await.unwrap();
+                }
+            }
+        });
+    });
+    group.finish();
+
+    stop.store(true, Ordering::Relaxed);
+    rt.block_on(async {
+        for writer in writers {
+            writer.await.unwrap();
+        }
+    });
 }
 
 fn bench_other_endpoints(c: &mut Criterion) {
@@ -380,6 +430,7 @@ criterion_group!(
     bench_data_json,
     bench_data_json_concurrent,
     bench_data_json_while_other_network_writes,
+    bench_data_json_across_networks,
     bench_other_endpoints,
     bench_update_cache,
 );

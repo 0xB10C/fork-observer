@@ -16,7 +16,7 @@ use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 #[derive(Clone)]
 pub struct Cache {
@@ -92,7 +92,25 @@ impl Cache {
 }
 
 pub type NodeData = BTreeMap<u32, NodeDataJson>;
-pub type Caches = Arc<Mutex<BTreeMap<u32, Cache>>>;
+
+/// The cache of every network, one lock per network.
+///
+/// The map itself is built once at startup - the set of networks comes from the
+/// configuration and never changes - so it needs no lock of its own, and a
+/// request for one network never waits on another network's writer. Within a
+/// network the lock is an `RwLock`: serving a request only reads.
+pub type Caches = Arc<BTreeMap<u32, RwLock<Cache>>>;
+
+/// Builds the [`Caches`] map out of each network's cache. Once built it isn't
+/// added to or removed from.
+pub fn caches_from(caches: impl IntoIterator<Item = (u32, Cache)>) -> Caches {
+    Arc::new(
+        caches
+            .into_iter()
+            .map(|(network_id, cache)| (network_id, RwLock::new(cache)))
+            .collect(),
+    )
+}
 pub type TreeInfo = (DiGraph<HeaderInfo, bool>, HashMap<BlockHash, NodeIndex>);
 pub type Tree = Arc<Mutex<TreeInfo>>;
 pub type Db = Arc<Mutex<Connection>>;
