@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast::Sender;
 use tokio_stream::wrappers::BroadcastStream;
 use warp::http::{header, HeaderValue};
-use warp::{sse::Event, Filter};
+use warp::{sse::Event, Filter, Reply};
 
 pub fn build_routes(
     network_infos: &Vec<NetworkJson>,
@@ -24,21 +24,59 @@ pub fn build_routes(
     cache_changed_tx_warp: Sender<u32>,
     activity: &Option<Activity>,
 ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    let static_files = StaticFiles::new(&config.www_path);
+
+    // Files we loaded at startup are served from memory; anything else (a file
+    // added to `www_path` while we run) still comes off disk through warp.
     let www_dir = warp::get()
         .and(warp::path("static"))
-        .and(warp::fs::dir(config.www_path.clone()));
-    let index_html = warp::get()
-        .and(warp::path::end())
-        .and(warp::fs::file(config.www_path.join("index.html")));
-    let fullscreen_html = warp::get()
-        .and(warp::path!("fullscreen"))
-        .and(warp::fs::file(config.www_path.join("fullscreen.html")));
-    let activity_html = warp::get()
-        .and(warp::path!("activity"))
-        .and(warp::fs::file(config.www_path.join("activity.html")));
-    let playback_html = warp::get()
-        .and(warp::path!("playback"))
-        .and(warp::fs::file(config.www_path.join("playback.html")));
+        .and(warp::path::tail())
+        .and(with_static_files(static_files.clone()))
+        .and(with_if_none_match())
+        .and_then(
+            |tail: warp::path::Tail, statics: StaticFiles, if_none_match| async move {
+                statics
+                    .reply(tail.as_str(), if_none_match, STATIC_CACHE_CONTROL)
+                    .ok_or_else(warp::reject::not_found)
+            },
+        )
+        .or(warp::get()
+            .and(warp::path("static"))
+            .and(warp::fs::dir(config.www_path.clone())));
+
+    // The pages themselves are always revalidated: they name the assets, so a
+    // stale page keeps a browser on the old ones.
+    let page = |name: &'static str, www_path: std::path::PathBuf, statics: StaticFiles| {
+        warp::any()
+            .and(with_static_files(statics))
+            .and(with_if_none_match())
+            .and_then(move |statics: StaticFiles, if_none_match| async move {
+                statics
+                    .reply(name, if_none_match, NO_CACHE)
+                    .ok_or_else(warp::reject::not_found)
+            })
+            .or(warp::fs::file(www_path.join(name)))
+    };
+    let index_html = warp::get().and(warp::path::end()).and(page(
+        "index.html",
+        config.www_path.clone(),
+        static_files.clone(),
+    ));
+    let fullscreen_html = warp::get().and(warp::path!("fullscreen")).and(page(
+        "fullscreen.html",
+        config.www_path.clone(),
+        static_files.clone(),
+    ));
+    let activity_html = warp::get().and(warp::path!("activity")).and(page(
+        "activity.html",
+        config.www_path.clone(),
+        static_files.clone(),
+    ));
+    let playback_html = warp::get().and(warp::path!("playback")).and(page(
+        "playback.html",
+        config.www_path.clone(),
+        static_files.clone(),
+    ));
 
     // `info.json` and `networks.json` are built entirely out of the
     // configuration, so they're serialized once here instead of on every
@@ -165,6 +203,140 @@ pub fn build_routes(
         .or(unreachable_nodes_rss)
         .or(invalid_blocks_rss)
         .or(slug_redirect)
+}
+
+/// How long a browser may reuse a file from `/static` before checking back.
+/// Short, because the pages reference the assets by plain name: a deploy has to
+/// be picked up without anyone clearing their cache.
+const STATIC_CACHE_CONTROL: HeaderValue = HeaderValue::from_static("public, max-age=300");
+
+/// The contents of the `www` directory, read once at startup, each file with
+/// the `ETag` of its contents.
+///
+/// We serve these ourselves rather than through `warp::fs` because `warp::fs`
+/// validates with `Last-Modified`, and the modification times we deploy with
+/// are meaningless: the Dockerfile copies `www` out of the build stage, which
+/// resets every one of them to the epoch. They are still the epoch after the
+/// next deploy, so a browser revalidating an asset it cached is told "not
+/// modified" and keeps running the old JavaScript against a new backend. An
+/// `ETag` over the contents answers the question the timestamp was meant to
+/// answer, correctly.
+///
+/// Serving from memory also means no disk access per request, and the whole
+/// directory is well under a megabyte.
+///
+/// The cost is that a file changed while we run isn't picked up until a
+/// restart. Anything not loaded at startup falls through to `warp::fs`, so a
+/// newly added file is still served.
+#[derive(Clone, Default)]
+pub struct StaticFiles {
+    /// Keyed by the path relative to `www_path`, e.g. `js/blocktree.js`.
+    files: Arc<std::collections::HashMap<String, StaticFile>>,
+}
+
+struct StaticFile {
+    body: Bytes,
+    etag: HeaderValue,
+    content_type: HeaderValue,
+}
+
+impl StaticFiles {
+    pub fn new(www_path: &std::path::Path) -> Self {
+        let mut files = std::collections::HashMap::new();
+        let mut directories = vec![www_path.to_path_buf()];
+        while let Some(directory) = directories.pop() {
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!(
+                        "Could not read {:?} to serve it from memory: {}",
+                        directory, e
+                    );
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    directories.push(path);
+                    continue;
+                }
+                let name = match path.strip_prefix(www_path).ok().and_then(|p| p.to_str()) {
+                    Some(name) => name.replace('\\', "/"),
+                    None => continue,
+                };
+                match std::fs::read(&path) {
+                    Ok(contents) => {
+                        files.insert(
+                            name,
+                            StaticFile {
+                                etag: etag(&contents),
+                                content_type: content_type(&path),
+                                body: Bytes::from(contents),
+                            },
+                        );
+                    }
+                    Err(e) => warn!("Could not read {:?} to serve it from memory: {}", path, e),
+                }
+            }
+        }
+        log::info!("Loaded {} files from {:?}", files.len(), www_path);
+        StaticFiles {
+            files: Arc::new(files),
+        }
+    }
+
+    /// The file, with its `ETag` and a `Cache-Control`, or a 304 if the client
+    /// already has this version. `None` for a path we didn't load, which lets
+    /// the caller fall through to serving it off disk.
+    fn reply(
+        &self,
+        name: &str,
+        if_none_match: Option<String>,
+        cache_control: HeaderValue,
+    ) -> Option<warp::reply::Response> {
+        let file = self.files.get(name)?;
+        let unchanged = etag_matches(if_none_match.as_deref(), &file.etag);
+
+        let response = warp::http::Response::builder()
+            .header(header::CACHE_CONTROL, cache_control)
+            .header(header::ETAG, file.etag.clone());
+
+        Some(if unchanged {
+            response
+                .status(warp::http::StatusCode::NOT_MODIFIED)
+                .body(Bytes::new())
+                .unwrap()
+                .into_response()
+        } else {
+            response
+                .header(header::CONTENT_TYPE, file.content_type.clone())
+                .body(file.body.clone())
+                .unwrap()
+                .into_response()
+        })
+    }
+}
+
+/// The content type of a file we serve, by extension. Only the kinds `www`
+/// holds; anything else is served as bytes and left to the browser to sniff.
+fn content_type(path: &std::path::Path) -> HeaderValue {
+    HeaderValue::from_static(match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
+    })
+}
+
+pub fn with_static_files(
+    static_files: StaticFiles,
+) -> impl Filter<Extract = (StaticFiles,), Error = Infallible> + Clone {
+    warp::any().map(move || static_files.clone())
 }
 
 /// Serves a JSON body that was serialized once when the routes were built.
@@ -922,6 +1094,146 @@ mod tests {
             assert!(!etag_matches(Some(header), &ours), "{}", header);
         }
         assert!(!etag_matches(None, &ours));
+    }
+
+    // --- Static files ---
+
+    /// A temporary directory that removes itself when the test ends.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // A www directory with a page and an asset in a subdirectory.
+    fn www_fixture(name: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("fork-observer-www-{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("js")).unwrap();
+        std::fs::write(dir.join("index.html"), b"<html>hello</html>").unwrap();
+        std::fs::write(dir.join("js/main.js"), b"console.log(1)").unwrap();
+        TempDir(dir)
+    }
+
+    fn routes_with_www(
+        www_path: &std::path::Path,
+    ) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+        let networks = vec![make_network(0, vec![])];
+        let network_infos: Vec<NetworkJson> = networks.iter().map(NetworkJson::new).collect();
+        let mut config = test_config(networks);
+        config.www_path = www_path.to_path_buf();
+        let (cache_changed_tx, _rx) = tokio::sync::broadcast::channel(16);
+        build_routes(
+            &network_infos,
+            &config,
+            &caches_with_stale(0, vec![]),
+            cache_changed_tx,
+            &None,
+        )
+    }
+
+    #[tokio::test]
+    async fn static_files_are_served_with_an_etag_and_cache_control() {
+        let www = www_fixture("etag");
+        let route = routes_with_www(www.path());
+
+        let resp = warp::test::request()
+            .path("/static/js/main.js")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.body(), "console.log(1)");
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            resp.headers().get("cache-control").unwrap(),
+            "public, max-age=300"
+        );
+        let etag = resp.headers().get("etag").unwrap().clone();
+
+        let resp = warp::test::request()
+            .path("/static/js/main.js")
+            .header("if-none-match", etag.clone())
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 304);
+        assert!(resp.body().is_empty());
+
+        // Assets are the responses a proxy is most likely to compress, and it
+        // weakens the tag when it does. Still the same file, so still a 304.
+        let resp = warp::test::request()
+            .path("/static/js/main.js")
+            .header("if-none-match", format!("W/{}", etag.to_str().unwrap()))
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 304);
+        assert!(resp.body().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_changed_file_gets_a_different_etag() {
+        let www = www_fixture("changed");
+        let etag_before = {
+            let route = routes_with_www(www.path());
+            warp::test::request()
+                .path("/static/js/main.js")
+                .reply(&route)
+                .await
+                .headers()
+                .get("etag")
+                .unwrap()
+                .clone()
+        };
+
+        // A deploy changes the content. Nothing about the file's modification
+        // time is consulted, which is the point: the deploy artifact's timestamps
+        // are all the epoch.
+        std::fs::write(www.path().join("js/main.js"), b"console.log(2)").unwrap();
+
+        // A restart (the files are read at startup) must not answer the old
+        // ETag with a 304.
+        let route = routes_with_www(www.path());
+        let resp = warp::test::request()
+            .path("/static/js/main.js")
+            .header("if-none-match", etag_before.clone())
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.body(), "console.log(2)");
+        assert_ne!(resp.headers().get("etag").unwrap(), &etag_before);
+    }
+
+    #[tokio::test]
+    async fn the_index_page_is_served_but_not_cached() {
+        let www = www_fixture("index");
+        let route = routes_with_www(www.path());
+        let resp = warp::test::request().path("/").reply(&route).await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.body(), "<html>hello</html>");
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-cache");
+        assert!(resp.headers().get("etag").is_some());
+    }
+
+    #[tokio::test]
+    async fn static_paths_cannot_escape_the_www_directory() {
+        let www = www_fixture("traversal");
+        std::fs::write(www.path().parent().unwrap().join("fo-secret.txt"), b"nope").unwrap();
+        let route = routes_with_www(www.path());
+
+        for path in ["/static/../fo-secret.txt", "/static/js/../../fo-secret.txt"] {
+            let resp = warp::test::request().path(path).reply(&route).await;
+            assert_ne!(resp.status(), 200, "{} should not be served", path);
+        }
     }
 
     #[tokio::test]
