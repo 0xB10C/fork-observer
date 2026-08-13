@@ -1,5 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -17,6 +19,7 @@ use petgraph::graph::NodeIndex;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use warp::http::HeaderValue;
 
 #[derive(Clone)]
 pub struct Cache {
@@ -25,6 +28,10 @@ pub struct Cache {
     /// handing out a reference-counted buffer rather than walking the header
     /// list and serializing it again for every client.
     pub data_json: Bytes,
+    /// The `ETag` of [`Cache::data_json`], a hash of the body. Kept next to it
+    /// so a client that already has this version can be answered with a 304
+    /// instead of the body.
+    pub data_json_etag: HeaderValue,
     /// This network's countdown, taken from the configuration. It's part of
     /// `data.json`, and keeping it here means rebuilding that response doesn't
     /// need access to the config.
@@ -60,6 +67,7 @@ impl Cache {
     ) -> Self {
         let mut cache = Cache {
             data_json: Bytes::new(),
+            data_json_etag: HeaderValue::from_static(""),
             countdown,
             header_infos_json,
             node_data,
@@ -85,10 +93,27 @@ impl Cache {
             countdown: self.countdown.as_ref(),
         };
         match serde_json::to_vec(&response) {
-            Ok(bytes) => self.data_json = Bytes::from(bytes),
+            Ok(bytes) => {
+                self.data_json_etag = etag(&bytes);
+                self.data_json = Bytes::from(bytes);
+            }
             Err(e) => error!("Could not serialize data.json: {}", e),
         }
     }
+}
+
+/// The `ETag` of a response body: a hash of its bytes, so that two responses
+/// with the same content get the same tag and a client holding either of them
+/// can be answered with a 304.
+///
+/// A hash rather than a version counter because a counter has to survive
+/// restarts to be correct, and because most cache updates don't actually change
+/// what a client sees.
+pub fn etag(body: &[u8]) -> HeaderValue {
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    HeaderValue::from_str(&format!("\"{:016x}\"", hasher.finish()))
+        .expect("a hex hash in quotes is a valid header value")
 }
 
 pub type NodeData = BTreeMap<u32, NodeDataJson>;

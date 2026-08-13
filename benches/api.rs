@@ -244,6 +244,33 @@ fn bench_data_json(c: &mut Criterion) {
         b.to_async(&rt).iter(|| request(&route, "/api/0/data.json"));
     });
     group.finish();
+
+    // A client that already has the current version. This is what the browsers
+    // watching a network do after every `cache_changed` event that didn't
+    // change anything they can see.
+    let etag = rt.block_on(async {
+        warp::test::request()
+            .path("/api/0/data.json")
+            .reply(&route)
+            .await
+            .headers()
+            .get("etag")
+            .expect("data.json should carry an ETag")
+            .clone()
+    });
+    let mut group = c.benchmark_group("data.json");
+    group.bench_function("conditional_304", |b| {
+        b.to_async(&rt).iter(|| async {
+            warp::test::request()
+                .path("/api/0/data.json")
+                .header("if-none-match", etag.clone())
+                .reply(&route)
+                .await
+                .body()
+                .len()
+        });
+    });
+    group.finish();
 }
 
 fn bench_data_json_concurrent(c: &mut Criterion) {

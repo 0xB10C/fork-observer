@@ -2,7 +2,7 @@ use crate::activity::{Activity, ActivityJsonResponse, ActivityQuery, EVENTS_PER_
 use crate::config::{Config, Network};
 use crate::rss;
 use crate::types::{
-    Caches, DataChanged, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
+    etag, Caches, DataChanged, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
     StaleBlocksJsonResponse,
 };
 use bytes::Bytes;
@@ -14,6 +14,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::broadcast::Sender;
 use tokio_stream::wrappers::BroadcastStream;
+use warp::http::{header, HeaderValue};
 use warp::{sse::Event, Filter};
 
 pub fn build_routes(
@@ -47,11 +48,13 @@ pub fn build_routes(
         .and(with_body(serialized(&InfoJsonResponse {
             footer: config.footer_html.clone(),
         })))
+        .and(with_if_none_match())
         .and_then(static_json_response);
 
     let data_json = warp::get()
         .and(warp::path!("api" / u32 / "data.json"))
         .and(with_caches(caches.clone()))
+        .and(with_if_none_match())
         .and_then(data_response);
 
     let stale_json = warp::get()
@@ -114,6 +117,7 @@ pub fn build_routes(
         .and(with_body(serialized(&NetworksJsonResponse {
             networks: network_infos.to_vec(),
         })))
+        .and(with_if_none_match())
         .and_then(static_json_response);
 
     // Friendly network URLs: `/testnet4` redirects to `/?network=testnet4`,
@@ -164,22 +168,101 @@ pub fn build_routes(
 }
 
 /// Serves a JSON body that was serialized once when the routes were built.
-pub async fn static_json_response(body: Bytes) -> Result<impl warp::Reply, Infallible> {
-    Ok(json_response(body))
+pub async fn static_json_response(
+    body: StaticJson,
+    if_none_match: Option<String>,
+) -> Result<impl warp::Reply, Infallible> {
+    Ok(json_response(body.body, body.etag, if_none_match))
 }
 
-fn json_response(body: Bytes) -> warp::http::Response<Bytes> {
-    warp::http::Response::builder()
-        .header("content-type", "application/json")
-        .body(body)
-        .unwrap()
+/// A response body that doesn't change while we run, with its `ETag`.
+#[derive(Clone)]
+pub struct StaticJson {
+    body: Bytes,
+    etag: HeaderValue,
 }
 
 /// Serializes a response that never changes while we run. A value that can't be
 /// serialized would be a bug we'd rather see at startup than per request, so
 /// this panics.
-fn serialized<T: serde::Serialize>(value: &T) -> Bytes {
-    Bytes::from(serde_json::to_vec(value).expect("a static API response should serialize"))
+fn serialized<T: serde::Serialize>(value: &T) -> StaticJson {
+    let body = serde_json::to_vec(value).expect("a static API response should serialize");
+    StaticJson {
+        etag: etag(&body),
+        body: Bytes::from(body),
+    }
+}
+
+/// A JSON response carrying an `ETag`, or a 304 if the client already has this
+/// version.
+///
+/// `Cache-Control: no-cache` means "you may store this, but check with me
+/// before reusing it" - so a client that comes back gets a ~150 byte 304
+/// instead of the body, while never being shown data that has since changed.
+fn json_response(
+    body: Bytes,
+    etag: HeaderValue,
+    if_none_match: Option<String>,
+) -> warp::http::Response<Bytes> {
+    let unchanged = etag_matches(if_none_match.as_deref(), &etag);
+
+    // The header names and the constant values are built once rather than
+    // parsed from strings per response.
+    let response = warp::http::Response::builder()
+        .header(header::CACHE_CONTROL, NO_CACHE)
+        .header(header::ETAG, etag);
+
+    if unchanged {
+        return response
+            .status(warp::http::StatusCode::NOT_MODIFIED)
+            .body(Bytes::new())
+            .unwrap();
+    }
+    response
+        .header(header::CONTENT_TYPE, APPLICATION_JSON)
+        .body(body)
+        .unwrap()
+}
+
+const NO_CACHE: HeaderValue = HeaderValue::from_static("no-cache");
+const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
+
+/// Whether the `If-None-Match` a client sent covers the version we would serve.
+///
+/// RFC 9110 §13.1.2 has `If-None-Match` use the *weak* comparison function, so
+/// `W/"x"` and `"x"` are the same version, a list matches if any of its tags
+/// does, and `*` matches whatever we have.
+///
+/// The weak form is not a corner case: a proxy that compresses our response
+/// rewrites the `ETag` it passes on to `W/"..."`, because what it sends is no
+/// longer byte-identical to what we sent. nginx does this, and every browser
+/// asks for compression, so the tag that comes back is routinely not the one we
+/// handed out. Comparing the two byte for byte answers all of those with the
+/// full body, which is the entire cost the `ETag` is here to avoid.
+fn etag_matches(if_none_match: Option<&str>, etag: &HeaderValue) -> bool {
+    let Some(header) = if_none_match else {
+        return false;
+    };
+    if header.trim() == "*" {
+        return true;
+    }
+    // Splitting on commas is safe for the tags we hand out - they are quoted
+    // hex - even though an entity tag may in general contain one.
+    let ours = strip_weak(etag.as_bytes());
+    header
+        .split(',')
+        .any(|tag| strip_weak(tag.trim().as_bytes()) == ours)
+}
+
+/// An entity tag without its weakness marker, for comparing two of them weakly.
+fn strip_weak(tag: &[u8]) -> &[u8] {
+    tag.strip_prefix(b"W/").unwrap_or(tag)
+}
+
+/// The `If-None-Match` a client sent, if any.
+pub fn with_if_none_match(
+) -> impl Filter<Extract = (Option<String>,), Error = warp::Rejection> + Clone {
+    warp::header::optional::<String>("if-none-match")
 }
 
 /// Serves a network's `data.json` straight out of the cache.
@@ -189,12 +272,22 @@ fn serialized<T: serde::Serialize>(value: &T) -> Bytes {
 /// instead of for a clone of the whole header list plus a JSON serialization.
 /// Under load that's the difference between requests queueing up behind each
 /// other and them not noticing each other at all.
-pub async fn data_response(network: u32, caches: Caches) -> Result<impl warp::Reply, Infallible> {
-    let body = match caches.get(&network) {
-        Some(cache) => cache.read().await.data_json.clone(),
-        None => Bytes::from_static(EMPTY_DATA_JSON),
+pub async fn data_response(
+    network: u32,
+    caches: Caches,
+    if_none_match: Option<String>,
+) -> Result<impl warp::Reply, Infallible> {
+    let (body, etag) = match caches.get(&network) {
+        Some(cache) => {
+            let cache = cache.read().await;
+            (cache.data_json.clone(), cache.data_json_etag.clone())
+        }
+        None => (
+            Bytes::from_static(EMPTY_DATA_JSON),
+            crate::types::etag(EMPTY_DATA_JSON),
+        ),
     };
-    Ok(json_response(body))
+    Ok(json_response(body, etag, if_none_match))
 }
 
 /// What we serve for a network that has no cache. Every configured network gets
@@ -423,7 +516,9 @@ pub fn data_changed_sse(network_id: u32) -> Result<Event, serde_json::Error> {
 // couple of words is shared behind an `Arc` (or, for a response body, `Bytes`)
 // rather than cloned per request.
 
-pub fn with_body(body: Bytes) -> impl Filter<Extract = (Bytes,), Error = Infallible> + Clone {
+pub fn with_body(
+    body: StaticJson,
+) -> impl Filter<Extract = (StaticJson,), Error = Infallible> + Clone {
     warp::any().map(move || body.clone())
 }
 
@@ -460,7 +555,7 @@ pub fn with_slugs(
 
 #[cfg(test)]
 mod tests {
-    use super::build_routes;
+    use super::{build_routes, etag_matches, HeaderValue};
     use crate::backend::{BitcoinCoreNode, NodeInfo};
     use crate::config::{BoxedSyncSendNode, Config, Countdown, Network, PoolIdentification};
     use crate::types::{
@@ -730,6 +825,122 @@ mod tests {
         assert_eq!(v["nodes"][0]["id"], 7);
         assert_eq!(v["nodes"][0]["name"], "a node");
         assert_eq!(v["header_infos"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn data_json_answers_an_unchanged_etag_with_304() {
+        let caches = caches_with_stale(0, vec![]);
+        let route = routes(caches.clone(), vec![make_network(0, vec![])]);
+
+        let resp = warp::test::request()
+            .path("/api/0/data.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "no-cache");
+        let etag = resp.headers().get("etag").unwrap().clone();
+        let body = resp.body().clone();
+        assert!(!body.is_empty());
+
+        // Coming back with that ETag gets a 304 and no body.
+        let resp = warp::test::request()
+            .path("/api/0/data.json")
+            .header("if-none-match", etag.clone())
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 304);
+        assert_eq!(resp.headers().get("etag").unwrap(), &etag);
+        assert!(resp.body().is_empty());
+
+        // What a browser sends back once a proxy has compressed the response
+        // and weakened the tag on the way out. Same version, so still a 304.
+        let resp = warp::test::request()
+            .path("/api/0/data.json")
+            .header("if-none-match", format!("W/{}", etag.to_str().unwrap()))
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 304);
+        assert!(resp.body().is_empty());
+
+        // A different ETag (a client holding an older version) gets the body.
+        let resp = warp::test::request()
+            .path("/api/0/data.json")
+            .header("if-none-match", "\"0000000000000000\"")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.body(), &body);
+    }
+
+    #[tokio::test]
+    async fn data_json_etag_changes_when_the_cache_changes() {
+        let caches = caches_with_stale(0, vec![]);
+        let route = routes(caches.clone(), vec![make_network(0, vec![])]);
+
+        let before = warp::test::request()
+            .path("/api/0/data.json")
+            .reply(&route)
+            .await;
+        let etag_before = before.headers().get("etag").unwrap().clone();
+
+        {
+            let mut cache = caches.get(&0).unwrap().write().await;
+            cache.node_data.insert(
+                7,
+                NodeDataJson::new(node_info(7, "a node"), &vec![], "v1".to_string(), 42, true),
+            );
+            cache.rebuild_data_json();
+        }
+
+        // The client's now-stale ETag must not be answered with a 304.
+        let after = warp::test::request()
+            .path("/api/0/data.json")
+            .header("if-none-match", etag_before.clone())
+            .reply(&route)
+            .await;
+        assert_eq!(after.status(), 200);
+        assert_ne!(after.headers().get("etag").unwrap(), &etag_before);
+    }
+
+    #[test]
+    fn etag_matches_compares_weakly() {
+        let ours = HeaderValue::from_static("\"abc\"");
+        for header in [
+            "\"abc\"",
+            // what a proxy that compressed the response hands the client
+            "W/\"abc\"",
+            // more than one stored version, and any position in the list
+            "\"old\", \"abc\"",
+            "W/\"abc\", \"old\"",
+            // "whatever you have"
+            "*",
+        ] {
+            assert!(etag_matches(Some(header), &ours), "{}", header);
+        }
+
+        for header in ["\"abcd\"", "W/\"abcd\"", "\"old\", \"older\"", "", "abc"] {
+            assert!(!etag_matches(Some(header), &ours), "{}", header);
+        }
+        assert!(!etag_matches(None, &ours));
+    }
+
+    #[tokio::test]
+    async fn networks_json_answers_an_unchanged_etag_with_304() {
+        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let resp = warp::test::request()
+            .path("/api/networks.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let etag = resp.headers().get("etag").unwrap().clone();
+
+        let resp = warp::test::request()
+            .path("/api/networks.json")
+            .header("if-none-match", etag)
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 304);
+        assert!(resp.body().is_empty());
     }
 
     #[tokio::test]
