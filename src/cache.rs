@@ -256,69 +256,64 @@ pub async fn update_cache(
 ) {
     debug!("updating cache with: {}", update);
     let mut locked_cache = caches.lock().await;
-    let network = locked_cache
-        .get(&network_id)
+    let cache = locked_cache
+        .get_mut(&network_id)
         .expect("this network should be in the caches");
     match update {
         CacheUpdate::HeaderMiner { header_info } => {
-            let mut old = network.header_infos_json.clone();
+            let mut old = cache.header_infos_json.clone();
             if let Some(index) = old
                 .iter()
                 .position(|h| h.hash == header_info.header.block_hash().to_string())
             {
                 old[index].update_miner(header_info.miner.clone());
             }
+            cache.header_infos_json = old;
 
-            locked_cache.entry(network_id).and_modify(|cache| {
-                cache.header_infos_json = old;
-
-                cache.recent_miners.push((
-                    header_info.header.block_hash().to_string(),
-                    header_info.miner,
-                ));
-                if cache.recent_miners.len() > 5 {
-                    cache.recent_miners.remove(0);
-                }
-            });
+            cache.recent_miners.push((
+                header_info.header.block_hash().to_string(),
+                header_info.miner,
+            ));
+            if cache.recent_miners.len() > 5 {
+                cache.recent_miners.remove(0);
+            }
         }
         CacheUpdate::HeaderTree {
-            header_infos_json,
+            mut header_infos_json,
             forks,
             stale_blocks,
         } => {
-            let mut new_header_infos_map: HashMap<String, HeaderInfoJson> = header_infos_json
-                .iter()
-                .map(|h| (h.hash.clone(), h.clone()))
-                .collect();
-            // we might have new miner infos. Make sure to not overwrite headers
-            // that already have a miner.
-            for (hash, miner) in network.recent_miners.iter() {
-                new_header_infos_map.entry(hash.clone()).and_modify(|new| {
-                    new.update_miner(miner.clone());
+            // Stripping the tree runs in parallel with identifying miners, so
+            // the header list we just got might not have miners we learned
+            // about in the meantime. Fill those in, without overwriting a miner
+            // the new list already has.
+            for header in header_infos_json.iter_mut() {
+                if let Some((_, miner)) = cache
+                    .recent_miners
+                    .iter()
+                    .find(|(hash, _)| *hash == header.hash)
+                {
                     debug!(
                         "During CacheUpdate::HeaderTree, updated miner of block {}: {}",
-                        hash, miner
+                        header.hash, miner
                     );
-                });
+                    header.update_miner(miner.clone());
+                }
             }
 
             let stale_hashes: HashSet<String> =
                 stale_blocks.iter().map(|b| b.hash.clone()).collect();
-            locked_cache.entry(network_id).and_modify(|e| {
-                e.header_infos_json = new_header_infos_map
-                    .iter()
-                    .map(|(_, header)| header.clone())
-                    .collect();
-                e.forks = forks;
-                e.stale_blocks = stale_blocks;
-                // Drop cached blocks that are no longer in the stale list, so the
-                // block cache stays bounded to the last MAX_STALE_BLOCKS blocks.
-                e.block_cache
-                    .retain(|hash, _| stale_hashes.contains(&hash.to_string()));
-            });
+            cache.header_infos_json = header_infos_json;
+            cache.forks = forks;
+            cache.stale_blocks = stale_blocks;
+            // Drop cached blocks that are no longer in the stale list, so the
+            // block cache stays bounded to the last MAX_STALE_BLOCKS blocks.
+            cache
+                .block_cache
+                .retain(|hash, _| stale_hashes.contains(&hash.to_string()));
         }
         CacheUpdate::NodeTips { node_id, tips } => {
-            let min_height = match network.header_infos_json.iter().min_by_key(|h| h.height) {
+            let min_height = match cache.header_infos_json.iter().min_by_key(|h| h.height) {
                 Some(header) => header.height,
                 None => 0,
             };
@@ -328,41 +323,33 @@ pub async fn update_cache(
                 .cloned()
                 .collect();
 
-            locked_cache.entry(network_id).and_modify(|network| {
-                network
-                    .node_data
-                    .entry(node_id)
-                    .and_modify(|e| e.tips(&relevant_tips));
-            });
+            cache
+                .node_data
+                .entry(node_id)
+                .and_modify(|e| e.tips(&relevant_tips));
         }
         CacheUpdate::NodeReachability { node_id, reachable } => {
-            locked_cache.entry(network_id).and_modify(|network| {
-                network
-                    .node_data
-                    .entry(node_id)
-                    .and_modify(|e| e.reachable(reachable));
-            });
+            cache
+                .node_data
+                .entry(node_id)
+                .and_modify(|e| e.reachable(reachable));
         }
         CacheUpdate::NodeVersion { node_id, version } => {
-            locked_cache.entry(network_id).and_modify(|network| {
-                network
-                    .node_data
-                    .entry(node_id)
-                    .and_modify(|e| e.version(version));
-            });
+            cache
+                .node_data
+                .entry(node_id)
+                .and_modify(|e| e.version(version));
         }
         CacheUpdate::RemoteNodes {
             removed_node_ids,
             nodes,
         } => {
-            locked_cache.entry(network_id).and_modify(|network| {
-                for id in removed_node_ids.iter() {
-                    network.node_data.remove(id);
-                }
-                for node in nodes.into_iter() {
-                    network.node_data.insert(node.id, node);
-                }
-            });
+            for id in removed_node_ids.iter() {
+                cache.node_data.remove(id);
+            }
+            for node in nodes.into_iter() {
+                cache.node_data.insert(node.id, node);
+            }
         }
     }
 
@@ -672,5 +659,116 @@ mod tests {
         let block_cache = &locked.get(&network_id).unwrap().block_cache;
         assert!(block_cache.contains_key(&keep));
         assert!(!block_cache.contains_key(&drop_it));
+    }
+
+    fn test_header(height: u64, miner: &str) -> HeaderInfoJson {
+        HeaderInfoJson {
+            id: height as usize,
+            prev_id: height.saturating_sub(1) as usize,
+            height,
+            hash: format!("{:064x}", height),
+            version: 1,
+            prev_blockhash: format!("{:064x}", height.saturating_sub(1)),
+            merkle_root: format!("{:064x}", height),
+            time: 0,
+            bits: 0,
+            difficulty_int: 0,
+            nonce: 0,
+            miner: miner.to_string(),
+        }
+    }
+
+    async fn cached_headers(caches: &Caches, network_id: u32) -> Vec<HeaderInfoJson> {
+        caches
+            .lock()
+            .await
+            .get(&network_id)
+            .unwrap()
+            .header_infos_json
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn header_tree_update_keeps_the_header_order() {
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        {
+            let mut locked = caches.lock().await;
+            locked.insert(
+                network_id,
+                Cache {
+                    header_infos_json: vec![],
+                    node_data: BTreeMap::new(),
+                    forks: vec![],
+                    stale_blocks: vec![],
+                    block_cache: HashMap::new(),
+                    recent_miners: vec![],
+                },
+            );
+        }
+
+        let headers: Vec<HeaderInfoJson> = (0..50).map(|h| test_header(h, "Unknown")).collect();
+
+        // The order the header tree was stripped in has to survive an update,
+        // and it has to be the same on every update: an unchanged tree must
+        // produce an unchanged header list.
+        for _ in 0..5 {
+            update_cache(
+                &caches,
+                network_id,
+                CacheUpdate::HeaderTree {
+                    header_infos_json: headers.clone(),
+                    forks: vec![],
+                    stale_blocks: vec![],
+                },
+                &dummy_sender,
+            )
+            .await;
+            assert_eq!(cached_headers(&caches, network_id).await, headers);
+        }
+    }
+
+    #[tokio::test]
+    async fn header_tree_update_fills_in_recently_identified_miners() {
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        {
+            let mut locked = caches.lock().await;
+            locked.insert(
+                network_id,
+                Cache {
+                    header_infos_json: vec![],
+                    node_data: BTreeMap::new(),
+                    forks: vec![],
+                    stale_blocks: vec![],
+                    block_cache: HashMap::new(),
+                    // a miner identified while the tree was being stripped
+                    recent_miners: vec![(format!("{:064x}", 2), "Some Pool".to_string())],
+                },
+            );
+        }
+
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::HeaderTree {
+                header_infos_json: (0..5).map(|h| test_header(h, "Unknown")).collect(),
+                forks: vec![],
+                stale_blocks: vec![],
+            },
+            &dummy_sender,
+        )
+        .await;
+
+        let cached = cached_headers(&caches, network_id).await;
+        assert_eq!(cached[2].miner, "Some Pool");
+        assert_eq!(cached[1].miner, "Unknown");
+        // and the order is still the one it was given
+        assert_eq!(
+            cached.iter().map(|h| h.height).collect::<Vec<u64>>(),
+            vec![0, 1, 2, 3, 4]
+        );
     }
 }
