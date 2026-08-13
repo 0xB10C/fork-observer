@@ -58,14 +58,13 @@ pub async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Cac
             .collect();
         locked_caches.insert(
             network.id,
-            Cache {
-                header_infos_json: hij.clone(),
+            Cache::new(
+                hij.clone(),
                 node_data,
                 forks,
                 stale_blocks,
-                block_cache: HashMap::new(),
-                recent_miners: vec![],
-            },
+                network.countdown.clone(),
+            ),
         );
     }
 }
@@ -346,6 +345,11 @@ pub async fn update_cache(
         }
     }
 
+    // Every update above changes something `data.json` contains, so the
+    // response is rebuilt once here rather than once per request. This is the
+    // only place that serializes it.
+    cache.rebuild_data_json();
+
     match cache_changed_tx.send(network_id) {
         Ok(_) => debug!(
             "Sent a cache_changed notification for network={}.",
@@ -473,14 +477,7 @@ mod tests {
             );
             locked_caches.insert(
                 network_id,
-                Cache {
-                    header_infos_json: vec![],
-                    node_data,
-                    forks: vec![],
-                    stale_blocks: vec![],
-                    block_cache: HashMap::new(),
-                    recent_miners: vec![],
-                },
+                Cache::new(vec![], node_data, vec![], vec![], None),
             );
         }
         assert_eq!(
@@ -528,14 +525,7 @@ mod tests {
             let mut locked_caches = caches.lock().await;
             locked_caches.insert(
                 network_id,
-                Cache {
-                    header_infos_json: vec![],
-                    node_data: BTreeMap::new(),
-                    forks: vec![],
-                    stale_blocks: vec![],
-                    block_cache: HashMap::new(),
-                    recent_miners: vec![],
-                },
+                Cache::new(vec![], BTreeMap::new(), vec![], vec![], None),
             );
         }
 
@@ -617,17 +607,11 @@ mod tests {
             let mut block_cache = HashMap::new();
             block_cache.insert(keep, Some(vec![1u8, 2, 3]));
             block_cache.insert(drop_it, Some(vec![4u8, 5, 6]));
-            locked.insert(
-                network_id,
-                Cache {
-                    header_infos_json: vec![],
-                    node_data: BTreeMap::new(),
-                    forks: vec![],
-                    stale_blocks: vec![],
-                    block_cache,
-                    recent_miners: vec![],
-                },
-            );
+            locked.insert(network_id, {
+                let mut cache = Cache::new(vec![], BTreeMap::new(), vec![], vec![], None);
+                cache.block_cache = block_cache;
+                cache
+            });
         }
 
         // After a header-tree update whose stale list only contains `keep`, the
@@ -690,14 +674,7 @@ mod tests {
             let mut locked = caches.lock().await;
             locked.insert(
                 network_id,
-                Cache {
-                    header_infos_json: vec![],
-                    node_data: BTreeMap::new(),
-                    forks: vec![],
-                    stale_blocks: vec![],
-                    block_cache: HashMap::new(),
-                    recent_miners: vec![],
-                },
+                Cache::new(vec![], BTreeMap::new(), vec![], vec![], None),
             );
         }
 
@@ -729,18 +706,12 @@ mod tests {
         let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
         {
             let mut locked = caches.lock().await;
-            locked.insert(
-                network_id,
-                Cache {
-                    header_infos_json: vec![],
-                    node_data: BTreeMap::new(),
-                    forks: vec![],
-                    stale_blocks: vec![],
-                    block_cache: HashMap::new(),
-                    // a miner identified while the tree was being stripped
-                    recent_miners: vec![(format!("{:064x}", 2), "Some Pool".to_string())],
-                },
-            );
+            locked.insert(network_id, {
+                let mut cache = Cache::new(vec![], BTreeMap::new(), vec![], vec![], None);
+                // a miner identified while the tree was being stripped
+                cache.recent_miners = vec![(format!("{:064x}", 2), "Some Pool".to_string())];
+                cache
+            });
         }
 
         update_cache(

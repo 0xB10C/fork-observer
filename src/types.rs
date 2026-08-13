@@ -7,10 +7,11 @@ use std::time::SystemTime;
 use crate::backend::NodeInfo;
 use crate::config::{Countdown, Network};
 
+use bytes::Bytes;
 use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::BlockHash;
 use corepc_client::types::model::{ChainTips, ChainTipsStatus};
-use log::warn;
+use log::{error, warn};
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 use rusqlite::Connection;
@@ -19,6 +20,15 @@ use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct Cache {
+    /// The serialized `data.json` body. Rebuilt through [`Cache::rebuild_data_json`]
+    /// whenever something it contains changes, so that serving a request is
+    /// handing out a reference-counted buffer rather than walking the header
+    /// list and serializing it again for every client.
+    pub data_json: Bytes,
+    /// This network's countdown, taken from the configuration. It's part of
+    /// `data.json`, and keeping it here means rebuilding that response doesn't
+    /// need access to the config.
+    pub countdown: Option<Countdown>,
     pub header_infos_json: Vec<HeaderInfoJson>,
     pub node_data: NodeData,
     pub forks: Vec<Fork>,
@@ -36,6 +46,49 @@ pub struct Cache {
     /// the strip_tree result might not contain a miner yet. Keeping
     /// recent miners here and use + manage them when updating the cache.
     pub recent_miners: Vec<(String, String)>,
+}
+
+impl Cache {
+    /// A network's cache, with its `data.json` body built from the data passed
+    /// in.
+    pub fn new(
+        header_infos_json: Vec<HeaderInfoJson>,
+        node_data: NodeData,
+        forks: Vec<Fork>,
+        stale_blocks: Vec<StaleBlockJson>,
+        countdown: Option<Countdown>,
+    ) -> Self {
+        let mut cache = Cache {
+            data_json: Bytes::new(),
+            countdown,
+            header_infos_json,
+            node_data,
+            forks,
+            stale_blocks,
+            block_cache: HashMap::new(),
+            recent_miners: vec![],
+        };
+        cache.rebuild_data_json();
+        cache
+    }
+
+    /// Serializes the current header and node data into the cached `data.json`
+    /// body. Call this after changing anything that response contains.
+    ///
+    /// Serializing can only fail if a value can't be represented as JSON, which
+    /// none of these can be. If it somehow does, we keep serving the previous
+    /// body rather than an empty one.
+    pub fn rebuild_data_json(&mut self) {
+        let response = DataJsonRef {
+            header_infos: &self.header_infos_json,
+            nodes: self.node_data.values().collect(),
+            countdown: self.countdown.as_ref(),
+        };
+        match serde_json::to_vec(&response) {
+            Ok(bytes) => self.data_json = Bytes::from(bytes),
+            Err(e) => error!("Could not serialize data.json: {}", e),
+        }
+    }
 }
 
 pub type NodeData = BTreeMap<u32, NodeDataJson>;
@@ -128,12 +181,25 @@ pub struct InfoJsonResponse {
     pub footer: String,
 }
 
+/// `data.json` as another fork-observer instance serves it. Only used to parse
+/// a remote instance's response; ours is serialized from [`DataJsonRef`].
 #[derive(Serialize, Deserialize)]
 pub struct DataJsonResponse {
     pub header_infos: Vec<HeaderInfoJson>,
     pub nodes: Vec<NodeDataJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub countdown: Option<Countdown>,
+}
+
+/// The same response, borrowing from the cache it is built out of, so that
+/// rebuilding it doesn't first have to clone the whole header list and every
+/// node's data into an owned [`DataJsonResponse`].
+#[derive(Serialize)]
+struct DataJsonRef<'a> {
+    header_infos: &'a [HeaderInfoJson],
+    nodes: Vec<&'a NodeDataJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    countdown: Option<&'a Countdown>,
 }
 
 /// A stale block: a block that is not part of the active chain. This includes

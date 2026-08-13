@@ -123,22 +123,21 @@ fn fake_header_info() -> HeaderInfo {
 }
 
 fn fake_cache() -> Cache {
-    Cache {
-        header_infos_json: fake_headers(HEADERS),
-        node_data: fake_nodes(NODES),
-        forks: vec![],
-        // The stale block list runs at its cap on a busy network, and it is
-        // a response of its own, so the fixture holds a full one.
-        stale_blocks: (0..MAX_STALE_BLOCKS)
+    Cache::new(
+        fake_headers(HEADERS),
+        fake_nodes(NODES),
+        vec![],
+        // The stale block list runs at its cap on a busy network, and it is a
+        // response of its own, so the fixture holds a full one.
+        (0..MAX_STALE_BLOCKS)
             .map(|i| StaleBlockJson {
                 height: 900_000 + i as u64,
                 hash: fake_hash(i + 5_000_000),
                 header: "00".repeat(80),
             })
             .collect(),
-        block_cache: HashMap::new(),
-        recent_miners: vec![],
-    }
+        None,
+    )
 }
 
 /// A caches map holding `networks` identically shaped networks (ids 0..n).

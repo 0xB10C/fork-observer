@@ -2,9 +2,10 @@ use crate::activity::{Activity, ActivityJsonResponse, ActivityQuery, EVENTS_PER_
 use crate::config::{Config, Network};
 use crate::rss;
 use crate::types::{
-    Caches, DataChanged, DataJsonResponse, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
+    Caches, DataChanged, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
     StaleBlocksJsonResponse,
 };
+use bytes::Bytes;
 use corepc_client::bitcoin::BlockHash;
 use futures_util::StreamExt;
 use log::{error, warn};
@@ -45,7 +46,6 @@ pub fn build_routes(
     let data_json = warp::get()
         .and(warp::path!("api" / u32 / "data.json"))
         .and(with_caches(caches.clone()))
-        .and(with_config_networks(config.networks.clone()))
         .and_then(data_response);
 
     let stale_json = warp::get()
@@ -159,29 +159,30 @@ pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallibl
     Ok(warp::reply::json(&InfoJsonResponse { footer }))
 }
 
-pub async fn data_response(
-    network: u32,
-    caches: Caches,
-    networks: Vec<Network>,
-) -> Result<impl warp::Reply, Infallible> {
-    let countdown = networks
-        .iter()
-        .find(|n| n.id == network)
-        .and_then(|n| n.countdown.clone());
-    let caches_locked = caches.lock().await;
-    match caches_locked.get(&network) {
-        Some(cache) => Ok(warp::reply::json(&DataJsonResponse {
-            header_infos: cache.header_infos_json.clone(),
-            nodes: cache.node_data.values().cloned().collect(),
-            countdown,
-        })),
-        None => Ok(warp::reply::json(&DataJsonResponse {
-            header_infos: vec![],
-            nodes: vec![],
-            countdown,
-        })),
-    }
+/// Serves a network's `data.json` straight out of the cache.
+///
+/// The body was serialized when the cache last changed, so all a request does
+/// is bump a reference count on it: it holds the cache lock for a pointer copy
+/// instead of for a clone of the whole header list plus a JSON serialization.
+/// Under load that's the difference between requests queueing up behind each
+/// other and them not noticing each other at all.
+pub async fn data_response(network: u32, caches: Caches) -> Result<impl warp::Reply, Infallible> {
+    let body = {
+        let caches_locked = caches.lock().await;
+        match caches_locked.get(&network) {
+            Some(cache) => cache.data_json.clone(),
+            None => Bytes::from_static(EMPTY_DATA_JSON),
+        }
+    };
+    Ok(warp::http::Response::builder()
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap())
 }
+
+/// What we serve for a network that has no cache. Every configured network gets
+/// one at startup, so this is only reachable with an unknown network id.
+const EMPTY_DATA_JSON: &[u8] = br#"{"header_infos":[],"nodes":[]}"#;
 
 pub async fn stale_blocks_response(
     network: u32,
@@ -437,11 +438,12 @@ pub fn with_slugs(
 mod tests {
     use super::build_routes;
     use crate::backend::{BitcoinCoreNode, NodeInfo};
-    use crate::config::{BoxedSyncSendNode, Config, Network, PoolIdentification};
-    use crate::types::{Cache, Caches, NetworkJson, StaleBlockJson};
+    use crate::config::{BoxedSyncSendNode, Config, Countdown, Network, PoolIdentification};
+    use crate::types::{Cache, Caches, NetworkJson, NodeDataJson, StaleBlockJson, Tree};
     use corepc_client::bitcoin::consensus::deserialize;
     use corepc_client::bitcoin::{Block, BlockHash};
     use corepc_client::client_sync::Auth;
+    use petgraph::graph::DiGraph;
     use std::collections::{BTreeMap, HashMap};
     use std::str::FromStr;
     use std::sync::Arc;
@@ -449,17 +451,18 @@ mod tests {
     use warp::Filter;
 
     fn caches_with_stale(network_id: u32, stale_blocks: Vec<StaleBlockJson>) -> Caches {
+        caches_for_network(network_id, stale_blocks, None)
+    }
+
+    fn caches_for_network(
+        network_id: u32,
+        stale_blocks: Vec<StaleBlockJson>,
+        countdown: Option<Countdown>,
+    ) -> Caches {
         let mut map = BTreeMap::new();
         map.insert(
             network_id,
-            Cache {
-                header_infos_json: vec![],
-                node_data: BTreeMap::new(),
-                forks: vec![],
-                stale_blocks,
-                block_cache: HashMap::new(),
-                recent_miners: vec![],
-            },
+            Cache::new(vec![], BTreeMap::new(), vec![], stale_blocks, countdown),
         );
         Arc::new(Mutex::new(map))
     }
@@ -638,14 +641,24 @@ mod tests {
         assert_eq!(v["networks"][0]["slug"], "net0");
     }
 
+    // The cache a network gets at startup, so that these tests cover the whole
+    // path from the configuration through `populate_cache` into the response.
+    async fn populated_caches(network: &Network) -> Caches {
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        let tree: Tree = Arc::new(Mutex::new((DiGraph::new(), HashMap::new())));
+        crate::cache::populate_cache(network, &tree, &caches).await;
+        caches
+    }
+
     #[tokio::test]
     async fn data_json_exposes_countdown_when_configured() {
         let mut network = make_network(0, vec![]);
-        network.countdown = Some(crate::config::Countdown {
+        network.countdown = Some(Countdown {
             height: 105,
             label: "Halving".to_string(),
         });
-        let route = routes(caches_with_stale(0, vec![]), vec![network]);
+        let caches = populated_caches(&network).await;
+        let route = routes(caches, vec![network]);
         let resp = warp::test::request()
             .path("/api/0/data.json")
             .reply(&route)
@@ -658,7 +671,9 @@ mod tests {
 
     #[tokio::test]
     async fn data_json_omits_countdown_when_not_configured() {
-        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let network = make_network(0, vec![]);
+        let caches = populated_caches(&network).await;
+        let route = routes(caches, vec![network]);
         let resp = warp::test::request()
             .path("/api/0/data.json")
             .reply(&route)
@@ -666,6 +681,47 @@ mod tests {
         assert_eq!(resp.status(), 200);
         let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
         assert!(v.get("countdown").is_none());
+    }
+
+    #[tokio::test]
+    async fn data_json_serves_the_cached_headers_and_nodes() {
+        let caches = caches_with_stale(0, vec![]);
+        {
+            let mut locked = caches.lock().await;
+            let cache = locked.get_mut(&0).unwrap();
+            cache.node_data.insert(
+                7,
+                NodeDataJson::new(node_info(7, "a node"), &vec![], "v1".to_string(), 42, true),
+            );
+            cache.rebuild_data_json();
+        }
+        let route = routes(caches, vec![make_network(0, vec![])]);
+        let resp = warp::test::request()
+            .path("/api/0/data.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(v["nodes"][0]["id"], 7);
+        assert_eq!(v["nodes"][0]["name"], "a node");
+        assert_eq!(v["header_infos"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn data_json_unknown_network_is_empty() {
+        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let resp = warp::test::request()
+            .path("/api/99/data.json")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = serde_json::from_slice(resp.body()).unwrap();
+        assert_eq!(v["header_infos"].as_array().unwrap().len(), 0);
+        assert_eq!(v["nodes"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

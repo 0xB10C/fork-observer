@@ -652,14 +652,7 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert(
             network_id,
-            Cache {
-                header_infos_json: vec![],
-                node_data: BTreeMap::new(),
-                forks: vec![],
-                stale_blocks: vec![],
-                block_cache: HashMap::new(),
-                recent_miners: vec![],
-            },
+            Cache::new(vec![], BTreeMap::new(), vec![], vec![], None),
         );
         Arc::new(Mutex::new(map))
     }
