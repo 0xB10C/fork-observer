@@ -3,7 +3,6 @@ use crate::config::{Config, Network};
 use crate::rss;
 use crate::types::{
     etag, Caches, DataChanged, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
-    StaleBlocksJsonResponse,
 };
 use bytes::Bytes;
 use corepc_client::bitcoin::BlockHash;
@@ -98,12 +97,14 @@ pub fn build_routes(
     let stale_json = warp::get()
         .and(warp::path!("api" / u32 / "stale.json"))
         .and(with_caches(caches.clone()))
+        .and(with_if_none_match())
         .and_then(stale_blocks_response);
 
     let activity_json = warp::get()
         .and(warp::path!("api" / u32 / "activity.json"))
         .and(warp::query::<ActivityQuery>())
         .and(with_activity(activity.clone()))
+        .and(with_if_none_match())
         .and_then(activity_response);
 
     let block_hex = warp::get()
@@ -127,6 +128,7 @@ pub fn build_routes(
         .and(with_caches(caches.clone()))
         .and(with_networks(network_infos.clone()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and(with_if_none_match())
         .and_then(rss::forks_response);
 
     let invalid_blocks_rss = warp::get()
@@ -134,6 +136,7 @@ pub fn build_routes(
         .and(with_caches(caches.clone()))
         .and(with_networks(network_infos.clone()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and(with_if_none_match())
         .and_then(rss::invalid_blocks_response);
 
     let lagging_nodes_rss = warp::get()
@@ -141,6 +144,7 @@ pub fn build_routes(
         .and(with_caches(caches.clone()))
         .and(with_networks(network_infos.clone()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and(with_if_none_match())
         .and_then(rss::lagging_nodes_response);
 
     let unreachable_nodes_rss = warp::get()
@@ -148,6 +152,7 @@ pub fn build_routes(
         .and(with_caches(caches.clone()))
         .and(with_networks(network_infos.clone()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
+        .and(with_if_none_match())
         .and_then(rss::unreachable_nodes_response);
 
     let networks_json = warp::get()
@@ -371,8 +376,9 @@ fn serialized<T: serde::Serialize>(value: &T) -> StaticJson {
 /// `Cache-Control: no-cache` means "you may store this, but check with me
 /// before reusing it" - so a client that comes back gets a ~150 byte 304
 /// instead of the body, while never being shown data that has since changed.
-fn json_response(
+pub fn cached_response(
     body: Bytes,
+    content_type: HeaderValue,
     etag: HeaderValue,
     if_none_match: Option<String>,
 ) -> warp::http::Response<Bytes> {
@@ -391,12 +397,20 @@ fn json_response(
             .unwrap();
     }
     response
-        .header(header::CONTENT_TYPE, APPLICATION_JSON)
+        .header(header::CONTENT_TYPE, content_type)
         .body(body)
         .unwrap()
 }
 
-const NO_CACHE: HeaderValue = HeaderValue::from_static("no-cache");
+fn json_response(
+    body: Bytes,
+    etag: HeaderValue,
+    if_none_match: Option<String>,
+) -> warp::http::Response<Bytes> {
+    cached_response(body, APPLICATION_JSON, etag, if_none_match)
+}
+
+pub const NO_CACHE: HeaderValue = HeaderValue::from_static("no-cache");
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 /// Whether the `If-None-Match` a client sent covers the version we would serve.
@@ -466,16 +480,27 @@ pub async fn data_response(
 /// one at startup, so this is only reachable with an unknown network id.
 const EMPTY_DATA_JSON: &[u8] = br#"{"header_infos":[],"nodes":[]}"#;
 
+/// Serves a network's `stale.json`, pre-serialized in the cache like
+/// `data.json`.
 pub async fn stale_blocks_response(
     network: u32,
     caches: Caches,
+    if_none_match: Option<String>,
 ) -> Result<impl warp::Reply, Infallible> {
-    let stale_blocks = match caches.get(&network) {
-        Some(cache) => cache.read().await.stale_blocks.clone(),
-        None => vec![],
+    let (body, etag) = match caches.get(&network) {
+        Some(cache) => {
+            let cache = cache.read().await;
+            (cache.stale_json.clone(), cache.stale_json_etag.clone())
+        }
+        None => (
+            Bytes::from_static(EMPTY_STALE_JSON),
+            crate::types::etag(EMPTY_STALE_JSON),
+        ),
     };
-    Ok(warp::reply::json(&StaleBlocksJsonResponse { stale_blocks }))
+    Ok(json_response(body, etag, if_none_match))
 }
+
+const EMPTY_STALE_JSON: &[u8] = br#"{"stale_blocks":[]}"#;
 
 /// Serves the [`EVENTS_PER_PAGE`] most recent activity log events of a
 /// network, newest first.
@@ -488,6 +513,7 @@ pub async fn activity_response(
     network_id: u32,
     query: ActivityQuery,
     activity: Option<Activity>,
+    if_none_match: Option<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     let events = match activity {
         Some(activity) => match query.before {
@@ -508,8 +534,22 @@ pub async fn activity_response(
         },
         None => vec![],
     };
-    Ok(warp::reply::json(&ActivityJsonResponse { events }))
+    // Unlike the cached responses this one is built per request, so it is
+    // serialized and hashed here. Paginating into the past (`before=<id>`)
+    // returns events that never change, so those requests get a 304 from the
+    // second one onwards.
+    let body = match serde_json::to_vec(&ActivityJsonResponse { events }) {
+        Ok(body) => Bytes::from(body),
+        Err(e) => {
+            error!("Could not serialize activity.json: {}", e);
+            Bytes::from_static(EMPTY_ACTIVITY_JSON)
+        }
+    };
+    let etag = crate::types::etag(&body);
+    Ok(json_response(body, etag, if_none_match))
 }
+
+const EMPTY_ACTIVITY_JSON: &[u8] = br#"{"events":[]}"#;
 
 /// Serves a full block by its hash as hex (`as_hex = true`) or raw binary.
 /// We try every node we are connected to until one returns the block. We cache
@@ -828,6 +868,103 @@ mod tests {
         assert_eq!(arr[1]["hash"], "bb");
     }
 
+    // Every endpoint that carries an ETag, checked the same way: the tag comes
+    // back, and offering it again gets a 304 with no body.
+    #[tokio::test]
+    async fn endpoints_answer_an_unchanged_etag_with_304() {
+        let activity = activity_with_events(0, 5).await;
+        let route = routes_with_activity(
+            caches_with_stale(
+                0,
+                vec![StaleBlockJson {
+                    height: 1,
+                    hash: "aa".to_string(),
+                    header: "00".repeat(80),
+                }],
+            ),
+            vec![make_network(0, vec![])],
+            Some(activity),
+        );
+
+        for path in [
+            "/api/0/data.json",
+            "/api/0/stale.json",
+            "/api/0/activity.json",
+            "/api/0/activity.json?before=3",
+            "/api/info.json",
+            "/api/networks.json",
+            "/rss/0/forks.xml",
+            "/rss/0/invalid.xml",
+            "/rss/0/lagging.xml",
+            "/rss/0/unreachable.xml",
+        ] {
+            let resp = warp::test::request().path(path).reply(&route).await;
+            assert_eq!(resp.status(), 200, "{}", path);
+            assert_eq!(
+                resp.headers().get("cache-control").unwrap(),
+                "no-cache",
+                "{}",
+                path
+            );
+            let etag = resp
+                .headers()
+                .get("etag")
+                .unwrap_or_else(|| panic!("{} should carry an ETag", path))
+                .clone();
+            assert!(!resp.body().is_empty(), "{}", path);
+
+            let resp = warp::test::request()
+                .path(path)
+                .header("if-none-match", etag.clone())
+                .reply(&route)
+                .await;
+            assert_eq!(resp.status(), 304, "{}", path);
+            assert!(resp.body().is_empty(), "{}", path);
+            assert_eq!(resp.headers().get("etag").unwrap(), &etag, "{}", path);
+
+            // The tag a browser gets back once a proxy compressed the response.
+            let weak = format!("W/{}", etag.to_str().unwrap());
+            let resp = warp::test::request()
+                .path(path)
+                .header("if-none-match", weak)
+                .reply(&route)
+                .await;
+            assert_eq!(resp.status(), 304, "{} with a weak tag", path);
+            assert!(resp.body().is_empty(), "{} with a weak tag", path);
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_json_etag_changes_with_the_stale_blocks() {
+        let caches = caches_with_stale(0, vec![]);
+        let route = routes(caches.clone(), vec![make_network(0, vec![])]);
+        let before = warp::test::request()
+            .path("/api/0/stale.json")
+            .reply(&route)
+            .await;
+        let etag_before = before.headers().get("etag").unwrap().clone();
+
+        {
+            let mut cache = caches.get(&0).unwrap().write().await;
+            cache.stale_blocks = vec![StaleBlockJson {
+                height: 5,
+                hash: "cc".to_string(),
+                header: "11".repeat(80),
+            }];
+            cache.rebuild_responses();
+        }
+
+        let after = warp::test::request()
+            .path("/api/0/stale.json")
+            .header("if-none-match", etag_before.clone())
+            .reply(&route)
+            .await;
+        assert_eq!(after.status(), 200);
+        assert_ne!(after.headers().get("etag").unwrap(), &etag_before);
+        let v: serde_json::Value = serde_json::from_slice(after.body()).unwrap();
+        assert_eq!(v["stale_blocks"][0]["hash"], "cc");
+    }
+
     #[tokio::test]
     async fn stale_json_unknown_network_is_empty() {
         let caches = caches_with_stale(
@@ -981,7 +1118,7 @@ mod tests {
                 7,
                 NodeDataJson::new(node_info(7, "a node"), &vec![], "v1".to_string(), 42, true),
             );
-            cache.rebuild_data_json();
+            cache.rebuild_responses();
         }
         let route = routes(caches, vec![make_network(0, vec![])]);
         let resp = warp::test::request()
@@ -1061,7 +1198,7 @@ mod tests {
                 7,
                 NodeDataJson::new(node_info(7, "a node"), &vec![], "v1".to_string(), 42, true),
             );
-            cache.rebuild_data_json();
+            cache.rebuild_responses();
         }
 
         // The client's now-stale ETag must not be answered with a 304.

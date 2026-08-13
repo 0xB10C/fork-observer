@@ -6,7 +6,9 @@ use warp::Filter;
 use std::collections::HashMap;
 use std::convert::Infallible;
 
-use crate::types::{Caches, ChainTipStatus, Fork, NetworkJson, NodeDataJson, TipInfoJson};
+use crate::types::{etag, Caches, ChainTipStatus, Fork, NetworkJson, NodeDataJson, TipInfoJson};
+use bytes::Bytes;
+use warp::http::HeaderValue;
 
 const THREASHOLD_NODE_LAGGING: u64 = 3; // blocks
 
@@ -138,6 +140,7 @@ pub async fn forks_response(
     caches: Caches,
     network_infos: Arc<Vec<NetworkJson>>,
     base_url: Arc<String>,
+    if_none_match: Option<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     match caches.get(&network_id) {
         Some(cache) => {
@@ -166,11 +169,9 @@ pub async fn forks_response(
                 },
             };
 
-            Ok(Response::builder()
-                .header("content-type", "application/rss+xml")
-                .body(feed.to_string()))
+            Ok(rss_response(feed, if_none_match))
         }
-        None => Ok(Ok(response_unknown_network(&network_infos))),
+        None => Ok(response_unknown_network(&network_infos)),
     }
 }
 
@@ -208,6 +209,7 @@ pub async fn lagging_nodes_response(
     caches: Caches,
     network_infos: Arc<Vec<NetworkJson>>,
     base_url: Arc<String>,
+    if_none_match: Option<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     match caches.get(&network_id) {
         Some(cache) => {
@@ -269,11 +271,9 @@ pub async fn lagging_nodes_response(
                 },
             };
 
-            Ok(Response::builder()
-                .header("content-type", "application/rss+xml")
-                .body(feed.to_string()))
+            Ok(rss_response(feed, if_none_match))
         }
-        None => Ok(Ok(response_unknown_network(&network_infos))),
+        None => Ok(response_unknown_network(&network_infos)),
     }
 }
 
@@ -282,6 +282,7 @@ pub async fn invalid_blocks_response(
     caches: Caches,
     network_infos: Arc<Vec<NetworkJson>>,
     base_url: Arc<String>,
+    if_none_match: Option<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     match caches.get(&network_id) {
         Some(cache) => {
@@ -332,11 +333,9 @@ pub async fn invalid_blocks_response(
                 },
             };
 
-            return Ok(Response::builder()
-                .header("content-type", "application/rss+xml")
-                .body(feed.to_string()));
+            return Ok(rss_response(feed, if_none_match));
         }
-        None => Ok(Ok(response_unknown_network(&network_infos))),
+        None => Ok(response_unknown_network(&network_infos)),
     }
 }
 
@@ -345,6 +344,7 @@ pub async fn unreachable_nodes_response(
     caches: Caches,
     network_infos: Arc<Vec<NetworkJson>>,
     base_url: Arc<String>,
+    if_none_match: Option<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     match caches.get(&network_id) {
         Some(cache) => {
@@ -382,15 +382,24 @@ pub async fn unreachable_nodes_response(
                 },
             };
 
-            return Ok(Response::builder()
-                .header("content-type", "application/rss+xml")
-                .body(feed.to_string()));
+            return Ok(rss_response(feed, if_none_match));
         }
-        None => Ok(Ok(response_unknown_network(&network_infos))),
+        None => Ok(response_unknown_network(&network_infos)),
     }
 }
 
-pub fn response_unknown_network(network_infos: &[NetworkJson]) -> Response<String> {
+/// An RSS feed with an `ETag` over its body, or a 304 if the reader already
+/// has this version. Feed readers poll on a fixed schedule while forks are
+/// rare, so most of those polls have nothing new to carry.
+fn rss_response(feed: Feed, if_none_match: Option<String>) -> Response<Bytes> {
+    let body = Bytes::from(feed.to_string());
+    let etag = etag(&body);
+    crate::api::cached_response(body, RSS_CONTENT_TYPE, etag, if_none_match)
+}
+
+const RSS_CONTENT_TYPE: HeaderValue = HeaderValue::from_static("application/rss+xml");
+
+pub fn response_unknown_network(network_infos: &[NetworkJson]) -> Response<Bytes> {
     let avaliable_networks = network_infos
         .iter()
         .map(|net| format!("{} ({})", net.id.to_string(), net.name))
@@ -399,9 +408,9 @@ pub fn response_unknown_network(network_infos: &[NetworkJson]) -> Response<Strin
     Response::builder()
         .status(404)
         .header("content-type", "text/plain")
-        .body(format!(
+        .body(Bytes::from(format!(
             "Unknown network. Avaliable networks are: {}.",
             avaliable_networks.join(", ")
-        ))
+        )))
         .unwrap()
 }

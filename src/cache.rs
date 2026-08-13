@@ -171,6 +171,26 @@ pub enum CacheUpdate {
     },
 }
 
+impl CacheUpdate {
+    /// Whether applying this can change what `stale.json` holds.
+    ///
+    /// Only the header tree carries stale blocks. Everything else replaces node
+    /// data or one block's miner, neither of which `stale.json` contains, so
+    /// rebuilding it for those would serialize the same bytes again under the
+    /// write lock. This lives next to the variants so that adding one makes the
+    /// question unavoidable.
+    fn changes_stale_blocks(&self) -> bool {
+        match self {
+            CacheUpdate::HeaderTree { .. } => true,
+            CacheUpdate::HeaderMiner { .. }
+            | CacheUpdate::NodeTips { .. }
+            | CacheUpdate::NodeReachability { .. }
+            | CacheUpdate::NodeVersion { .. }
+            | CacheUpdate::RemoteNodes { .. } => false,
+        }
+    }
+}
+
 impl fmt::Display for CacheUpdate {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -263,6 +283,7 @@ pub async fn update_cache(
     cache_changed_tx: &tokio::sync::broadcast::Sender<u32>,
 ) {
     debug!("updating cache with: {}", update);
+    let changes_stale_blocks = update.changes_stale_blocks();
     {
         let mut cache = network_cache(caches, network_id).write().await;
         match update {
@@ -352,10 +373,15 @@ pub async fn update_cache(
             }
         }
 
-        // Every update above changes something `data.json` contains, so the
-        // response is rebuilt once here rather than once per request. This is
-        // the only place that serializes it.
+        // Every update above changes something `data.json` contains, so it is
+        // rebuilt once here rather than once per request. This is the only
+        // place that serializes it. `stale.json` only changes with the header
+        // tree, and rebuilding it costs as much as serializing it, so the
+        // updates that can't affect it don't pay for it.
         cache.rebuild_data_json();
+        if changes_stale_blocks {
+            cache.rebuild_stale_json();
+        }
     }
 
     match cache_changed_tx.send(network_id) {
@@ -628,6 +654,85 @@ mod tests {
         let block_cache = &cache.block_cache;
         assert!(block_cache.contains_key(&keep));
         assert!(!block_cache.contains_key(&drop_it));
+    }
+
+    // `stale.json` is only rebuilt by the updates that can change it, so what
+    // matters is that those really are the only ones that do.
+    #[tokio::test]
+    async fn stale_json_follows_the_header_tree_and_nothing_else() {
+        use crate::types::StaleBlockJson;
+
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let node = NodeInfo {
+            id: 7,
+            name: "".to_string(),
+            description: "".to_string(),
+            implementation: "".to_string(),
+        };
+        let node_data: NodeData = BTreeMap::from([(
+            node.id,
+            NodeDataJson::new(node, &vec![], "".to_string(), 0, true),
+        )]);
+        let caches = caches_from([(
+            network_id,
+            Cache::new(vec![], node_data, vec![], vec![], None),
+        )]);
+
+        let stale_json = |caches: Caches| async move {
+            caches
+                .get(&network_id)
+                .unwrap()
+                .read()
+                .await
+                .stale_json
+                .clone()
+        };
+        let empty = stale_json(caches.clone()).await;
+
+        // A header tree carrying a stale block has to show up.
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::HeaderTree {
+                header_infos_json: vec![],
+                forks: vec![],
+                stale_blocks: vec![StaleBlockJson {
+                    height: 1,
+                    hash: "aa".to_string(),
+                    header: "00".repeat(80),
+                }],
+            },
+            &dummy_sender,
+        )
+        .await;
+        let with_stale = stale_json(caches.clone()).await;
+        assert_ne!(with_stale, empty);
+        assert!(String::from_utf8_lossy(&with_stale).contains("\"aa\""));
+
+        // Updates that don't carry stale blocks must leave it alone - neither
+        // clearing it nor letting it go stale.
+        for update in [
+            CacheUpdate::NodeTips {
+                node_id: 7,
+                tips: vec![],
+            },
+            CacheUpdate::NodeReachability {
+                node_id: 7,
+                reachable: false,
+            },
+            CacheUpdate::NodeVersion {
+                node_id: 7,
+                version: "v2".to_string(),
+            },
+            CacheUpdate::RemoteNodes {
+                removed_node_ids: vec![],
+                nodes: vec![],
+            },
+        ] {
+            update_cache(&caches, network_id, update, &dummy_sender).await;
+            assert_eq!(stale_json(caches.clone()).await, with_stale);
+        }
     }
 
     fn test_header(height: u64, miner: &str) -> HeaderInfoJson {

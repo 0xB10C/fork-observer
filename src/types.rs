@@ -32,6 +32,9 @@ pub struct Cache {
     /// so a client that already has this version can be answered with a 304
     /// instead of the body.
     pub data_json_etag: HeaderValue,
+    /// The serialized `stale.json` body and its `ETag`, kept the same way.
+    pub stale_json: Bytes,
+    pub stale_json_etag: HeaderValue,
     /// This network's countdown, taken from the configuration. It's part of
     /// `data.json`, and keeping it here means rebuilding that response doesn't
     /// need access to the config.
@@ -68,6 +71,8 @@ impl Cache {
         let mut cache = Cache {
             data_json: Bytes::new(),
             data_json_etag: HeaderValue::from_static(""),
+            stale_json: Bytes::new(),
+            stale_json_etag: HeaderValue::from_static(""),
             countdown,
             header_infos_json,
             node_data,
@@ -76,28 +81,52 @@ impl Cache {
             block_cache: HashMap::new(),
             recent_miners: vec![],
         };
-        cache.rebuild_data_json();
+        cache.rebuild_responses();
         cache
     }
 
-    /// Serializes the current header and node data into the cached `data.json`
-    /// body. Call this after changing anything that response contains.
+    /// Serializes every response served straight out of this cache. For a
+    /// change that only touched one of them, call that one instead: these are
+    /// the most expensive thing an update does, and they run while the cache is
+    /// write-locked.
+    pub fn rebuild_responses(&mut self) {
+        self.rebuild_data_json();
+        self.rebuild_stale_json();
+    }
+
+    /// Serializes `data.json` from what the cache holds now. Call this after
+    /// changing the headers, the node data or the countdown.
     ///
     /// Serializing can only fail if a value can't be represented as JSON, which
     /// none of these can be. If it somehow does, we keep serving the previous
     /// body rather than an empty one.
     pub fn rebuild_data_json(&mut self) {
-        let response = DataJsonRef {
+        let data = DataJsonRef {
             header_infos: &self.header_infos_json,
             nodes: self.node_data.values().collect(),
             countdown: self.countdown.as_ref(),
         };
-        match serde_json::to_vec(&response) {
+        match serde_json::to_vec(&data) {
             Ok(bytes) => {
                 self.data_json_etag = etag(&bytes);
                 self.data_json = Bytes::from(bytes);
             }
             Err(e) => error!("Could not serialize data.json: {}", e),
+        }
+    }
+
+    /// Serializes `stale.json` from what the cache holds now. Call this after
+    /// changing the stale blocks.
+    pub fn rebuild_stale_json(&mut self) {
+        let stale = StaleBlocksJsonRef {
+            stale_blocks: &self.stale_blocks,
+        };
+        match serde_json::to_vec(&stale) {
+            Ok(bytes) => {
+                self.stale_json_etag = etag(&bytes);
+                self.stale_json = Bytes::from(bytes);
+            }
+            Err(e) => error!("Could not serialize stale.json: {}", e),
         }
     }
 }
@@ -268,6 +297,13 @@ impl StaleBlockJson {
 #[derive(Serialize)]
 pub struct StaleBlocksJsonResponse {
     pub stale_blocks: Vec<StaleBlockJson>,
+}
+
+/// The same, borrowing from the cache, so rebuilding it doesn't clone the list
+/// first. See [`DataJsonRef`].
+#[derive(Serialize)]
+struct StaleBlocksJsonRef<'a> {
+    stale_blocks: &'a [StaleBlockJson],
 }
 
 #[derive(Serialize, Deserialize, Clone, Eq, Hash, PartialEq, Debug)]
