@@ -226,10 +226,10 @@ async fn poll_once(
     let removed_node_ids: Vec<u32> = state.last_node_ids.difference(&node_ids).cloned().collect();
 
     if state.unreachable || nodes != state.last_nodes || !removed_node_ids.is_empty() {
-        crate::update_cache(
+        crate::cache::update_cache(
             caches,
             network.id,
-            crate::CacheUpdate::RemoteNodes {
+            crate::cache::CacheUpdate::RemoteNodes {
                 removed_node_ids,
                 nodes: nodes.clone(),
             },
@@ -244,7 +244,7 @@ async fn poll_once(
     if tree_changed {
         // No extra tip heights: the remote's tips are already in the cache, as
         // the RemoteNodes update ran above.
-        crate::update_header_tree_cache(
+        crate::cache::update_header_tree_cache(
             network,
             tree,
             caches,
@@ -330,10 +330,10 @@ pub async fn run_poller(
                 for node in state.last_nodes.iter_mut() {
                     node.reachable = false;
                 }
-                crate::update_cache(
+                crate::cache::update_cache(
                     &caches,
                     network.id,
-                    crate::CacheUpdate::RemoteNodes {
+                    crate::cache::CacheUpdate::RemoteNodes {
                         removed_node_ids: vec![],
                         nodes: state.last_nodes.clone(),
                     },
