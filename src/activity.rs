@@ -21,6 +21,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
+use tokio::task;
 use tokio::time::Duration;
 
 use crate::error::DbError;
@@ -269,14 +270,27 @@ impl Activity {
 
     /// Events of a network older than the `before` row id (newest first),
     /// from the database. Used for paginating past the ring buffer.
+    ///
+    /// rusqlite is blocking, and this is the only query that runs on a request
+    /// rather than in a background task, so it goes to a blocking thread. Left
+    /// on a runtime worker it would park that worker - along with every other
+    /// request the worker was driving - for as long as the query takes.
     pub async fn events_before(
         &self,
         network_id: u32,
         before: i64,
         count: usize,
     ) -> Result<Vec<ActivityEventJson>, DbError> {
-        let db = self.db.lock().await;
-        query_events(&db, network_id, before, count)
+        let db = self.db.clone();
+        task::spawn_blocking(move || {
+            let db = db.blocking_lock();
+            query_events(&db, network_id, before, count)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            error!("The activity query task panicked or was cancelled: {}", e);
+            Ok(vec![])
+        })
     }
 }
 
