@@ -261,19 +261,12 @@ pub async fn update_cache(
         .expect("this network should be in the caches");
     match update {
         CacheUpdate::HeaderMiner { header_info } => {
-            let mut old = cache.header_infos_json.clone();
-            if let Some(index) = old
-                .iter()
-                .position(|h| h.hash == header_info.header.block_hash().to_string())
-            {
-                old[index].update_miner(header_info.miner.clone());
+            let hash = header_info.header.block_hash().to_string();
+            if let Some(header) = cache.header_infos_json.iter_mut().find(|h| h.hash == hash) {
+                header.update_miner(header_info.miner.clone());
             }
-            cache.header_infos_json = old;
 
-            cache.recent_miners.push((
-                header_info.header.block_hash().to_string(),
-                header_info.miner,
-            ));
+            cache.recent_miners.push((hash, header_info.miner));
             if cache.recent_miners.len() > 5 {
                 cache.recent_miners.remove(0);
             }

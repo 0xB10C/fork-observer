@@ -17,12 +17,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use corepc_client::bitcoin::blockdata::block::{Header, Version};
+use corepc_client::bitcoin::hashes::Hash;
+use corepc_client::bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use fork_observer::api::build_routes;
 use fork_observer::cache::{update_cache, CacheUpdate, MAX_STALE_BLOCKS};
 use fork_observer::config::{Config, Network, PoolIdentification};
 use fork_observer::types::{
-    Cache, Caches, ChainTip, ChainTipStatus, HeaderInfoJson, NetworkJson, NodeDataJson,
+    Cache, Caches, ChainTip, ChainTipStatus, HeaderInfo, HeaderInfoJson, NetworkJson, NodeDataJson,
     StaleBlockJson,
 };
 use tokio::runtime::Runtime;
@@ -99,6 +102,24 @@ fn fake_nodes(count: usize) -> BTreeMap<u32, NodeDataJson> {
             )
         })
         .collect()
+}
+
+/// A header as the miner identification task hands it back. Its block hash is
+/// not one of `fake_headers()`, which is the common case: most identified
+/// blocks are no longer in the (stripped) header list.
+fn fake_header_info() -> HeaderInfo {
+    HeaderInfo {
+        height: 900_042,
+        header: Header {
+            version: Version::from_consensus(0x2000_0000),
+            prev_blockhash: BlockHash::all_zeros(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: 1776896581,
+            bits: CompactTarget::from_consensus(386012009),
+            nonce: 682214962,
+        },
+        miner: "MARA Pool".to_string(),
+    }
 }
 
 fn fake_cache() -> Cache {
@@ -322,6 +343,14 @@ fn bench_update_cache(c: &mut Criterion) {
             async {
                 update_cache(&caches, 0, CacheUpdate::NodeTips { node_id: 0, tips }, &tx).await
             }
+        });
+    });
+    group.bench_function("header_miner", |b| {
+        let caches = fake_caches(1);
+        let header_info = fake_header_info();
+        b.to_async(&rt).iter(|| {
+            let header_info = header_info.clone();
+            async { update_cache(&caches, 0, CacheUpdate::HeaderMiner { header_info }, &tx).await }
         });
     });
     group.bench_function("header_tree", |b| {
