@@ -2,7 +2,7 @@ use crate::activity::{Activity, ActivityJsonResponse, ActivityQuery, EVENTS_PER_
 use crate::config::{Config, Network};
 use crate::rss;
 use crate::types::{
-    etag, Caches, DataChanged, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
+    etag, Caches, DataChanged, EventsMissed, InfoJsonResponse, NetworkJson, NetworksJsonResponse,
 };
 use bytes::Bytes;
 use corepc_client::bitcoin::BlockHash;
@@ -12,7 +12,7 @@ use std::convert::Infallible;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::broadcast::Sender;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 use warp::http::{header, HeaderValue};
 use warp::{sse::Event, Filter, Reply};
 
@@ -181,9 +181,15 @@ pub fn build_routes(
             let broadcast_stream = BroadcastStream::new(changes_tx);
             let event_stream = broadcast_stream.map(move |d| match d {
                 Ok(d) => data_changed_sse(d),
-                Err(e) => {
-                    error!("Could not SSE notify about tip changed event: {}", e);
-                    data_changed_sse(u32::MAX)
+                // This client fell behind the channel and the events it missed
+                // are gone. Tell it so, rather than pretending nothing
+                // happened: it has to refetch to find out what it missed.
+                Err(BroadcastStreamRecvError::Lagged(missed)) => {
+                    warn!(
+                        "An SSE client lagged behind and missed {} cache change(s)",
+                        missed
+                    );
+                    events_missed_sse(missed)
                 }
             });
             let stream = warp::sse::keep_alive().stream(event_stream);
@@ -721,6 +727,16 @@ pub fn data_changed_sse(network_id: u32) -> Result<Event, serde_json::Error> {
     warp::sse::Event::default()
         .event("cache_changed")
         .json_data(DataChanged { network_id })
+}
+
+/// Sent when a client fell so far behind the broadcast channel that events were
+/// dropped for it. It carries no network id - we don't know which networks the
+/// lost events were for - so a client that sees this refetches whatever it is
+/// showing.
+pub fn events_missed_sse(missed: u64) -> Result<Event, serde_json::Error> {
+    warp::sse::Event::default()
+        .event("events_missed")
+        .json_data(EventsMissed { missed })
 }
 
 // These run on every request that reaches the route they're attached to, so

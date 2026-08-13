@@ -282,6 +282,13 @@ changeSSE.addEventListener("cache_changed", (e) => {
   if (JSON.parse(e.data).network_id == state_network.id) schedule_refresh()
 })
 
+// The server dropped events for us because we fell behind, so we don't know
+// whether any of them were ours. Refresh and find out.
+changeSSE.addEventListener("events_missed", (e) => {
+  console.debug("missed events, refreshing: ", e.data)
+  if (state_network != null) schedule_refresh()
+})
+
 function schedule_refresh() {
   if (!liveCheckbox.checked || refresh_timer != null) return
   refresh_timer = setTimeout(async () => {

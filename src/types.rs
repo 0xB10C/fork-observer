@@ -410,6 +410,13 @@ pub struct DataChanged {
     pub network_id: u32,
 }
 
+/// Payload of the `events_missed` SSE event: how many cache change events were
+/// dropped for a client that fell behind.
+#[derive(Serialize, Clone)]
+pub struct EventsMissed {
+    pub missed: u64,
+}
+
 /// Deserialized via `From<String>` so that a status we don't know yet becomes
 /// `Unknown` instead of failing the whole `getchaintips` response.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

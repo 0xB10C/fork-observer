@@ -113,8 +113,12 @@ async fn main() -> Result<(), MainError> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let (config, db, activity) = startup().await?;
 
-    // A channel to notify about changes via ServerSentEvents to clients.
-    let (cache_changed_tx, _) = broadcast::channel(16);
+    // A channel to notify about changes via ServerSentEvents to clients. Each
+    // connected client has its own receiver and falls behind independently; the
+    // capacity is what a client may lag by before it starts missing events. A
+    // new block produces one per node per network, so 16 was less than a single
+    // block's worth on a busy instance.
+    let (cache_changed_tx, _) = broadcast::channel(256);
     let cache_changed_tx_warp = cache_changed_tx.clone();
     let network_infos: Vec<NetworkJson> = config.networks.iter().map(NetworkJson::new).collect();
     let db_clone = db.clone();

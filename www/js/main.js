@@ -303,16 +303,11 @@ document.addEventListener("keydown", (e) => {
 // the end if more events came in, so the later nodes' tips aren't missed.
 const UPDATE_COOLDOWN_MS = 500
 
-changeSSE.addEventListener("cache_changed", (e) => {
-  let data = JSON.parse(e.data)
-  console.debug("server side event: the data for one of the networks changed: ", data)
-  if(data.network_id != state_selected_network_id) return
-  console.debug("server side event: the data for current network changed: ", data)
-
+function update_debounced() {
   if (update_cooling_down) {
     // an update ran just now; remember to run one more once the window is over
     update_scheduled = true
-    console.debug("server side event: update for the current network already sheduled: ", data)
+    console.debug("server side event: update for the current network already sheduled")
     return
   }
   update_cooling_down = true
@@ -324,6 +319,22 @@ changeSSE.addEventListener("cache_changed", (e) => {
       update()
     }
   }, UPDATE_COOLDOWN_MS)
+}
+
+changeSSE.addEventListener("cache_changed", (e) => {
+  let data = JSON.parse(e.data)
+  console.debug("server side event: the data for one of the networks changed: ", data)
+  if(data.network_id != state_selected_network_id) return
+  console.debug("server side event: the data for current network changed: ", data)
+  update_debounced()
+})
+
+// We fell behind the server's event channel and it dropped events for us, so we
+// don't know whether the network we're showing changed. Refetch to find out -
+// with the ETag in place that's a 304 when it didn't.
+changeSSE.addEventListener("events_missed", (e) => {
+  console.debug("server side event: missed events, refetching: ", e.data)
+  update_debounced()
 })
 
 
