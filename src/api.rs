@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use log::{error, warn};
 use std::convert::Infallible;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::sync::broadcast::Sender;
 use tokio_stream::wrappers::BroadcastStream;
 use warp::{sse::Event, Filter};
@@ -38,10 +39,15 @@ pub fn build_routes(
         .and(warp::path!("playback"))
         .and(warp::fs::file(config.www_path.join("playback.html")));
 
+    // `info.json` and `networks.json` are built entirely out of the
+    // configuration, so they're serialized once here instead of on every
+    // request.
     let info_json = warp::get()
         .and(warp::path!("api" / "info.json"))
-        .and(with_footer(config.footer_html.clone()))
-        .and_then(info_response);
+        .and(with_body(serialized(&InfoJsonResponse {
+            footer: config.footer_html.clone(),
+        })))
+        .and_then(static_json_response);
 
     let data_json = warp::get()
         .and(warp::path!("api" / u32 / "data.json"))
@@ -105,8 +111,10 @@ pub fn build_routes(
 
     let networks_json = warp::get()
         .and(warp::path!("api" / "networks.json"))
-        .and(with_networks(network_infos.to_vec()))
-        .and_then(networks_response);
+        .and(with_body(serialized(&NetworksJsonResponse {
+            networks: network_infos.to_vec(),
+        })))
+        .and_then(static_json_response);
 
     // Friendly network URLs: `/testnet4` redirects to `/?network=testnet4`,
     // which the frontend then resolves. Unknown slugs are rejected so they fall
@@ -155,8 +163,23 @@ pub fn build_routes(
         .or(slug_redirect)
 }
 
-pub async fn info_response(footer: String) -> Result<impl warp::Reply, Infallible> {
-    Ok(warp::reply::json(&InfoJsonResponse { footer }))
+/// Serves a JSON body that was serialized once when the routes were built.
+pub async fn static_json_response(body: Bytes) -> Result<impl warp::Reply, Infallible> {
+    Ok(json_response(body))
+}
+
+fn json_response(body: Bytes) -> warp::http::Response<Bytes> {
+    warp::http::Response::builder()
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap()
+}
+
+/// Serializes a response that never changes while we run. A value that can't be
+/// serialized would be a bug we'd rather see at startup than per request, so
+/// this panics.
+fn serialized<T: serde::Serialize>(value: &T) -> Bytes {
+    Bytes::from(serde_json::to_vec(value).expect("a static API response should serialize"))
 }
 
 /// Serves a network's `data.json` straight out of the cache.
@@ -171,10 +194,7 @@ pub async fn data_response(network: u32, caches: Caches) -> Result<impl warp::Re
         Some(cache) => cache.read().await.data_json.clone(),
         None => Bytes::from_static(EMPTY_DATA_JSON),
     };
-    Ok(warp::http::Response::builder()
-        .header("content-type", "application/json")
-        .body(body)
-        .unwrap())
+    Ok(json_response(body))
 }
 
 /// What we serve for a network that has no cache. Every configured network gets
@@ -238,7 +258,7 @@ pub async fn block_response(
     hash: String,
     as_hex: bool,
     caches: Caches,
-    networks: Vec<Network>,
+    networks: Arc<Vec<Network>>,
 ) -> Result<impl warp::Reply, Infallible> {
     let block_hash = match BlockHash::from_str(&hash) {
         Ok(h) => h,
@@ -371,7 +391,7 @@ fn block_not_available(block_hash: BlockHash) -> warp::http::Response<Vec<u8>> {
 /// (e.g. `example.com/forks/`), matching the relative URLs the frontend uses.
 pub async fn slug_redirect_response(
     slug: String,
-    slugs: Vec<String>,
+    slugs: Arc<Vec<String>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     if slugs.iter().any(|s| *s == slug) {
         Ok(warp::http::Response::builder()
@@ -398,8 +418,13 @@ pub fn data_changed_sse(network_id: u32) -> Result<Event, serde_json::Error> {
         .json_data(DataChanged { network_id })
 }
 
-pub fn with_footer(footer: String) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
-    warp::any().map(move || footer.clone())
+// These run on every request that reaches the route they're attached to, so
+// what they hand the handler has to be cheap to produce. Anything bigger than a
+// couple of words is shared behind an `Arc` (or, for a response body, `Bytes`)
+// rather than cloned per request.
+
+pub fn with_body(body: Bytes) -> impl Filter<Extract = (Bytes,), Error = Infallible> + Clone {
+    warp::any().map(move || body.clone())
 }
 
 pub fn with_caches(caches: Caches) -> impl Filter<Extract = (Caches,), Error = Infallible> + Clone {
@@ -414,19 +439,22 @@ pub fn with_activity(
 
 pub fn with_networks(
     networks: Vec<NetworkJson>,
-) -> impl Filter<Extract = (Vec<NetworkJson>,), Error = Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<Vec<NetworkJson>>,), Error = Infallible> + Clone {
+    let networks = Arc::new(networks);
     warp::any().map(move || networks.clone())
 }
 
 pub fn with_config_networks(
     networks: Vec<Network>,
-) -> impl Filter<Extract = (Vec<Network>,), Error = Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<Vec<Network>>,), Error = Infallible> + Clone {
+    let networks = Arc::new(networks);
     warp::any().map(move || networks.clone())
 }
 
 pub fn with_slugs(
     slugs: Vec<String>,
-) -> impl Filter<Extract = (Vec<String>,), Error = Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<Vec<String>>,), Error = Infallible> + Clone {
+    let slugs = Arc::new(slugs);
     warp::any().map(move || slugs.clone())
 }
 

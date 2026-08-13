@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 use warp::http::Response;
 use warp::Filter;
 
@@ -11,7 +12,9 @@ const THREASHOLD_NODE_LAGGING: u64 = 3; // blocks
 
 pub fn with_rss_base_url(
     base_url: String,
-) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
+) -> impl Filter<Extract = (Arc<String>,), Error = Infallible> + Clone {
+    // Shared rather than cloned: this runs on every request.
+    let base_url = Arc::new(base_url);
     warp::any().map(move || base_url.clone())
 }
 
@@ -133,8 +136,8 @@ impl From<(&TipInfoJson, &Vec<NodeDataJson>)> for Item {
 pub async fn forks_response(
     network_id: u32,
     caches: Caches,
-    network_infos: Vec<NetworkJson>,
-    base_url: String,
+    network_infos: Arc<Vec<NetworkJson>>,
+    base_url: Arc<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     match caches.get(&network_id) {
         Some(cache) => {
@@ -167,7 +170,7 @@ pub async fn forks_response(
                 .header("content-type", "application/rss+xml")
                 .body(feed.to_string()))
         }
-        None => Ok(Ok(response_unknown_network(network_infos))),
+        None => Ok(Ok(response_unknown_network(&network_infos))),
     }
 }
 
@@ -203,8 +206,8 @@ impl Item {
 pub async fn lagging_nodes_response(
     network_id: u32,
     caches: Caches,
-    network_infos: Vec<NetworkJson>,
-    base_url: String,
+    network_infos: Arc<Vec<NetworkJson>>,
+    base_url: Arc<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     match caches.get(&network_id) {
         Some(cache) => {
@@ -270,15 +273,15 @@ pub async fn lagging_nodes_response(
                 .header("content-type", "application/rss+xml")
                 .body(feed.to_string()))
         }
-        None => Ok(Ok(response_unknown_network(network_infos))),
+        None => Ok(Ok(response_unknown_network(&network_infos))),
     }
 }
 
 pub async fn invalid_blocks_response(
     network_id: u32,
     caches: Caches,
-    network_infos: Vec<NetworkJson>,
-    base_url: String,
+    network_infos: Arc<Vec<NetworkJson>>,
+    base_url: Arc<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     match caches.get(&network_id) {
         Some(cache) => {
@@ -333,15 +336,15 @@ pub async fn invalid_blocks_response(
                 .header("content-type", "application/rss+xml")
                 .body(feed.to_string()));
         }
-        None => Ok(Ok(response_unknown_network(network_infos))),
+        None => Ok(Ok(response_unknown_network(&network_infos))),
     }
 }
 
 pub async fn unreachable_nodes_response(
     network_id: u32,
     caches: Caches,
-    network_infos: Vec<NetworkJson>,
-    base_url: String,
+    network_infos: Arc<Vec<NetworkJson>>,
+    base_url: Arc<String>,
 ) -> Result<impl warp::Reply, Infallible> {
     match caches.get(&network_id) {
         Some(cache) => {
@@ -383,11 +386,11 @@ pub async fn unreachable_nodes_response(
                 .header("content-type", "application/rss+xml")
                 .body(feed.to_string()));
         }
-        None => Ok(Ok(response_unknown_network(network_infos))),
+        None => Ok(Ok(response_unknown_network(&network_infos))),
     }
 }
 
-pub fn response_unknown_network(network_infos: Vec<NetworkJson>) -> Response<String> {
+pub fn response_unknown_network(network_infos: &[NetworkJson]) -> Response<String> {
     let avaliable_networks = network_infos
         .iter()
         .map(|net| format!("{} ({})", net.id.to_string(), net.name))
