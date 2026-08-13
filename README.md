@@ -261,3 +261,86 @@ periodically moved into monthly `activity-archive-YYYY-MM.sqlite` files in
 `archive_directory` and purged from the live database. The archive files use
 the same schema as the live database, so archived events remain queryable
 with regular SQLite tooling.
+
+## Running behind nginx
+
+fork-observer serves its own HTTP and can be exposed directly, but a reverse
+proxy in front of it lets many clients share one response. Every API
+response carries an `ETag`, so a proxy can ask us "has this changed?" and be
+answered with a 304 and no body when it hasn't.
+
+That matters because of how the frontend updates: every open browser is told
+over `/api/changes` to refetch when a network's cache changes, so a new
+block turns into one request per open browser at almost the same moment.
+`proxy_cache_lock` collapses those into a single request to fork-observer.
+
+```nginx
+proxy_cache_path /var/cache/nginx/fork-observer levels=1:2
+                 keys_zone=forkobserver:10m max_size=100m inactive=1h;
+
+server {
+    listen 443 ssl;
+    server_name fork.observer;
+
+    gzip on;
+    gzip_types application/json application/rss+xml text/css text/javascript image/svg+xml;
+    gzip_min_length 1024;
+
+    # The event stream. It must not be cached: it never ends, so a proxy
+    # trying to store it holds the events back and delivers them in clumps,
+    # and the page stops updating in real time. An exact-match location takes
+    # precedence over the prefix one below regardless of the order they
+    # appear in, which is what keeps the caching settings there away from it.
+    location = /api/changes {
+        proxy_pass http://127.0.0.1:2323;
+        proxy_http_version 1.1;
+        # Not required - nginx passes the stream through in real time even
+        # with buffering on - but it avoids buffering a connection that
+        # stays open for hours.
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:2323;
+        proxy_cache forkobserver;
+
+        # We send `Cache-Control: no-cache`, which is the correct thing to
+        # tell a *browser*: store it, but check before reusing it. nginx
+        # reads the same header as "do not store this at all" and would
+        # never cache anything, so it has to be told to ignore it and use
+        # the policy below instead.
+        proxy_ignore_headers Cache-Control;
+
+        # Serve from the cache without asking us at all for this long. Keep
+        # it short: it is how stale a new block can look to a visitor.
+        proxy_cache_valid 200 2s;
+
+        # After that, revalidate with our ETag rather than refetching. We
+        # answer 304 with no body when nothing changed.
+        proxy_cache_revalidate on;
+
+        # One request to us per cache entry, however many clients ask at
+        # once. This is what turns a new block into a single fetch.
+        proxy_cache_lock on;
+
+        # Keep serving the previous response while that one is in flight.
+        proxy_cache_use_stale updating error timeout;
+
+        add_header X-Cache-Status $upstream_cache_status;
+    }
+}
+```
+
+`X-Cache-Status` isn't required, but it makes it easy to see the setup
+working. Requesting the same URL repeatedly should report `MISS` once, then
+`HIT` while the response is fresh, then `REVALIDATED` once it isn't -
+`REVALIDATED` meaning nginx checked with us using the `ETag` and we confirmed
+its copy was still good. If it reports `MISS` every time, `proxy_ignore_headers
+Cache-Control` is missing.
+
+The `/static` assets are sent with `Cache-Control: public, max-age=300` and
+an `ETag` over their contents, so browsers and the proxy cache them without
+any extra configuration. The HTML pages are `no-cache`: they reference the
+assets by name, so a stale page would keep a browser on stale assets.
