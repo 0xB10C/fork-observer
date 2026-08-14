@@ -177,22 +177,7 @@ pub fn build_routes(
     let change_sse = warp::path!("api" / "changes")
         .and(warp::get())
         .map(move || {
-            let changes_tx = cache_changed_tx_warp.subscribe();
-            let broadcast_stream = BroadcastStream::new(changes_tx);
-            let event_stream = broadcast_stream.map(move |d| match d {
-                Ok(d) => data_changed_sse(d),
-                // This client fell behind the channel and the events it missed
-                // are gone. Tell it so, rather than pretending nothing
-                // happened: it has to refetch to find out what it missed.
-                Err(BroadcastStreamRecvError::Lagged(missed)) => {
-                    warn!(
-                        "An SSE client lagged behind and missed {} cache change(s)",
-                        missed
-                    );
-                    events_missed_sse(missed)
-                }
-            });
-            let stream = warp::sse::keep_alive().stream(event_stream);
+            let stream = warp::sse::keep_alive().stream(change_stream(&cache_changed_tx_warp));
             warp::sse::reply(stream)
         });
 
@@ -723,6 +708,42 @@ pub async fn networks_response(
     }))
 }
 
+/// What a client connected to `api/changes` is sent.
+///
+/// The stream opens with a comment. Nothing else is written until a network
+/// changes or `keep_alive()` fires, and `keep_alive()` arms its timer on
+/// connect rather than sending one straight away - so on a quiet network the
+/// first byte, and with it the response headers, would be up to 15 seconds
+/// out. Until they arrive a browser has not fired `EventSource`'s `open`, so
+/// the page shows itself as disconnected, and a proxy in between sees a
+/// request that has produced nothing yet.
+pub fn change_stream(
+    cache_changed_tx: &Sender<u32>,
+) -> impl futures_util::Stream<Item = Result<Event, serde_json::Error>> {
+    let broadcast_stream = BroadcastStream::new(cache_changed_tx.subscribe());
+    let event_stream = broadcast_stream.map(move |d| match d {
+        Ok(d) => data_changed_sse(d),
+        // This client fell behind the channel and the events it missed are
+        // gone. Tell it so, rather than pretending nothing happened: it has to
+        // refetch to find out what it missed.
+        Err(BroadcastStreamRecvError::Lagged(missed)) => {
+            warn!(
+                "An SSE client lagged behind and missed {} cache change(s)",
+                missed
+            );
+            events_missed_sse(missed)
+        }
+    });
+    futures_util::stream::once(async { Ok(open_sse()) }).chain(event_stream)
+}
+
+/// The comment a stream opens with. `EventSource` ignores comments, which is
+/// the point: it carries no meaning, it just makes the connection observably
+/// open.
+pub fn open_sse() -> Event {
+    warp::sse::Event::default().comment("connected")
+}
+
 pub fn data_changed_sse(network_id: u32) -> Result<Event, serde_json::Error> {
     warp::sse::Event::default()
         .event("cache_changed")
@@ -783,7 +804,7 @@ pub fn with_slugs(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_routes, etag_matches, HeaderValue};
+    use super::{build_routes, change_stream, etag_matches, HeaderValue, StreamExt};
     use crate::backend::{BitcoinCoreNode, NodeInfo};
     use crate::config::{BoxedSyncSendNode, Config, Countdown, Network, PoolIdentification};
     use crate::types::{
@@ -1225,6 +1246,24 @@ mod tests {
             .await;
         assert_eq!(after.status(), 200);
         assert_ne!(after.headers().get("etag").unwrap(), &etag_before);
+    }
+
+    // A browser reports the stream as connected only once the response headers
+    // reach it, and they don't until something is written. On a quiet network
+    // the first keep-alive is 15 seconds out, so without an opening comment the
+    // page would show itself as disconnected for that long.
+    #[tokio::test]
+    async fn the_change_stream_writes_something_before_anything_happens() {
+        let (cache_changed_tx, _rx) = tokio::sync::broadcast::channel(16);
+        let mut stream = Box::pin(change_stream(&cache_changed_tx));
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .expect("the stream should write something at once")
+            .expect("the stream should not have ended")
+            .expect("the stream should not have failed");
+
+        assert_eq!(first.to_string(), ":connected\n\n");
     }
 
     #[test]
