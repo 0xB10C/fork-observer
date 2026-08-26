@@ -230,15 +230,25 @@ soundCheckbox.on("input", function() {
 networkSelect.on("input", async function() {
   state_selected_network_id = networkSelect.node().value
   update_network()
-  await update()
+  // the tree on screen is the old network's; show the loading overlay so it isn't
+  // mistaken for the new one while it loads. draw() hides it again once the new
+  // network's tips are drawn (its tip differs from the old network's, so this
+  // always triggers the "follow" branch that clears the overlay).
+  show_viz_loading()
+  // snap straight to the new network's tip instead of panning there: the old
+  // network's camera position has nothing to do with the new one, so animating
+  // between them would just be a meaningless camera swoop across empty space -
+  // and one that would keep going after the loading overlay has already faded.
+  await update({ snap: true })
 })
 
-async function update() {
+async function update(opts) {
+  opts = opts || {}
   console.debug("called update()")
   await fetch_data()
   check_tip_changed()
   await draw_nodes()
-  await draw({ reason: "update" })
+  await draw({ reason: "update", snap: !!opts.snap })
 }
 
 async function run() {
