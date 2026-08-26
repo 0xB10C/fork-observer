@@ -575,7 +575,7 @@ mod tests {
                 description: "".to_string(),
                 implementation: "test".to_string(),
             },
-            &vec![],
+            &[],
             "".to_string(),
             0,
             true,
@@ -732,7 +732,7 @@ mod tests {
         let network = test_network(1);
         // We already know `root` (a local node fetched it), which is what lets us
         // place `child`. Headers we can't anchor aren't imported.
-        let tree: Tree = Arc::new(Mutex::new(tree_of(&[root.clone()])));
+        let tree: Tree = Arc::new(Mutex::new(tree_of(std::slice::from_ref(&root))));
         let db = memory_db().await;
         let caches = empty_caches(network.id).await;
         let (cache_changed_tx, mut cache_changed_rx) = broadcast::channel(16);

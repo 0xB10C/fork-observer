@@ -15,7 +15,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use warp::{sse::Event, Filter};
 
 pub fn build_routes(
-    network_infos: &Vec<NetworkJson>,
+    network_infos: &[NetworkJson],
     config: &Config,
     caches: &Caches,
     cache_changed_tx_warp: Sender<u32>,
@@ -78,28 +78,28 @@ pub fn build_routes(
     let forks_rss = warp::get()
         .and(warp::path!("rss" / u32 / "forks.xml"))
         .and(with_caches(caches.clone()))
-        .and(with_networks(network_infos.clone()))
+        .and(with_networks(network_infos.to_vec()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and_then(rss::forks_response);
 
     let invalid_blocks_rss = warp::get()
         .and(warp::path!("rss" / u32 / "invalid.xml"))
         .and(with_caches(caches.clone()))
-        .and(with_networks(network_infos.clone()))
+        .and(with_networks(network_infos.to_vec()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and_then(rss::invalid_blocks_response);
 
     let lagging_nodes_rss = warp::get()
         .and(warp::path!("rss" / u32 / "lagging.xml"))
         .and(with_caches(caches.clone()))
-        .and(with_networks(network_infos.clone()))
+        .and(with_networks(network_infos.to_vec()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and_then(rss::lagging_nodes_response);
 
     let unreachable_nodes_rss = warp::get()
         .and(warp::path!("rss" / u32 / "unreachable.xml"))
         .and(with_caches(caches.clone()))
-        .and(with_networks(network_infos.clone()))
+        .and(with_networks(network_infos.to_vec()))
         .and(rss::with_rss_base_url(config.rss_base_url.clone()))
         .and_then(rss::unreachable_nodes_response);
 
@@ -376,7 +376,7 @@ pub async fn slug_redirect_response(
     slug: String,
     slugs: Vec<String>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    if slugs.iter().any(|s| *s == slug) {
+    if slugs.contains(&slug) {
         Ok(warp::http::Response::builder()
             .status(warp::http::StatusCode::FOUND)
             .header("location", format!("./?network={}", slug))

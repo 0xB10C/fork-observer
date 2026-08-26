@@ -561,7 +561,7 @@ fn parse_toml_node(toml_node: &TomlNode) -> Result<BoxedSyncSendNode, ConfigErro
             let url = format!(
                 "{}:{}",
                 toml_node.rpc_host.clone(),
-                toml_node.rpc_port.clone().unwrap_or(50002).to_string()
+                toml_node.rpc_port.unwrap_or(50002)
             );
             Arc::new(Electrum::new(node_info, url))
         }
@@ -580,15 +580,17 @@ mod tests {
 
         const FILENAME_EXAMPLE_CONFIG: &str = "config.toml.example";
         env::set_var(ENVVAR_CONFIG_FILE, FILENAME_EXAMPLE_CONFIG);
-        let cfg = load_config().expect(&format!(
-            "We should be able to load the {} file.",
-            FILENAME_EXAMPLE_CONFIG
-        ));
+        let cfg = load_config().unwrap_or_else(|_| {
+            panic!(
+                "We should be able to load the {} file.",
+                FILENAME_EXAMPLE_CONFIG
+            )
+        });
 
         assert_eq!(cfg.address.to_string(), "127.0.0.1:2323");
         assert_eq!(cfg.networks.len(), 2);
         assert_eq!(cfg.query_interval, std::time::Duration::from_secs(15));
-        assert_eq!(cfg.networks[0].pool_identification.enable, true);
+        assert!(cfg.networks[0].pool_identification.enable);
     }
 
     #[test]
@@ -614,11 +616,9 @@ mod tests {
         )
         .expect("node without use_waitfornewblock should parse");
         assert_eq!(node.use_waitfornewblock, None);
-        assert_eq!(
-            node.use_waitfornewblock
-                .unwrap_or(DEFAULT_USE_WAITFORNEWBLOCK),
-            true
-        );
+        assert!(node
+            .use_waitfornewblock
+            .unwrap_or(DEFAULT_USE_WAITFORNEWBLOCK));
 
         // Honors an explicit `false`.
         let node: TomlNode = toml::from_str(

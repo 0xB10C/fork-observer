@@ -87,7 +87,7 @@ pub trait Node: Sync {
 
     async fn new_headers(
         &self,
-        tips: &Vec<ChainTip>,
+        tips: &[ChainTip],
         tree: &Tree,
         min_fork_height: u64,
     ) -> Result<(Vec<HeaderInfo>, Vec<BlockHash>), FetchError> {
@@ -117,7 +117,7 @@ pub trait Node: Sync {
 
     async fn new_active_headers(
         &self,
-        tips: &Vec<ChainTip>,
+        tips: &[ChainTip],
         tree: &Tree,
         min_fork_height: u64,
     ) -> Result<Vec<HeaderInfo>, FetchError> {
@@ -125,8 +125,7 @@ pub trait Node: Sync {
 
         let active_tip = match tips
             .iter()
-            .filter(|tip| tip.status == ChainTipStatus::Active)
-            .last()
+            .rfind(|tip| tip.status == ChainTipStatus::Active)
         {
             Some(active_tip) => active_tip,
             None => {
@@ -189,15 +188,12 @@ pub trait Node: Sync {
                     }
                     // since we are fetching "active" (i.e. in the main chain) headers,
                     // we can fetch by block height here too.
-                    let header: Header;
-                    match self.capabilities().header_fetch_type {
-                        HeaderFetchType::Hash => {
-                            header = self.block_header_hash(&header_hash).await?;
-                        }
+                    let header: Header = match self.capabilities().header_fetch_type {
+                        HeaderFetchType::Hash => self.block_header_hash(&header_hash).await?,
                         HeaderFetchType::Height => {
-                            header = self.block_header_height(query_height as u64).await?;
+                            self.block_header_height(query_height as u64).await?
                         }
-                    }
+                    };
                     new_headers.push(HeaderInfo {
                         height: query_height as u64,
                         header,
@@ -217,7 +213,7 @@ pub trait Node: Sync {
 
     async fn new_nonactive_headers(
         &self,
-        tips: &Vec<ChainTip>,
+        tips: &[ChainTip],
         tree: &Tree,
         min_fork_height: u64,
     ) -> Result<Vec<HeaderInfo>, FetchError> {

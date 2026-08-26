@@ -84,12 +84,12 @@ pub fn btcd_chaintips(
     }
 
     if let Some(response) = jsonrpc_response.result {
-        return Ok(response);
+        Ok(response)
     } else {
-        return Err(JsonRPCError::JsonRpc(format!(
+        Err(JsonRPCError::JsonRpc(format!(
             "JSON RPC response for request '{}' was empty.",
             METHOD
-        )));
+        )))
     }
 }
 
@@ -126,7 +126,7 @@ pub fn btcd_blockheader(
     let header_bytes = hex::decode(header_hex)?;
 
     let header: Header = corepc_client::bitcoin::consensus::deserialize(&header_bytes)?;
-    return Ok(header);
+    Ok(header)
 }
 
 pub fn btcd_block(

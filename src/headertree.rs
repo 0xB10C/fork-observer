@@ -37,21 +37,20 @@ pub async fn sorted_interesting_heights(
     // Combine the heights with multiple blocks with the tip_heights.
     let mut interesting_heights_set: BTreeSet<u64> = heights_with_multiple_blocks
         .iter()
-        .map(|i| *i)
+        .copied()
         .chain(tip_heights)
         .collect();
 
     // We are also interested in the block with the max height. We should
     // already have that in `tip_heights`, but include it here just to be
     // sure.
-    let max_height: u64 = height_occurences
-        .iter()
-        .map(|(k, _)| *k)
+    let max_height: u64 = *height_occurences
+        .keys()
         .max()
         .expect("we should have at least one height here as we have blocks");
     interesting_heights_set.insert(max_height);
 
-    let mut interesting_heights: Vec<u64> = interesting_heights_set.iter().map(|h| *h).collect();
+    let mut interesting_heights: Vec<u64> = interesting_heights_set.iter().copied().collect();
     interesting_heights.sort();
 
     // As, for example, testnet has a lot of forks we'd return many headers
@@ -59,7 +58,7 @@ pub async fn sorted_interesting_heights(
     // max_interesting_heights.
     interesting_heights = interesting_heights_set
         .iter()
-        .map(|h| *h)
+        .copied()
         .rev() // reversing: ascending -> descending
         .take(max_interesting_heights) // taking the 'last' max_interesting_heights
         .rev() // reversing: descending -> ascending
@@ -157,17 +156,14 @@ pub async fn strip_tree(
     let mut headers: Vec<HeaderInfoJson> = Vec::new();
     for idx in striped_tree.node_indices() {
         let prev_nodes = striped_tree.neighbors_directed(idx, petgraph::Direction::Incoming);
-        let prev_node_index: usize;
-        match prev_nodes.clone().count() {
-            0 => prev_node_index = usize::MAX, // indicates the start in JavaScript
-            1 => {
-                prev_node_index = prev_nodes
-                    .last()
-                    .expect("we should have exactly one previous node")
-                    .index()
-            }
+        let prev_node_index: usize = match prev_nodes.clone().count() {
+            0 => usize::MAX, // indicates the start in JavaScript
+            1 => prev_nodes
+                .last()
+                .expect("we should have exactly one previous node")
+                .index(),
             _ => panic!("got multiple previous nodes. this should not happen."),
-        }
+        };
         headers.push(HeaderInfoJson::new(
             striped_tree[idx],
             idx.index(),
@@ -256,7 +252,7 @@ pub async fn stale_blocks(tree: &Tree, how_many: usize) -> Vec<StaleBlockJson> {
         .collect();
 
     // Return the most recent (highest) stale blocks first, capped at `how_many`.
-    stale.sort_by(|a, b| b.height.cmp(&a.height));
+    stale.sort_by_key(|b| std::cmp::Reverse(b.height));
     stale.truncate(how_many);
     stale
 }

@@ -121,27 +121,26 @@ async fn startup() -> Result<(config::Config, Db, Caches, Option<Activity>), Mai
 }
 
 async fn populate_cache(network: &config::Network, tree: &Tree, caches: &Caches) {
-    let forks = headertree::recent_forks(&tree, MAX_FORKS_IN_CACHE).await;
+    let forks = headertree::recent_forks(tree, MAX_FORKS_IN_CACHE).await;
     let hij = headertree::strip_tree(
-        &tree,
+        tree,
         network.max_interesting_heights,
         BTreeSet::new(),
         network.countdown.as_ref().map(|c| c.height),
     )
     .await;
-    let stale_blocks = headertree::stale_blocks(&tree, MAX_STALE_BLOCKS).await;
+    let stale_blocks = headertree::stale_blocks(tree, MAX_STALE_BLOCKS).await;
     {
         let mut locked_caches = caches.lock().await;
         let node_data: NodeData = network
             .nodes
             .iter()
-            .cloned()
             .map(|n| {
                 (
                     n.info().id,
                     NodeDataJson::new(
                         n.info(),
-                        &vec![],                     // no chain tips knows yet
+                        &[],                         // no chain tips knows yet
                         VERSION_UNKNOWN.to_string(), // is updated later, when we know it
                         0,                           // timestamp of last block update
                         true, // assume the node is reachable, if it isn't we set it to false after the first getchaintips RPC call anyway
@@ -210,7 +209,7 @@ async fn main() -> Result<(), MainError> {
         }
     }
 
-    for network in config.networks.iter().cloned() {
+    for network in config.networks.iter() {
         let network = network.clone();
         let (pool_id_tx, mut pool_id_rx) = unbounded_channel::<BlockHash>();
 
@@ -243,7 +242,8 @@ async fn main() -> Result<(), MainError> {
         let lagging_state: Arc<Mutex<BTreeMap<u32, bool>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let network_logs_activity = activity.is_some() && !network.activity_log_node_ids.is_empty();
 
-        for node in network.nodes.iter().cloned() {
+        for node in network.nodes.iter() {
+            let node = node.clone();
             let network = network.clone();
             let query_interval = config.query_interval;
             // Spread the initial query times apart to even out network/CPU load
@@ -509,7 +509,7 @@ async fn main() -> Result<(), MainError> {
                 .0
                 .raw_nodes()
                 .iter()
-                .filter(|node| node.weight.miner == "" || node.weight.miner == MINER_UNKNOWN)
+                .filter(|node| node.weight.miner.is_empty() || node.weight.miner == MINER_UNKNOWN)
                 .filter(|node| {
                     let h = node.weight.height;
                     interesting_heights.contains(&h)
@@ -561,7 +561,7 @@ async fn main() -> Result<(), MainError> {
                         match tree_locked.1.get(hash) {
                             Some(idx) => *idx,
                             None => {
-                                error!("Block hash {} not (yet) present in tree for network: {}. Skipping identification...", hash.to_string(), network_clone.name);
+                                error!("Block hash {} not (yet) present in tree for network: {}. Skipping identification...", hash, network_clone.name);
                                 continue;
                             }
                         }
@@ -573,13 +573,12 @@ async fn main() -> Result<(), MainError> {
                     };
 
                     // skip miner identification if we previously identified a miner
-                    if !(header_info.miner == MINER_UNKNOWN.to_string() || header_info.miner == "")
-                    {
+                    if !(header_info.miner == MINER_UNKNOWN || header_info.miner.is_empty()) {
                         continue;
                     }
 
                     let mut miner = MINER_UNKNOWN.to_string();
-                    for node in network_clone.nodes.iter().cloned() {
+                    for node in network_clone.nodes.iter() {
                         match node
                             .coinbase(&header_info.header.block_hash(), header_info.height)
                             .await
@@ -596,13 +595,13 @@ async fn main() -> Result<(), MainError> {
                             Err(e) => {
                                 warn!(
                                     "Could not get coinbase for block {} from node {}: {}",
-                                    header_info.header.block_hash().to_string(),
+                                    header_info.header.block_hash(),
                                     node.info().name,
                                     e
                                 );
                             }
                         }
-                        if miner != MINER_UNKNOWN.to_string() {
+                        if miner != MINER_UNKNOWN {
                             info!(
                                 "Updated miner for block {} from node {}: {}",
                                 header_info.height,
@@ -630,7 +629,7 @@ async fn main() -> Result<(), MainError> {
                         warn!(
                             "Could not update miner to {} for block {}: {}",
                             header_info.miner.clone(),
-                            &header_info.header.block_hash(),
+                            header_info.header.block_hash(),
                             e
                         );
                     }
@@ -894,10 +893,7 @@ async fn update_cache(
             let stale_hashes: HashSet<String> =
                 stale_blocks.iter().map(|b| b.hash.clone()).collect();
             locked_cache.entry(network_id).and_modify(|e| {
-                e.header_infos_json = new_header_infos_map
-                    .iter()
-                    .map(|(_, header)| header.clone())
-                    .collect();
+                e.header_infos_json = new_header_infos_map.values().cloned().collect();
                 e.forks = forks;
                 e.stale_blocks = stale_blocks;
                 // Drop cached blocks that are no longer in the stale list, so the
@@ -1004,7 +1000,7 @@ async fn load_node_version(node: BoxedSyncSendNode, network: &str) -> String {
         network,
         VERSION_UNKNOWN
     );
-    return VERSION_UNKNOWN.to_string();
+    VERSION_UNKNOWN.to_string()
 }
 
 async fn insert_new_headers_into_tree(tree: &Tree, new_headers: &[HeaderInfo]) -> bool {
@@ -1075,7 +1071,7 @@ mod tests {
             let mut node_data: NodeData = BTreeMap::new();
             node_data.insert(
                 node.id,
-                NodeDataJson::new(node.clone(), &vec![], "".to_string(), 0, true),
+                NodeDataJson::new(node.clone(), &[], "".to_string(), 0, true),
             );
             locked_caches.insert(
                 network_id,
@@ -1089,10 +1085,7 @@ mod tests {
                 },
             );
         }
-        assert_eq!(
-            get_test_node_reachable(&caches, network_id, node.id).await,
-            true
-        );
+        assert!(get_test_node_reachable(&caches, network_id, node.id).await);
 
         update_cache(
             &caches,
@@ -1104,10 +1097,7 @@ mod tests {
             &dummy_sender,
         )
         .await;
-        assert_eq!(
-            get_test_node_reachable(&caches, network_id, node.id).await,
-            false
-        );
+        assert!(!get_test_node_reachable(&caches, network_id, node.id).await);
 
         update_cache(
             &caches,
@@ -1119,10 +1109,7 @@ mod tests {
             &dummy_sender,
         )
         .await;
-        assert_eq!(
-            get_test_node_reachable(&caches, network_id, node.id).await,
-            true
-        );
+        assert!(get_test_node_reachable(&caches, network_id, node.id).await);
     }
 
     #[tokio::test]
@@ -1159,8 +1146,8 @@ mod tests {
             CacheUpdate::RemoteNodes {
                 removed_node_ids: vec![],
                 nodes: vec![
-                    NodeDataJson::new(node_info(1000, "A"), &vec![], "".to_string(), 0, true),
-                    NodeDataJson::new(node_info(1001, "B"), &vec![], "".to_string(), 0, true),
+                    NodeDataJson::new(node_info(1000, "A"), &[], "".to_string(), 0, true),
+                    NodeDataJson::new(node_info(1001, "B"), &[], "".to_string(), 0, true),
                 ],
             },
             &dummy_sender,
@@ -1182,7 +1169,7 @@ mod tests {
                 removed_node_ids: vec![1001],
                 nodes: vec![NodeDataJson::new(
                     node_info(1000, "A renamed"),
-                    &vec![],
+                    &[],
                     "".to_string(),
                     0,
                     false,
@@ -1197,7 +1184,7 @@ mod tests {
             assert_eq!(node_data.len(), 1);
             let node = node_data.get(&1000).unwrap();
             assert_eq!(node.name, "A renamed");
-            assert_eq!(node.reachable, false);
+            assert!(!node.reachable);
             assert!(!node_data.contains_key(&1001));
         }
     }
