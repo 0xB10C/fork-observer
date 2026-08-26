@@ -470,6 +470,104 @@ rect.block-miner-bg {
   position: relative;
 }
 
+/* shown over the SVG until the first batch of blocks has been drawn. Uses the
+   same cube geometry as a real block (see below) so the loading state reads as
+   "a block, but not resolved yet" rather than an unrelated spinner. */
+.viz-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  pointer-events: none;
+  background: var(--surface-bg);
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+
+.viz-loading-hidden {
+  opacity: 0;
+}
+
+.viz-loading-text {
+  font-size: 0.85rem;
+  color: var(--muted-soft);
+}
+
+/* window onto the endless scrolling chain below: fixed size, and fades its own
+   left/right edges so blocks entering/leaving read as a smooth flow rather than
+   a hard pop-in/pop-out at the boundary. */
+.viz-loading-strip {
+  width: 240px;
+  height: 90px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 15%, black 85%, transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0%, black 15%, black 85%, transparent 100%);
+}
+
+/* one period (80px = one block spacing) of an otherwise-identical, infinitely
+   repeating chain: sliding it exactly one period to the left loops seamlessly,
+   since what scrolls off on the left is indistinguishable from what was already
+   waiting off-screen on the right. */
+.viz-loading-track {
+  animation: viz-loading-scroll 2.4s linear infinite;
+}
+
+@keyframes viz-loading-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-80px); }
+}
+
+/* a subtler version of the being-mined pulse (see above) for the loading
+   indicator's blocks: same idea, but toned down since it plays continuously
+   for as long as loading takes, rather than for one real, momentary event. */
+.viz-loading-pulse.block rect.block-background {
+  animation: viz-loading-pulse-front 2.4s ease-in-out infinite;
+}
+
+.viz-loading-pulse.block-back polygon.block-face-top {
+  animation: viz-loading-pulse-top 2.4s ease-in-out infinite;
+}
+
+.viz-loading-pulse.block-back polygon.block-face-side {
+  animation: viz-loading-pulse-side 2.4s ease-in-out infinite;
+}
+
+.viz-loading-pulse.block-back path.block-edges {
+  animation: viz-loading-pulse-stroke 2.4s ease-in-out infinite;
+}
+
+path.link.link-block-block.viz-loading-pulse {
+  animation: viz-loading-pulse-link 2.4s ease-in-out infinite;
+}
+
+@keyframes viz-loading-pulse-front {
+  0%, 100% { fill: var(--surface-bg); }
+  50% { fill: color-mix(in srgb, var(--mining-pulse) 14%, var(--surface-bg)); }
+}
+
+@keyframes viz-loading-pulse-top {
+  0%, 100% { fill: var(--block-top); }
+  50% { fill: color-mix(in srgb, var(--mining-pulse) 20%, var(--block-top)); }
+}
+
+@keyframes viz-loading-pulse-side {
+  0%, 100% { fill: var(--block-side); }
+  50% { fill: color-mix(in srgb, var(--mining-pulse) 20%, var(--block-side)); }
+}
+
+@keyframes viz-loading-pulse-stroke {
+  0%, 100% { stroke: var(--block-stroke); }
+  50% { stroke: color-mix(in srgb, var(--mining-pulse) 40%, var(--block-stroke)); }
+}
+
+@keyframes viz-loading-pulse-link {
+  0%, 100% { stroke: var(--block-to-block-link-color); }
+  50% { stroke: color-mix(in srgb, var(--mining-pulse) 40%, var(--block-to-block-link-color)); }
+}
+
 .viz-recenter {
   position: absolute;
   top: 10px;

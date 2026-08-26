@@ -635,6 +635,10 @@ speedSelect.addEventListener("input", () => {
 
 networkSelect.on("input", async function () {
   state_selected_network_id = parseInt(this.value)
+  // the tree on screen is the old network's; show the loading overlay so it isn't
+  // mistaken for the new one while it loads. draw() hides it again once the new
+  // network's tree is drawn (see load_network() -> set_position(0, { snap: true })).
+  show_viz_loading()
   await load_network()
 })
 

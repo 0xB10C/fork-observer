@@ -204,6 +204,68 @@ let svg = d3
 
 let initialDraw = true
 
+// Builds the "loading blocks" overlay: a small scrolling strip of blocks, styled
+// like the real thing (same geometry/classes as the front/back faces drawn in
+// draw() below), that plays until the first real batch of blocks arrives. Built
+// here instead of duplicated in every HTML page that shares this script, since
+// index.html, playback.html and fullscreen.html all need the same overlay next
+// to their own #drawing-area.
+function viz_loading_html() {
+  const half = BLOCK_SIZE / 2
+  const depth = BLOCK_DEPTH
+  const spacing = 80 // must match the -80px keyframe of .viz-loading-track in style.css
+  // one extra block beyond each visible edge, so the loop below is always primed
+  // with a block ready to scroll into view - see .viz-loading-track's comment.
+  const xs = [-spacing, 0, spacing, spacing * 2, spacing * 3, spacing * 4]
+
+  const back = x => `
+    <g transform="translate(${x},0)" class="block-back viz-loading-pulse">
+      <polygon class="block-face-top" points="${-half},${-half} ${half},${-half} ${half + depth},${-half - depth} ${-half + depth},${-half - depth}"></polygon>
+      <polygon class="block-face-side" points="${half},${-half} ${half + depth},${-half - depth} ${half + depth},${half - depth} ${half},${half}"></polygon>
+      <path class="block-edges" d="M ${-half},${-half} L ${-half + depth},${-half - depth} L ${half + depth},${-half - depth} L ${half},${-half} M ${half + depth},${-half - depth} L ${half + depth},${half - depth} L ${half},${half}"></path>
+    </g>`
+  const front = x => `
+    <g transform="translate(${x},0)" class="block viz-loading-pulse">
+      <rect class="block-background" x="${-half}" y="${-half}" width="${BLOCK_SIZE}" height="${BLOCK_SIZE}" stroke="var(--block-stroke)" stroke-width="1" stroke-linejoin="round" stroke-opacity="1"></rect>
+    </g>`
+  const link = (x1, x2) => `<path class="link link-block-block viz-loading-pulse" d="M ${x1 + half},0 L ${x2 - half},0"></path>`
+
+  // paint order matters: backs, then links, then fronts - so a link tucks behind
+  // the front face of the block it points to (see draw()'s comment on the same).
+  const backs = xs.map(back).join("")
+  const links = xs.slice(0, -1).map((x, i) => link(x, xs[i + 1])).join("")
+  const fronts = xs.map(front).join("")
+
+  return `
+    <div id="viz-loading" class="viz-loading">
+      <div class="viz-loading-strip">
+        <svg width="240" height="90" viewBox="0 -50 240 90">
+          <g class="viz-loading-track">${backs}${links}${fronts}</g>
+        </svg>
+      </div>
+      <div class="viz-loading-text">loading blocks…</div>
+    </div>`
+}
+
+// inserted as the last child of #drawing-area's parent, so it stacks on top of
+// the SVG (and, on pages that have them, the recenter button and countdown
+// display) regardless of what else that parent already contains.
+let drawingAreaParent = document.getElementById("drawing-area").parentElement
+drawingAreaParent.insertAdjacentHTML("beforeend", viz_loading_html())
+
+// fades out the "loading blocks" overlay once the first real batch of blocks has
+// been drawn.
+function hide_viz_loading() {
+  d3.select("#viz-loading").classed("viz-loading-hidden", true)
+}
+
+// fades the overlay back in, e.g. while switching networks, so the previous
+// network's (now stale) tree isn't mistaken for the newly selected one while it
+// loads. hide_viz_loading() removes it again once the new network has drawn.
+function show_viz_loading() {
+  d3.select("#viz-loading").classed("viz-loading-hidden", false)
+}
+
 // enables zoom and panning
 const zoom = d3.zoom().scaleExtent([0.15, 5])
   // interpolate transitions in a straight line. d3's default (interpolateZoom) flies
@@ -873,6 +935,7 @@ function draw(opts) {
     // only clear this once the view has actually been anchored, so a job-triggered
     // preserveView redraw can't consume it before the first real draw
     initialDraw = false
+    hide_viz_loading()
   }
 }
 
