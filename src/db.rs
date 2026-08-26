@@ -64,7 +64,7 @@ pub async fn write_to_db(
             "INSERT OR IGNORE INTO headers
                    (height, network, hash, header, miner)
                    values (?1, ?2, ?3, ?4, ?5)",
-            &[
+            [
                 &info.height.to_string(),
                 &network.to_string(),
                 &info.header.block_hash().to_string(),

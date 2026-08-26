@@ -75,7 +75,7 @@ impl Node for Electrum {
     }
 
     fn rpc_url(&self) -> String {
-        return "not used".to_string();
+        "not used".to_string()
     }
 
     async fn version(&self) -> Result<String, FetchError> {

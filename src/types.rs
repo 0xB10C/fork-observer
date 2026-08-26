@@ -211,7 +211,7 @@ pub struct NodeDataJson {
 impl NodeDataJson {
     pub fn new(
         info: NodeInfo,
-        tips: &Vec<ChainTip>,
+        tips: &[ChainTip],
         version: String,
         last_changed_timestamp: u64,
         reachable: bool,

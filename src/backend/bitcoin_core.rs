@@ -95,7 +95,7 @@ impl Node for BitcoinCoreNode {
 
     async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
         let rpc = self.rpc_client()?;
-        let hash_clone = hash.clone();
+        let hash_clone = *hash;
         task::spawn_blocking(move || -> Result<Header, FetchError> {
             Ok(rpc
                 .get_block_header(&hash_clone)?
@@ -115,7 +115,7 @@ impl Node for BitcoinCoreNode {
 
     async fn coinbase(&self, hash: &BlockHash, _height: u64) -> Result<Transaction, FetchError> {
         let rpc = self.rpc_client()?;
-        let hash_clone = hash.clone();
+        let hash_clone = *hash;
         match task::spawn_blocking(move || rpc.get_block(hash_clone)).await {
             Ok(result) => match result {
                 Ok(result) => Ok(result
@@ -206,8 +206,7 @@ impl Node for BitcoinCoreNode {
         let start_hash = self.block_hash(start_height).await?;
         debug!(
             "loading active-chain headers starting from {} ({})",
-            start_height,
-            start_hash.to_string()
+            start_height, start_hash
         );
 
         let url = format!(
@@ -248,7 +247,7 @@ impl Node for BitcoinCoreNode {
             "loaded {} active-chain headers starting from {} ({})",
             headers.len(),
             start_height,
-            start_hash.to_string()
+            start_hash
         );
 
         Ok(headers)

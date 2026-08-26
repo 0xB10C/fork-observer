@@ -100,7 +100,7 @@ impl From<Fork> for Item {
             description: format!(
                 "There are {} blocks building on-top of block {}.",
                 fork.children.len(),
-                fork.common.header.block_hash().to_string()
+                fork.common.header.block_hash()
             ),
             guid: fork.common.header.block_hash().to_string(),
         }
@@ -110,7 +110,7 @@ impl From<Fork> for Item {
 impl From<(&TipInfoJson, &Vec<NodeDataJson>)> for Item {
     fn from(invalid_block: (&TipInfoJson, &Vec<NodeDataJson>)) -> Self {
         let mut nodes = invalid_block.1.clone();
-        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        nodes.sort_by_key(|a| a.id);
 
         Item {
             title: format!("Invalid block at height {}", invalid_block.0.height,),
@@ -223,14 +223,13 @@ pub async fn lagging_nodes_response(
             if cache.node_data.len() > 1 {
                 let nodes_with_active_height: Vec<(&NodeDataJson, u64)> = cache
                     .node_data
-                    .iter()
-                    .map(|(_, node)| {
+                    .values()
+                    .map(|node| {
                         (
                             node,
                             node.tips
                                 .iter()
-                                .filter(|tip| tip.status == "active".to_string())
-                                .last()
+                                .rfind(|tip| tip.status == "active")
                                 .unwrap_or(&TipInfoJson {
                                     height: 0,
                                     status: "active".to_string(),
@@ -309,7 +308,7 @@ pub async fn invalid_blocks_response(
 
             let mut invalid_blocks: Vec<(&TipInfoJson, &Vec<NodeDataJson>)> =
                 invalid_blocks_to_node_id.iter().collect();
-            invalid_blocks.sort_by(|a, b| b.0.height.cmp(&a.0.height));
+            invalid_blocks.sort_by_key(|b| std::cmp::Reverse(b.0.height));
             let feed = Feed {
                 channel: Channel {
                     title: format!("Invalid Blocks - {}", network_name),
@@ -330,9 +329,9 @@ pub async fn invalid_blocks_response(
                 },
             };
 
-            return Ok(Response::builder()
+            Ok(Response::builder()
                 .header("content-type", "application/rss+xml")
-                .body(feed.to_string()));
+                .body(feed.to_string()))
         }
         None => Ok(Ok(response_unknown_network(network_infos))),
     }
@@ -362,7 +361,7 @@ pub async fn unreachable_nodes_response(
                 .node_data
                 .values()
                 .filter(|node| !node.reachable)
-                .map(|node| Item::unreachable_node_item(node))
+                .map(Item::unreachable_node_item)
                 .collect();
             let feed = Feed {
                 channel: Channel {
@@ -381,9 +380,9 @@ pub async fn unreachable_nodes_response(
                 },
             };
 
-            return Ok(Response::builder()
+            Ok(Response::builder()
                 .header("content-type", "application/rss+xml")
-                .body(feed.to_string()));
+                .body(feed.to_string()))
         }
         None => Ok(Ok(response_unknown_network(network_infos))),
     }
@@ -392,7 +391,7 @@ pub async fn unreachable_nodes_response(
 pub fn response_unknown_network(network_infos: Vec<NetworkJson>) -> Response<String> {
     let avaliable_networks = network_infos
         .iter()
-        .map(|net| format!("{} ({})", net.id.to_string(), net.name))
+        .map(|net| format!("{} ({})", net.id, net.name))
         .collect::<Vec<String>>();
 
     Response::builder()
