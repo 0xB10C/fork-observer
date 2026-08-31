@@ -68,7 +68,10 @@ pub async fn write_to_db(
                 &info.height.to_string(),
                 &network.to_string(),
                 &info.header.block_hash().to_string(),
-                &corepc_client::bitcoin::consensus::encode::serialize_hex(&info.header),
+                &hex::encode(crate::blake2b::serialize(
+                    &info.header,
+                    info.header.v2.as_ref(),
+                )),
                 &info.miner,
             ],
         )?;
@@ -147,7 +150,8 @@ async fn load_header_infos(db: Db, network: u32) -> Result<Vec<HeaderInfo>, DbEr
     while let Some(row) = rows.next()? {
         let header_hex: String = row.get(1)?;
         let header_bytes = hex::decode(&header_hex)?;
-        let header = corepc_client::bitcoin::consensus::deserialize(&header_bytes)?;
+        let (header, v2, _) = crate::blake2b::parse_header(&header_bytes)?;
+        let header = crate::blake2b::ParsedHeader { header, v2 };
         headers.push(HeaderInfo {
             height: row.get::<_, i64>(0)? as u64,
             header,

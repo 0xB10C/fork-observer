@@ -23,6 +23,7 @@ futures-util = "0.3"
 petgraph = { version = "0.8.2", features = ["serde-1"] }
 
 base64 = "0.23.0"
+blake2 = "0.10.6"
 
 async-trait = "0.1.89"
 bitcoin-pool-identification = "0.3.7"

@@ -16,10 +16,10 @@ pub use electrum::Electrum;
 pub use esplora::Esplora;
 pub use mempool_space::MempoolSpace;
 
+use crate::blake2b::ParsedHeader;
 use crate::error::FetchError;
 use crate::types::{ChainTip, ChainTipStatus, HeaderInfo, Tree};
 use async_trait::async_trait;
-use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::{BlockHash, Transaction};
 use log::debug;
 use std::cmp::max;
@@ -56,8 +56,8 @@ pub trait Node: Sync {
     fn capabilities(&self) -> Capabilities;
     fn rpc_url(&self) -> String;
     async fn version(&self) -> Result<String, FetchError>;
-    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError>;
-    async fn block_header_height(&self, height: u64) -> Result<Header, FetchError>;
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<ParsedHeader, FetchError>;
+    async fn block_header_height(&self, height: u64) -> Result<ParsedHeader, FetchError>;
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError>;
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError>;
     async fn coinbase(&self, hash: &BlockHash, height: u64) -> Result<Transaction, FetchError>;
@@ -71,7 +71,7 @@ pub trait Node: Sync {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<Header>, FetchError>;
+    ) -> Result<Vec<ParsedHeader>, FetchError>;
 
     /// Blocks until the node's tip likely changed, or until `timeout` elapses,
     /// whichever comes first. Returning is only a hint to re-fetch tips; callers
@@ -163,7 +163,7 @@ pub trait Node: Sync {
                             .contains_key(&height_header_pair.0.block_hash())
                         {
                             new_headers.push(HeaderInfo {
-                                header: *height_header_pair.0,
+                                header: height_header_pair.0.clone(),
                                 height: height_header_pair.1 as u64,
                                 miner: DEFAULT_EMPTY_MINER.to_string(),
                             });
@@ -189,7 +189,7 @@ pub trait Node: Sync {
                     }
                     // since we are fetching "active" (i.e. in the main chain) headers,
                     // we can fetch by block height here too.
-                    let header: Header;
+                    let header: ParsedHeader;
                     match self.capabilities().header_fetch_type {
                         HeaderFetchType::Hash => {
                             header = self.block_header_hash(&header_hash).await?;
@@ -261,12 +261,12 @@ pub trait Node: Sync {
                     }
                     Err(e) => return Err(e),
                 };
+                next_header = header.prev_blockhash;
                 new_headers.push(HeaderInfo {
                     height,
                     header,
                     miner: DEFAULT_EMPTY_MINER.to_string(),
                 });
-                next_header = header.prev_blockhash;
             }
         }
         Ok(new_headers)

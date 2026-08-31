@@ -325,7 +325,7 @@ mod tests {
     fn hi(height: u64, header: Header) -> HeaderInfo {
         HeaderInfo {
             height,
-            header,
+            header: header.into(),
             miner: String::new(),
         }
     }

@@ -19,6 +19,7 @@ use tokio::time::{interval, sleep, Duration};
 mod activity;
 mod api;
 mod backend;
+mod blake2b;
 mod config;
 mod db;
 mod error;

@@ -1,8 +1,8 @@
 use super::{Capabilities, HeaderFetchType, Node, NodeInfo};
+use crate::blake2b::ParsedHeader;
 use crate::error::{EsploraRESTError, FetchError};
 use crate::types::{ChainTip, ChainTipStatus};
 use async_trait::async_trait;
-use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::hex::FromHex;
 use corepc_client::bitcoin::{BlockHash, Transaction};
 use std::str::FromStr;
@@ -41,7 +41,7 @@ impl Node for Esplora {
         Err(FetchError::EsploraREST(EsploraRESTError::NotImplemented))
     }
 
-    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<ParsedHeader, FetchError> {
         let url = format!("{}/block/{}/header", self.api_url, hash);
 
         let res = minreq::get(url.clone())
@@ -53,15 +53,13 @@ impl Node for Esplora {
             200 => {
                 let header_str = res.as_str()?;
                 match Vec::from_hex(header_str) {
-                    Ok(header_bytes) => {
-                        match corepc_client::bitcoin::consensus::deserialize(&header_bytes) {
-                            Ok(header) => Ok(header),
-                            Err(e) => Err(FetchError::DataError(format!(
-                                "Can't deserialize block header '{}': {}",
-                                header_str, e
-                            ))),
-                        }
-                    }
+                    Ok(header_bytes) => match crate::blake2b::parse_header(&header_bytes) {
+                        Ok((header, v2, _)) => Ok(ParsedHeader { header, v2 }),
+                        Err(e) => Err(FetchError::DataError(format!(
+                            "Can't deserialize block header '{}': {}",
+                            header_str, e
+                        ))),
+                    },
                     Err(e) => Err(FetchError::DataError(format!(
                         "Can't hex decode block header '{}': {}",
                         header_str, e
@@ -80,7 +78,7 @@ impl Node for Esplora {
         }
     }
 
-    async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
+    async fn block_header_height(&self, _: u64) -> Result<ParsedHeader, FetchError> {
         assert_eq!(self.capabilities().header_fetch_type, HeaderFetchType::Hash);
         Err(FetchError::DataError(
             "fetch by block height not implemented".to_string(),
@@ -195,7 +193,7 @@ impl Node for Esplora {
         &self,
         _start_height: u64,
         _count: u64,
-    ) -> Result<Vec<Header>, FetchError> {
+    ) -> Result<Vec<ParsedHeader>, FetchError> {
         assert!(self.capabilities().batch_header_fetch);
         Err(FetchError::DataError(
             "batch header fetch not implemented".to_string(),

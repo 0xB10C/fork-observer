@@ -1,9 +1,9 @@
 use super::esplora::Esplora;
 use super::{Capabilities, HeaderFetchType, Node, NodeInfo};
+use crate::blake2b::ParsedHeader;
 use crate::error::{EsploraRESTError, FetchError};
 use crate::types::ChainTip;
 use async_trait::async_trait;
-use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::hex::FromHex;
 use corepc_client::bitcoin::{BlockHash, Transaction};
 use log::debug;
@@ -33,20 +33,20 @@ struct MempoolSpaceBackendInfo {
 fn header_from_mempool_space_block(
     hash: &BlockHash,
     block: &MempoolSpaceBlock,
-) -> Result<Header, FetchError> {
+) -> Result<ParsedHeader, FetchError> {
     let header_bytes = Vec::from_hex(&block.extras.header).map_err(|e| {
         FetchError::DataError(format!(
             "Can't hex decode block header '{}' for block {}: {}",
             block.extras.header, hash, e
         ))
     })?;
-    let header: Header =
-        corepc_client::bitcoin::consensus::deserialize(&header_bytes).map_err(|e| {
-            FetchError::DataError(format!(
-                "Can't deserialize block header '{}' for block {}: {}",
-                block.extras.header, hash, e
-            ))
-        })?;
+    let (inner, v2, _) = crate::blake2b::parse_header(&header_bytes).map_err(|e| {
+        FetchError::DataError(format!(
+            "Can't deserialize block header '{}' for block {}: {}",
+            block.extras.header, hash, e
+        ))
+    })?;
+    let header = ParsedHeader { header: inner, v2 };
 
     if header.block_hash() != *hash {
         return Err(FetchError::DataError(format!(
@@ -129,12 +129,12 @@ impl Node for MempoolSpace {
         Ok(info.version)
     }
 
-    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<ParsedHeader, FetchError> {
         let block: MempoolSpaceBlock = self.get_json(&format!("/block/{}", hash)).await?;
         header_from_mempool_space_block(hash, &block)
     }
 
-    async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
+    async fn block_header_height(&self, _: u64) -> Result<ParsedHeader, FetchError> {
         assert_eq!(self.capabilities().header_fetch_type, HeaderFetchType::Hash);
         Err(FetchError::DataError(
             "fetch by block height not implemented".to_string(),
@@ -157,7 +157,7 @@ impl Node for MempoolSpace {
         &self,
         _start_height: u64,
         _count: u64,
-    ) -> Result<Vec<Header>, FetchError> {
+    ) -> Result<Vec<ParsedHeader>, FetchError> {
         assert!(self.capabilities().batch_header_fetch);
         Err(FetchError::DataError(
             "batch header fetch not implemented".to_string(),

@@ -75,7 +75,7 @@ fn header_info_from_json(hij: &HeaderInfoJson) -> Result<HeaderInfo, FetchError>
     }
     Ok(HeaderInfo {
         height: hij.height,
-        header,
+        header: header.into(),
         miner: hij.miner.clone(),
     })
 }
@@ -375,7 +375,7 @@ mod tests {
     fn header_info_json_round_trips_and_verifies_hash() {
         let hi = HeaderInfo {
             height: 1,
-            header: header(BlockHash::all_zeros(), 42),
+            header: header(BlockHash::all_zeros(), 42).into(),
             miner: "Some Pool".to_string(),
         };
         let hij = HeaderInfoJson::new(&hi, 0, usize::MAX);
@@ -388,7 +388,7 @@ mod tests {
     fn header_info_json_tampering_is_rejected() {
         let hi = HeaderInfo {
             height: 1,
-            header: header(BlockHash::all_zeros(), 42),
+            header: header(BlockHash::all_zeros(), 42).into(),
             miner: "".to_string(),
         };
         let hij = HeaderInfoJson::new(&hi, 0, usize::MAX);
@@ -412,12 +412,12 @@ mod tests {
     fn header_infos_from_json_drops_headers_below_min_fork_height() {
         let a = HeaderInfo {
             height: 5,
-            header: header(BlockHash::all_zeros(), 1),
+            header: header(BlockHash::all_zeros(), 1).into(),
             miner: "".to_string(),
         };
         let b = HeaderInfo {
             height: 10,
-            header: header(a.header.block_hash(), 2),
+            header: header(a.header.block_hash(), 2).into(),
             miner: "".to_string(),
         };
         let hijs = vec![
@@ -432,7 +432,7 @@ mod tests {
     fn hi(height: u64, header: Header) -> HeaderInfo {
         HeaderInfo {
             height,
-            header,
+            header: header.into(),
             miner: String::new(),
         }
     }
@@ -710,12 +710,12 @@ mod tests {
         let remote_network_id = 7;
         let root = HeaderInfo {
             height: 0,
-            header: header(BlockHash::all_zeros(), 0),
+            header: header(BlockHash::all_zeros(), 0).into(),
             miner: "".to_string(),
         };
         let child = HeaderInfo {
             height: 1,
-            header: header(root.header.block_hash(), 1),
+            header: header(root.header.block_hash(), 1).into(),
             miner: "Remote Pool".to_string(),
         };
         let header_infos = vec![

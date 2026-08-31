@@ -1,8 +1,8 @@
 use super::{Capabilities, HeaderFetchType, Node, NodeInfo};
+use crate::blake2b::ParsedHeader;
 use crate::error::FetchError;
 use crate::types::{ChainTip, ChainTipStatus};
 use async_trait::async_trait;
-use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::{BlockHash, Transaction};
 use electrum_client::{
     Client as ElectrumClient, ConfigBuilder as ElectrumClientConfigBuilder, ElectrumApi,
@@ -84,17 +84,17 @@ impl Node for Electrum {
         Ok(response.server_version)
     }
 
-    async fn block_header_hash(&self, _hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, _hash: &BlockHash) -> Result<ParsedHeader, FetchError> {
         // hm, no lookup via BlockHash possible I think?
         return Err(FetchError::DataError(
             "block_header not implemented".to_string(),
         ));
     }
 
-    async fn block_header_height(&self, height: u64) -> Result<Header, FetchError> {
+    async fn block_header_height(&self, height: u64) -> Result<ParsedHeader, FetchError> {
         let client = self.get_client();
         let header = client.block_header(height as usize)?;
-        Ok(header)
+        Ok(header.into())
     }
 
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
@@ -178,10 +178,13 @@ impl Node for Electrum {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<Header>, FetchError> {
+    ) -> Result<Vec<ParsedHeader>, FetchError> {
         let client = self.get_client();
         Ok(client
             .block_headers(start_height as usize, count as usize)?
-            .headers)
+            .headers
+            .into_iter()
+            .map(ParsedHeader::from)
+            .collect())
     }
 }

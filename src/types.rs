@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use crate::backend::NodeInfo;
 use crate::config::{Countdown, Network};
 
-use corepc_client::bitcoin::blockdata::block::Header;
+use crate::blake2b::ParsedHeader;
 use corepc_client::bitcoin::BlockHash;
 use corepc_client::types::model::{ChainTips, ChainTipsStatus};
 use log::warn;
@@ -47,7 +47,7 @@ pub type Db = Arc<Mutex<Connection>>;
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct HeaderInfo {
     pub height: u64,
-    pub header: Header,
+    pub header: ParsedHeader,
     pub miner: String,
 }
 
@@ -151,7 +151,7 @@ impl StaleBlockJson {
         StaleBlockJson {
             height: hi.height,
             hash: hi.header.block_hash().to_string(),
-            header: corepc_client::bitcoin::consensus::encode::serialize_hex(&hi.header),
+            header: hex::encode(crate::blake2b::serialize(&hi.header, hi.header.v2.as_ref())),
         }
     }
 }

@@ -1,8 +1,8 @@
 use super::{Capabilities, HeaderFetchType, Node, NodeInfo};
+use crate::blake2b::ParsedHeader;
 use crate::error::{FetchError, JsonRPCError};
 use crate::types::ChainTip;
 use async_trait::async_trait;
-use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::{BlockHash, Transaction};
 
 #[derive(Hash, Clone)]
@@ -46,7 +46,7 @@ impl Node for BtcdNode {
         Err(FetchError::BtcdRPC(JsonRPCError::NotImplemented))
     }
 
-    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<ParsedHeader, FetchError> {
         let url = format!("{}/", self.rpc_url);
         match crate::jsonrpc::btcd_blockheader(
             url,
@@ -54,12 +54,12 @@ impl Node for BtcdNode {
             self.rpc_password.clone(),
             hash.to_string(),
         ) {
-            Ok(header) => Ok(header),
+            Ok(header) => Ok(header.into()),
             Err(error) => Err(FetchError::BtcdRPC(error)),
         }
     }
 
-    async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
+    async fn block_header_height(&self, _: u64) -> Result<ParsedHeader, FetchError> {
         assert_eq!(self.capabilities().header_fetch_type, HeaderFetchType::Hash);
         Err(FetchError::DataError(
             "fetch by block height not implemented".to_string(),
@@ -70,7 +70,7 @@ impl Node for BtcdNode {
         &self,
         _start_height: u64,
         _count: u64,
-    ) -> Result<Vec<Header>, FetchError> {
+    ) -> Result<Vec<ParsedHeader>, FetchError> {
         assert!(self.capabilities().batch_header_fetch);
         Err(FetchError::DataError(
             "batch header fetch not implemented".to_string(),

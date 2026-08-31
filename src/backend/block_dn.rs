@@ -1,4 +1,5 @@
 use super::{Capabilities, HeaderFetchType, Node, NodeInfo};
+use crate::blake2b::ParsedHeader;
 use crate::error::FetchError;
 use crate::types::{ChainTip, ChainTipStatus};
 use async_trait::async_trait;
@@ -146,7 +147,7 @@ impl BlockDn {
         &self,
         height: u64,
         count: u64,
-    ) -> Result<Vec<Header>, FetchError> {
+    ) -> Result<Vec<ParsedHeader>, FetchError> {
         let mut bytes: Vec<u8> = Vec::new();
         for (file_start, byte_start, byte_end) in blockdn_header_requests(height, count) {
             let expected_len = (byte_end - byte_start + 1) as usize;
@@ -169,6 +170,7 @@ impl BlockDn {
                 .collect();
 
         header_results
+            .map(|headers| headers.into_iter().map(ParsedHeader::from).collect())
             .map_err(|e| FetchError::BlockDnREST(format!("could not deserialize header: {}", e)))
     }
 }
@@ -198,7 +200,7 @@ impl Node for BlockDn {
             .ok_or_else(|| FetchError::BlockDnREST("/status did not include a version".to_string()))
     }
 
-    async fn block_header_hash(&self, _hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, _hash: &BlockHash) -> Result<ParsedHeader, FetchError> {
         assert_eq!(
             self.capabilities().header_fetch_type,
             HeaderFetchType::Height
@@ -208,7 +210,7 @@ impl Node for BlockDn {
         ))
     }
 
-    async fn block_header_height(&self, height: u64) -> Result<Header, FetchError> {
+    async fn block_header_height(&self, height: u64) -> Result<ParsedHeader, FetchError> {
         self.fetch_headers_range(height, 1)
             .await?
             .into_iter()
@@ -282,7 +284,7 @@ impl Node for BlockDn {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<Header>, FetchError> {
+    ) -> Result<Vec<ParsedHeader>, FetchError> {
         self.fetch_headers_range(start_height, count).await
     }
 }

@@ -1,8 +1,8 @@
 use super::{Capabilities, HeaderFetchType, Node, NodeInfo};
+use crate::blake2b::ParsedHeader;
 use crate::error::FetchError;
 use crate::types::ChainTip;
 use async_trait::async_trait;
-use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::{BlockHash, Transaction};
 use corepc_client::client_sync::v31::Client;
 use corepc_client::client_sync::Auth;
@@ -93,20 +93,36 @@ impl Node for BitcoinCoreNode {
         .await?
     }
 
-    async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
+    async fn block_header_hash(&self, hash: &BlockHash) -> Result<ParsedHeader, FetchError> {
         let rpc = self.rpc_client()?;
         let hash_clone = hash.clone();
-        task::spawn_blocking(move || -> Result<Header, FetchError> {
-            Ok(rpc
-                .get_block_header(&hash_clone)?
-                .into_model()
-                .map_err(|e| FetchError::DataError(e.to_string()))?
-                .0)
+        task::spawn_blocking(move || -> Result<ParsedHeader, FetchError> {
+            // Ask for the raw header rather than the typed model: the model is a
+            // fixed 80-byte SHA256d header and cannot represent a BLAKE2b (v2)
+            // one, which would silently yield the wrong block hash.
+            let header_hex: String = rpc.call(
+                "getblockheader",
+                &[hash_clone.to_string().into(), false.into()],
+            )?;
+            let header_bytes = hex::decode(&header_hex).map_err(|e| {
+                FetchError::DataError(format!(
+                    "could not hex decode block header '{}': {}",
+                    header_hex, e
+                ))
+            })?;
+            let (header, v2, _) = crate::blake2b::parse_header(&header_bytes).map_err(|e| {
+                FetchError::DataError(format!(
+                    "could not deserialize block header '{}': {}",
+                    header_hex, e
+                ))
+            })?;
+
+            Ok(ParsedHeader { header, v2 })
         })
         .await?
     }
 
-    async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
+    async fn block_header_height(&self, _: u64) -> Result<ParsedHeader, FetchError> {
         assert_eq!(self.capabilities().header_fetch_type, HeaderFetchType::Hash);
         Err(FetchError::DataError(
             "fetch by block height not implemented".to_string(),
@@ -200,7 +216,7 @@ impl Node for BitcoinCoreNode {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<Header>, FetchError> {
+    ) -> Result<Vec<ParsedHeader>, FetchError> {
         // The REST headers endpoint is addressed by hash; resolve the start
         // height with a (cheap) `getblockhash` RPC first.
         let start_hash = self.block_hash(start_height).await?;
@@ -228,13 +244,9 @@ impl Node for BitcoinCoreNode {
             )));
         }
 
-        let header_results: Result<Vec<Header>, corepc_client::bitcoin::consensus::encode::Error> =
-            res.as_bytes()
-                .chunks(80)
-                .map(corepc_client::bitcoin::consensus::deserialize::<Header>)
-                .collect();
-
-        let headers = match header_results {
+        // Headers are not a fixed stride: a BLAKE2b (v2) header is 164 bytes
+        // where a SHA256d one is 80, so the stream has to be walked.
+        let headers = match crate::blake2b::parse_headers(res.as_bytes()) {
             Ok(headers) => headers,
             Err(e) => {
                 return Err(FetchError::BitcoinCoreREST(format!(

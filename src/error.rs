@@ -78,6 +78,7 @@ pub enum DbError {
     Rusqlite(rusqlite::Error),
     DecodeHex(hex::FromHexError),
     BitcoinDeserialize(corepc_client::bitcoin::consensus::encode::Error),
+    HeaderParse(crate::blake2b::ParseError),
 }
 
 impl fmt::Display for DbError {
@@ -86,6 +87,7 @@ impl fmt::Display for DbError {
             DbError::DecodeHex(e) => write!(f, "hex decoding error: {:?}", e),
             DbError::BitcoinDeserialize(e) => write!(f, "Bitcoin deserialization error: {:?}", e),
             DbError::Rusqlite(e) => write!(f, "Rusqlite SQL error: {:?}", e),
+            DbError::HeaderParse(e) => write!(f, "header parse error: {}", e),
         }
     }
 }
@@ -96,7 +98,14 @@ impl error::Error for DbError {
             DbError::DecodeHex(ref e) => Some(e),
             DbError::BitcoinDeserialize(ref e) => Some(e),
             DbError::Rusqlite(ref e) => Some(e),
+            DbError::HeaderParse(_) => None,
         }
+    }
+}
+
+impl From<crate::blake2b::ParseError> for DbError {
+    fn from(e: crate::blake2b::ParseError) -> Self {
+        DbError::HeaderParse(e)
     }
 }
 
