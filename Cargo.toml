@@ -42,6 +42,10 @@ criterion = { version = "0.7", features = ["async_tokio"] }
 name = "headertree"
 harness = false
 
+[[bench]]
+name = "db"
+harness = false
+
 [features]
 
 strict = [] # Treat warnings as a build error.
