@@ -33,13 +33,15 @@ CREATE TABLE IF NOT EXISTS headers (
 )
 ";
 
+// Filtering on the network as well lets SQLite use the primary key index
+// (network, hash, header) instead of scanning the whole table.
 const UPDATE_STMT_HEADER_MINER: &str = "
 UPDATE
     headers
 SET
     miner = ?1
 WHERE
-    hash = ?2;
+    network = ?2 AND hash = ?3;
 ";
 
 pub async fn setup_db(db: Db) -> Result<(), DbError> {
@@ -82,11 +84,19 @@ pub async fn write_to_db(
     Ok(())
 }
 
-pub async fn update_miner(db: Db, hash: &BlockHash, miner: String) -> Result<(), DbError> {
+pub async fn update_miner(
+    db: Db,
+    network: u32,
+    hash: &BlockHash,
+    miner: String,
+) -> Result<(), DbError> {
     let mut db_locked = db.lock().await;
     let tx = db_locked.transaction()?;
 
-    tx.execute(UPDATE_STMT_HEADER_MINER, [miner, hash.to_string()])?;
+    tx.execute(
+        UPDATE_STMT_HEADER_MINER,
+        [miner, network.to_string(), hash.to_string()],
+    )?;
     tx.commit()?;
     Ok(())
 }
