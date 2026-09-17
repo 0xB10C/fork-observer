@@ -106,24 +106,27 @@ pub async fn update_miner(
 pub async fn load_treeinfos(db: Db, network: u32) -> Result<TreeInfo, DbError> {
     let header_infos = load_header_infos(db, network).await?;
 
-    let mut tree: DiGraph<HeaderInfo, bool> = DiGraph::new();
-    let mut hash_index_map: HashMap<BlockHash, NodeIndex> = HashMap::new();
+    let mut tree: DiGraph<HeaderInfo, bool> =
+        DiGraph::with_capacity(header_infos.len(), header_infos.len());
+    let mut hash_index_map: HashMap<BlockHash, NodeIndex> =
+        HashMap::with_capacity(header_infos.len());
     info!("building header tree for network {}..", network);
-    // add headers as nodes
-    for h in header_infos.clone() {
-        let idx = tree.add_node(h.clone());
-        hash_index_map.insert(h.header.block_hash(), idx);
+    // add headers as nodes, remembering each header's parent hash so the
+    // edges can be added once all nodes are there
+    let mut parents: Vec<(NodeIndex, BlockHash)> = Vec::with_capacity(header_infos.len());
+    for h in header_infos {
+        let hash = h.header.block_hash();
+        let prev_hash = h.header.prev_blockhash;
+        let idx = tree.add_node(h);
+        hash_index_map.insert(hash, idx);
+        parents.push((idx, prev_hash));
     }
     info!(".. added headers from network {}", network);
     // add prev-current block relationships as edges
-    for current in header_infos {
-        let idx_current = hash_index_map
-            .get(&current.header.block_hash())
-            .expect("current header should be in the map as we just inserted it");
-        match hash_index_map.get(&current.header.prev_blockhash) {
-            Some(idx_prev) => tree.update_edge(*idx_prev, *idx_current, false),
-            None => continue,
-        };
+    for (idx_current, prev_hash) in parents {
+        if let Some(idx_prev) = hash_index_map.get(&prev_hash) {
+            tree.add_edge(*idx_prev, idx_current, false);
+        }
     }
     info!(
         ".. added relationships between headers from network {}",
@@ -151,12 +154,11 @@ async fn load_header_infos(db: Db, network: u32) -> Result<Vec<HeaderInfo>, DbEr
 
     let mut stmt = db_locked.prepare(SELECT_STMT_HEADER_HEIGHT)?;
 
-    let mut headers: Vec<HeaderInfo> = vec![];
+    let mut headers: Vec<HeaderInfo> = Vec::new();
 
     let mut rows = stmt.query([network.to_string()])?;
     while let Some(row) = rows.next()? {
-        let header_hex: String = row.get(1)?;
-        let header_bytes = hex::decode(&header_hex)?;
+        let header_bytes = hex::decode(row.get_ref(1)?.as_str().map_err(rusqlite::Error::from)?)?;
         let header = corepc_client::bitcoin::consensus::deserialize(&header_bytes)?;
         headers.push(HeaderInfo {
             height: row.get::<_, i64>(0)? as u64,
