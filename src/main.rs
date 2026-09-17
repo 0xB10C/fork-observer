@@ -569,6 +569,7 @@ async fn main() -> Result<(), MainError> {
                     // write to db
                     if let Err(e) = db::update_miner(
                         db_clone2.clone(),
+                        network.id,
                         &header_info.header.block_hash(),
                         header_info.miner.clone(),
                     )

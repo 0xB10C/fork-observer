@@ -86,8 +86,9 @@ fn bench_update_miner(c: &mut Criterion) {
     let mut group = c.benchmark_group("update_miner");
     group.sample_size(SAMPLE_SIZE);
     group.bench_with_input(BenchmarkId::from_parameter(ROWS), &ROWS, |b, _| {
-        b.to_async(&rt)
-            .iter(|| async { update_miner(db.clone(), &hash, "Some Pool".to_string()).await })
+        b.to_async(&rt).iter(|| async {
+            update_miner(db.clone(), NETWORK, &hash, "Some Pool".to_string()).await
+        })
     });
     group.finish();
 }
