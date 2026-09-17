@@ -271,10 +271,13 @@ tree, which holds close to a million headers for a mainnet instance. The
 [criterion](https://github.com/bheisler/criterion.rs) benchmarks in
 `benches/headertree.rs` measure them on synthetic trees of 10k, 100k and 1M
 headers, with a stale block every 100 heights, for the `max_interesting_heights`
-values 100 and 5000.
+values 100 and 5000. The benchmarks in `benches/db.rs` measure the database
+functions that grow with the number of stored headers (`update_miner` and
+`load_treeinfos`) on an in-memory database with a million rows.
 
 ```
 cargo bench                                    # everything (takes a few minutes)
+cargo bench --bench db                         # only the database benchmarks
 cargo bench -- 'strip_tree/.*/100000'          # only a subset, by name
 cargo bench -- --save-baseline before          # store a run ...
 cargo bench -- --baseline before               # ... and compare a change against it
