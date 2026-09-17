@@ -93,8 +93,11 @@ pub async fn strip_tree(
                 }
             }
             // Keep some surrounding headers for the headers we find interesting.
+            // interesting_heights is sorted, so a binary search finds a height
+            // in a few steps instead of scanning the whole list.
             for x in -2i64..=1 {
-                if interesting_heights.contains(&((header.height as i64 - x) as u64)) {
+                let height = (header.height as i64 - x) as u64;
+                if interesting_heights.binary_search(&height).is_ok() {
                     return Some(header);
                 }
             }
