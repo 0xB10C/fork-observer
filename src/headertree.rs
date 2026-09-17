@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -22,50 +21,47 @@ pub async fn sorted_interesting_heights(
     }
 
     // We are intersted in all heights where we know more than one block
-    // (as this indicates a fork).
-    let mut height_occurences: BTreeMap<u64, usize> = BTreeMap::new();
+    // (as this indicates a fork). Count the blocks per height in a Vec
+    // indexed by height: the heights are dense, and we only need to know
+    // whether there is more than one block, so a saturating byte per height
+    // is enough (1 MB per million heights).
+    let mut blocks_per_height: Vec<u8> = Vec::new();
     for node in tree_locked.0.raw_nodes() {
-        let counter = height_occurences.entry(node.weight.height).or_insert(0);
-        *counter += 1;
+        let height = node.weight.height as usize;
+        if height >= blocks_per_height.len() {
+            blocks_per_height.resize(height + 1, 0);
+        }
+        blocks_per_height[height] = blocks_per_height[height].saturating_add(1);
     }
-    let heights_with_multiple_blocks: Vec<u64> = height_occurences
+    let heights_with_multiple_blocks = blocks_per_height
         .iter()
-        .filter(|(_, v)| **v > 1)
-        .map(|(k, _)| *k)
-        .collect();
-
-    // Combine the heights with multiple blocks with the tip_heights.
-    let mut interesting_heights_set: BTreeSet<u64> = heights_with_multiple_blocks
-        .iter()
-        .copied()
-        .chain(tip_heights)
-        .collect();
+        .enumerate()
+        .filter(|(_, count)| **count > 1)
+        .map(|(height, _)| height as u64);
 
     // We are also interested in the block with the max height. We should
     // already have that in `tip_heights`, but include it here just to be
     // sure.
-    let max_height: u64 = *height_occurences
-        .keys()
-        .max()
-        .expect("we should have at least one height here as we have blocks");
-    interesting_heights_set.insert(max_height);
+    let max_height: u64 = blocks_per_height.len() as u64 - 1;
 
-    let mut interesting_heights: Vec<u64> = interesting_heights_set.iter().copied().collect();
-    interesting_heights.sort();
+    // Combine the heights with multiple blocks with the tip_heights. The set
+    // sorts and deduplicates them.
+    let interesting_heights_set: BTreeSet<u64> = heights_with_multiple_blocks
+        .chain(tip_heights)
+        .chain(std::iter::once(max_height))
+        .collect();
 
     // As, for example, testnet has a lot of forks we'd return many headers
     // via the API (causing things to slow down), we allow limiting this with
-    // max_interesting_heights.
-    interesting_heights = interesting_heights_set
+    // max_interesting_heights: keep the highest max_interesting_heights of
+    // them, in ascending order.
+    let mut interesting_heights: Vec<u64> = interesting_heights_set
         .iter()
+        .rev()
+        .take(max_interesting_heights)
         .copied()
-        .rev() // reversing: ascending -> descending
-        .take(max_interesting_heights) // taking the 'last' max_interesting_heights
-        .rev() // reversing: descending -> ascending
         .collect();
-
-    // To be sure, sort again.
-    interesting_heights.sort();
+    interesting_heights.reverse();
 
     interesting_heights
 }
