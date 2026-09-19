@@ -765,9 +765,12 @@ function draw(opts) {
         // signalling chips, stacked in the bottom-left of the block face — the one
         // corner nothing else uses, and inside the block so they need no per-
         // orientation placement. The container is bound to the block (not to a
-        // deployment) so it can be faded in with the rest of a new block below; it
-        // stays empty for the blocks that signal for nothing.
-        let signal_group = block_child_group.append("g").attr("class", "signal-chips")
+        // deployment) so it can be faded in with the rest of a new block below.
+        // Only blocks that signal for something get one - a block's version does
+        // not change under it, so there is nothing to add one for later.
+        let signal_group = block_child_group
+          .filter(d => signalled_deployments(d.data.data).length > 0)
+          .append("g").attr("class", "signal-chips")
         signal_group.selectAll("g.signal-chip")
           .data(d => signalled_deployments(d.data.data), d => d.chip)
           .join(enter => {
