@@ -529,25 +529,30 @@ function preprocess_data(data) {
   // real blocks - which separates it from its sibling like any other fork, instead of
   // leaving it half a slot away and drawn over it. That moves the chain, but so would
   // the confirmed block it stands in for.
-  const beyond_our_tip = d => from_stratum_feed(d.data) && d.data.height > max_height
-  const real_root = treemap(
-    d3.hierarchy(treeData, d => (d.children || []).filter(c => !beyond_our_tip(c)))
-      .sort(sort_blocks))
-  let real_x = new Map()
-  real_root.descendants().forEach(d => real_x.set(d.data.data.hash, d.x))
+  //
+  // Without blocks from the feed both runs walk the same tree and come out the same,
+  // so the second layout and the shift pass below have nothing to do and are skipped.
+  if (mining_headers.length > 0) {
+    const beyond_our_tip = d => from_stratum_feed(d.data) && d.data.height > max_height
+    const real_root = treemap(
+      d3.hierarchy(treeData, d => (d.children || []).filter(c => !beyond_our_tip(c)))
+        .sort(sort_blocks))
+    let real_x = new Map()
+    real_root.descendants().forEach(d => real_x.set(d.data.data.hash, d.x))
 
-  // Pin every real block back to where it sits without the feed. The synthetic ones
-  // ahead of the tip aren't in that layout, so they take the shift of the block they
-  // hang off - which keeps them lined up with it and keeps any siblings as far apart
-  // as they were.
-  // eachBefore visits parents first, so a node's shift is always known by then.
-  let shift = new Map()
-  root_node.eachBefore(d => {
-    let real = real_x.get(d.data.data.hash)
-    let s = real !== undefined ? real - d.x : shift.get(d.parent)
-    shift.set(d, s)
-    d.x += s
-  })
+    // Pin every real block back to where it sits without the feed. The synthetic ones
+    // ahead of the tip aren't in that layout, so they take the shift of the block they
+    // hang off - which keeps them lined up with it and keeps any siblings as far apart
+    // as they were.
+    // eachBefore visits parents first, so a node's shift is always known by then.
+    let shift = new Map()
+    root_node.eachBefore(d => {
+      let real = real_x.get(d.data.data.hash)
+      let s = real !== undefined ? real - d.x : shift.get(d.parent)
+      shift.set(d, s)
+      d.x += s
+    })
+  }
 
   return [root_node, max_height, htoi]
 }
