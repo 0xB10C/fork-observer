@@ -273,12 +273,86 @@ const zoom = d3.zoom().scaleExtent([0.15, 5])
   // pans we do here reads as the view lurching away and returning.
   .interpolate(d3.interpolate)
   .on( "zoom", e => {
-  g.attr("transform", e.transform)
-})
+    g.attr("transform", e.transform)
+    // Only the visible area plus a margin is in the document (see CULL_MARGIN), so
+    // dragging further than the margin has to bring in what the view moved onto -
+    // while the drag is still going, or the user would pan into empty space.
+    redraw_for_view_soon()
+  })
+  // and once more when it comes to rest, in case the last frame's redraw missed the
+  // end of the movement
+  .on("end", redraw_for_view)
 svg.call(zoom)
 
 let g = svg
     .append("g")
+
+// Only the blocks within (or near) the visible area are put in the document: a node
+// reporting thousands of stale blocks draws a tree tens of thousands of pixels wide,
+// of which one screen is ever on show. The rest is laid out - the layout decides
+// where the visible ones go - but not drawn until the view moves onto it.
+//
+// The margin is how much more than the visible area is kept, in viewports around it,
+// so that a pan of less than that shows blocks that are already there and the tree
+// does not visibly build itself up at the edges.
+const CULL_MARGIN = 1
+
+// The area the last draw covered, in the tree's own coordinates. A view change only
+// needs a redraw once it leaves this.
+let drawnBounds = null
+
+// The last layout, kept so that a redraw which only happened because the view moved
+// doesn't have to lay the whole tree out again. Only ever read for those redraws;
+// anything that can change the data lays it out afresh.
+let layoutCache = null
+
+// the visible area in tree coordinates, grown by CULL_MARGIN viewports
+function visible_bounds(margin) {
+  const box = svg.node().getBoundingClientRect()
+  // A drawing area with no size - a page that hasn't been laid out yet - would cull
+  // the whole tree away and leave an empty view. Draw all of it instead; the first
+  // view change once there is a viewport narrows it down.
+  if (box.width == 0 || box.height == 0) {
+    return { x0: -Infinity, y0: -Infinity, x1: Infinity, y1: Infinity }
+  }
+  const t = d3.zoomTransform(svg.node())
+  const pad_x = box.width * margin
+  const pad_y = box.height * margin
+  const [x0, y0] = t.invert([-pad_x, -pad_y])
+  const [x1, y1] = t.invert([box.width + pad_x, box.height + pad_y])
+  return { x0, y0, x1, y1 }
+}
+
+// Draw the part of the tree the view has moved onto, if it has moved off what the
+// last draw covered. Coalesced into one redraw per frame: this runs on every zoom
+// event, of which a drag produces a stream.
+function redraw_for_view() {
+  if (drawnBounds === null) return
+  const now = visible_bounds(0)
+  const covered = now.x0 >= drawnBounds.x0 && now.x1 <= drawnBounds.x1 &&
+                  now.y0 >= drawnBounds.y0 && now.y1 <= drawnBounds.y1
+  if (covered) return
+  draw({ reason: "view moved", viewportOnly: true, preserveView: true })
+}
+
+// the same, while the view is still moving: a drag or a camera transition produces a
+// stream of zoom events, and one redraw per frame is enough for all of them
+let viewRedrawPending = false
+function redraw_for_view_soon() {
+  if (viewRedrawPending) return
+  viewRedrawPending = true
+  requestAnimationFrame(() => {
+    viewRedrawPending = false
+    redraw_for_view()
+  })
+}
+
+// is any part of the box between the two points inside the bounds? Used with a
+// block's own position twice over, and with a link's two ends.
+function bounds_overlap(b, ax, ay, bx, by) {
+  return Math.max(ax, bx) >= b.x0 && Math.min(ax, bx) <= b.x1 &&
+         Math.max(ay, by) >= b.y0 && Math.min(ay, by) <= b.y1
+}
 
 // layer for the connector links between a block and its open description. It is
 // never raised, so it stays below the blocks and the lines appear to originate
@@ -615,16 +689,35 @@ function draw(opts) {
     return
   }
 
-  const [root_node, max_height, htoi] = preprocess_data(data)
+  // A redraw that only happened because the view moved reuses the layout: nothing
+  // about the data changed, only which part of it is on screen.
+  const reuse_layout = !!opts.viewportOnly && layoutCache !== null && layoutCache.data === data
+  const [root_node, max_height, htoi] = reuse_layout ? layoutCache.layout : preprocess_data(data)
+  if (!reuse_layout) layoutCache = { data, layout: [root_node, max_height, htoi] }
 
   log_layout_shift(root_node, htoi)
+
+  // what to draw of it: the visible area plus a margin, see CULL_MARGIN. Everything
+  // outside is left out of the joins below, so it is not in the document at all.
+  const bounds = visible_bounds(CULL_MARGIN)
+  drawnBounds = bounds
+  const in_view = d => bounds_overlap(bounds, o.x(d, htoi), o.y(d, htoi), o.x(d, htoi), o.y(d, htoi))
+  // a link can span a collapsed run of thousands of blocks, so it is drawn whenever
+  // the box between its two ends touches the visible area, not just when an end does
+  const link_in_view = l => bounds_overlap(bounds,
+    o.x(l.source, htoi), o.y(l.source, htoi), o.x(l.target, htoi), o.y(l.target, htoi))
+  const visible_blocks = root_node.descendants().filter(in_view)
+  const visible_links = root_node.links().filter(link_in_view)
 
   // An orientation switch moves every block into a different coordinate space, tens of
   // thousands of pixels away. Animating that flies the camera - and slides the blocks -
   // through empty space for the better part of a second, which just reads as the view
   // having gone blank. So a switch snaps into place instead, the way the first draw
   // does; there is no continuity between the two layouts to preserve anyway.
-  const snap = initialDraw || !!opts.snap
+  const snap = initialDraw || !!opts.snap || !!opts.viewportOnly
+  // the newest block grows into place, but only when it is new to the tree - not when
+  // it is drawn for the first time or when the view just moved onto it
+  const animate_new_tip = !initialDraw && !opts.viewportOnly
   const move = (sel, ms) => snap ? sel : sel.transition(d3.transition().duration(ms))
 
   // the 3D extrusion (top + right faces) lives in its own layer below the links, so
@@ -632,7 +725,7 @@ function draw(opts) {
   // look like it comes from the center of the block.
   let backFaces = backLayer
     .selectAll(".block-back")
-    .data(root_node.descendants(), d => `${d.data.data.hash}-${d.data.data.height}`)
+    .data(visible_blocks, d => `${d.data.data.hash}-${d.data.data.height}`)
     .join(
       enter => {
         let back = enter.append("g")
@@ -664,7 +757,7 @@ function draw(opts) {
 
   let links = linkLayer
     .selectAll(".link-block-block")
-    .data(root_node.links(), d => `${d.source.data.data.hash}-${d.target.data.data.hash}`)
+    .data(visible_links, d => `${d.source.data.data.hash}-${d.target.data.data.hash}`)
     .join(
       enter => {
         const paths = enter.append("path")
@@ -705,7 +798,7 @@ function draw(opts) {
 
   let hiddenBlockTexts = hiddenTextLayer
     .selectAll(".text-blocks-not-shown")
-    .data(root_node.links().filter(d => d.target.data.data.height - d.source.data.data.height != 1), d => d.source.data.data.hash + d.target.data.data.hash)
+    .data(visible_links.filter(d => d.target.data.data.height - d.source.data.data.height != 1), d => d.source.data.data.hash + d.target.data.data.hash)
     .join(
       enter => {
         let blocksNotShown = enter.append("text")
@@ -735,7 +828,7 @@ function draw(opts) {
   // adds each block as a group
   let blocks = blockLayer
     .selectAll(".block")
-    .data(root_node.descendants(), d => `${d.data.data.hash}-${d.data.data.height}`)
+    .data(visible_blocks, d => `${d.data.data.hash}-${d.data.data.height}`)
     .join(
       enter => {
         let newBlocks = enter.append("g")
@@ -758,7 +851,7 @@ function draw(opts) {
           .attr("stroke-opacity", 1)
           .classed("being-mined", d => from_stratum_feed(d.data.data))
 
-        block_backgrounds.filter(d => d.data.data.height != max_height || initialDraw)
+        block_backgrounds.filter(d => d.data.data.height != max_height || !animate_new_tip)
           .attr("x", -BLOCK_SIZE/2)
           .attr("y", -BLOCK_SIZE/2)
           .attr("height", d => BLOCK_SIZE)
@@ -809,7 +902,7 @@ function draw(opts) {
             return chip
           })
 
-        if (!initialDraw) {
+        if (animate_new_tip) {
           block_backgrounds
             .filter(d => d.data.data.height == max_height)
             .attr("transform", "scale(0.1)")
@@ -895,7 +988,7 @@ function draw(opts) {
   // whole group is rotated like the miner text so it sits on the opposite side.
   let node_groups = tipLayer
     .selectAll(".tip-info")
-    .data(root_node.descendants().filter(d => d.data.data.status != "in-chain" && !from_stratum_feed(d.data.data)),
+    .data(visible_blocks.filter(d => d.data.data.status != "in-chain" && !from_stratum_feed(d.data.data)),
       d => `${d.data.data.hash}-${d.data.data.height}`)
     .join("g")
     .classed("tip-info", true)
