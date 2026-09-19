@@ -1222,17 +1222,26 @@ function remeasure_when_fonts_ready() {
   })
 }
 
-// recursivly collapses linear branches of blocks longer than x,
-// starting from the root until all tips are reached.
-function stripUninteresting(node, x) {
-  if (node.children) {
+// collapses linear branches of blocks longer than x, from the root until all tips
+// are reached.
+//
+// Walks the tree with an explicit stack rather than recursing: it descends one
+// level per fork, and a tree with thousands of forks in it - a node reporting a
+// few thousand stale blocks - ran out of JS stack and threw before anything was
+// drawn. Which branch is taken first doesn't matter, the branches are collapsed
+// independently of each other.
+function stripUninteresting(root, x) {
+  let pending = [root]
+  while (pending.length > 0) {
+    let node = pending.pop()
+    if (!node.children) continue
     node.children.forEach(child => {
       let nextForkOrTip = findNextInteresting(child)
       let distance_between_nodes = nextForkOrTip.depth - child.depth
       if (distance_between_nodes > x) {
         child.children[0].children = [nextForkOrTip.parent];
       }
-      stripUninteresting(nextForkOrTip, x)
+      pending.push(nextForkOrTip)
     })
   }
 }
