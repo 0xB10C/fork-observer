@@ -724,7 +724,11 @@ function draw(opts) {
 
         // miner tag: a small background box (rect) behind the miner text. the group
         // carries the rotation; the rect is sized to the text in a later layout pass.
+        // Only blocks whose miner we know get one - the rest would carry an empty
+        // group, an empty box and an empty text each, three elements per block that
+        // draw nothing.
         let miner_group = block_child_group
+          .filter(d => d.data.data.miner)
           .append("g")
           .attr("class", "block-miner-group")
         miner_group.append("rect").attr("class", "block-miner-bg")
