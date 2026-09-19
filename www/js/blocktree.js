@@ -626,14 +626,23 @@ function draw(opts) {
         paths
           .attr("stroke-dasharray", (d, i) => d.target.data.data.height - d.source.data.data.height == 1 ? lengths[i] + " "  + lengths[i] : "4 5")
           .attr("fill", "transparent")
-          .attr("stroke-dashoffset", (d, i) => lengths[i])
+          .attr("stroke-dashoffset", (d, i) => snap ? 0 : lengths[i])
           .attr("stroke-opacity", 1)
           .classed("being-mined", d => from_stratum_feed(d.target.data.data))
-          .transition(d3.transition().duration(300))
-          .attr("stroke-dashoffset", 0)
-          .attr("stroke-opacity", 0.2)
-          .transition(d3.transition().duration(300))
-          .attr("stroke-opacity", 1)
+
+        // A link draws itself in, from its parent towards the new block. That is
+        // for a link appearing on a tree the user is already looking at; a
+        // snapping draw (the first one, an orientation switch) puts the whole tree
+        // on screen at once, and there the animation is two transitions per link
+        // for every link in the tree, drawing in blocks that were never absent.
+        if (!snap) {
+          paths
+            .transition(d3.transition().duration(300))
+            .attr("stroke-dashoffset", 0)
+            .attr("stroke-opacity", 0.2)
+            .transition(d3.transition().duration(300))
+            .attr("stroke-opacity", 1)
+        }
       },
       update => {
         const moved = move(update, 600)
