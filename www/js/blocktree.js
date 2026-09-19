@@ -274,11 +274,6 @@ const zoom = d3.zoom().scaleExtent([0.15, 5])
   .interpolate(d3.interpolate)
   .on( "zoom", e => {
   g.attr("transform", e.transform)
-  // re-measure the text-fitted boxes; their metrics can be stale if they were first
-  // sized before the text was fully laid out
-  recalc_miner_boxes()
-  recalc_tip_boxes()
-  recalc_signal_chips()
 })
 svg.call(zoom)
 
@@ -855,6 +850,7 @@ function draw(opts) {
 
   // measure each label and stack the boxes just off the block
   recalc_tip_boxes()
+  remeasure_when_fonts_ready()
 
   let offset_x = 0;
   let offset_y = 0;
@@ -1116,8 +1112,8 @@ function draw_mining_pool_clouds(root_node, htoi) {
 }
 
 // size each miner background box to fit its (already positioned) text. Text metrics
-// (getBBox) only become reliable once the element is laid out, so this also runs on
-// zoom to correct any boxes measured before their text was fully rendered.
+// (getBBox) only become reliable once the element is laid out, so this also runs from
+// remeasure_when_fonts_ready() below.
 function recalc_miner_boxes() {
   // all reads before all writes: a read after a write forces the browser to lay
   // out the whole SVG again, once per block
@@ -1129,7 +1125,8 @@ function recalc_miner_boxes() {
 }
 
 // measure each tip-status label and stack the boxes just off the block. Runs on draw
-// and on zoom, for the same text-metric reason as recalc_miner_boxes().
+// and once the fonts have settled, for the same text-metric reason as
+// recalc_miner_boxes().
 function recalc_tip_boxes() {
   const bottom_edge = -1 * ((BLOCK_SIZE / 2) + 3)
   // all reads before all writes, see recalc_miner_boxes()
@@ -1147,8 +1144,8 @@ function recalc_tip_boxes() {
 }
 
 // size each signalling chip to its text and stack the chips up from the bottom-left
-// corner of the block face. Runs on draw and on zoom, for the same text-metric reason
-// as recalc_miner_boxes().
+// corner of the block face. Runs on draw and once the fonts have settled, for the same
+// text-metric reason as recalc_miner_boxes().
 function recalc_signal_chips() {
   g.selectAll("g.signal-chips").each(function () {
     let chips = d3.select(this).selectAll("g.signal-chip")
@@ -1161,6 +1158,22 @@ function recalc_signal_chips() {
       chip.select("rect").attr("x", 0).attr("y", 0).attr("width", w).attr("height", CHIP_H)
       chip.select("text").attr("x", CHIP_PAD_X).attr("y", CHIP_H/2)
     })
+  })
+}
+
+// The text-fitted boxes above are measured as the text is drawn, and those metrics
+// can be off if the browser did not have the font yet. Re-measuring once the fonts
+// have settled corrects them. This used to hang off the zoom handler instead, which
+// re-measured every block in the tree on every zoom and pan event - the whole tree,
+// several times a second, while the user drags the view around.
+let fonts_remeasured = false
+function remeasure_when_fonts_ready() {
+  if (fonts_remeasured) return
+  fonts_remeasured = true
+  document.fonts.ready.then(() => {
+    recalc_miner_boxes()
+    recalc_tip_boxes()
+    recalc_signal_chips()
   })
 }
 
