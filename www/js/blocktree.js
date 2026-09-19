@@ -294,24 +294,52 @@ let miningLinkLayer = g
     .append("g")
     .attr("id", "mining-links")
 
-// layer for the force-positioned pool-name labels around "being mined" blocks. It is
-// raised above the blocks on every draw so the labels stay readable.
-let miningLabelLayer = g
+// The tree itself, one layer per kind of element and in paint order: the 3D depth
+// faces at the bottom, the links over them, then the "n blocks hidden" labels, the
+// block front faces - so a link passes over a block's depth but tucks behind its
+// front face, and looks like it comes out of the middle of the block - and the tip
+// status markers on top.
+//
+// The order is in the document, once. Before, everything was appended to one group
+// and put back in order with .raise() on every draw, which re-appends every node it
+// is called on: ~50,000 DOM moves per redraw of a large tree.
+let backLayer = g
     .append("g")
-    .attr("id", "mining-labels")
+    .attr("id", "block-backs")
 
-// overlay layer that always holds the open block descriptions (info boxes). It is
-// raised to the top on every draw so the boxes are never painted over by blocks or
-// tip status markers.
-let descLayer = g
+let linkLayer = g
     .append("g")
-    .attr("id", "descriptions")
+    .attr("id", "block-links")
+
+let hiddenTextLayer = g
+    .append("g")
+    .attr("id", "hidden-block-texts")
+
+let blockLayer = g
+    .append("g")
+    .attr("id", "blocks")
+
+let tipLayer = g
+    .append("g")
+    .attr("id", "tip-infos")
 
 // layer holding the countdown marker line + label, redrawn from scratch on every
 // draw() call (cheap: at most one line and one text).
 let countdownLayer = g
     .append("g")
     .attr("id", "countdown")
+
+// layer for the force-positioned pool-name labels around "being mined" blocks. Above
+// the blocks, so the labels stay readable.
+let miningLabelLayer = g
+    .append("g")
+    .attr("id", "mining-labels")
+
+// overlay layer that always holds the open block descriptions (info boxes). The
+// topmost layer, so the boxes are never painted over by blocks or tip status markers.
+let descLayer = g
+    .append("g")
+    .attr("id", "descriptions")
 
 // context from the last draw, so job updates can refresh just the pool cloud (and
 // detect whether a full redraw is actually needed) without re-rendering the blocks.
@@ -602,7 +630,7 @@ function draw(opts) {
   // the 3D extrusion (top + right faces) lives in its own layer below the links, so
   // a link can pass over a block's depth and tuck behind its front face — making it
   // look like it comes from the center of the block.
-  let backFaces = g
+  let backFaces = backLayer
     .selectAll(".block-back")
     .data(root_node.descendants(), d => `${d.data.data.hash}-${d.data.data.height}`)
     .join(
@@ -634,7 +662,7 @@ function draw(opts) {
       }
     )
 
-  let links = g
+  let links = linkLayer
     .selectAll(".link-block-block")
     .data(root_node.links(), d => `${d.source.data.data.hash}-${d.target.data.data.hash}`)
     .join(
@@ -675,7 +703,7 @@ function draw(opts) {
       }
     )
 
-  let hiddenBlockTexts = g
+  let hiddenBlockTexts = hiddenTextLayer
     .selectAll(".text-blocks-not-shown")
     .data(root_node.links().filter(d => d.target.data.data.height - d.source.data.data.height != 1), d => d.source.data.data.hash + d.target.data.data.hash)
     .join(
@@ -705,7 +733,7 @@ function draw(opts) {
     )
 
   // adds each block as a group
-  let blocks = g
+  let blocks = blockLayer
     .selectAll(".block")
     .data(root_node.descendants(), d => `${d.data.data.hash}-${d.data.data.height}`)
     .join(
@@ -841,7 +869,6 @@ function draw(opts) {
           .attr("dy", o.miner_dy)
           .attr("dx", o.miner_dx)
 
-        update.raise()
         return update
       }
     );
@@ -866,7 +893,7 @@ function draw(opts) {
 
   // tip info label: a stack of colored "Nx status" boxes next to each tip block. the
   // whole group is rotated like the miner text so it sits on the opposite side.
-  let node_groups = g
+  let node_groups = tipLayer
     .selectAll(".tip-info")
     .data(root_node.descendants().filter(d => d.data.data.status != "in-chain" && !from_stratum_feed(d.data.data)),
       d => `${d.data.data.hash}-${d.data.data.height}`)
@@ -919,19 +946,8 @@ function draw(opts) {
 
   draw_countdown(htoi, max_height, root_node)
 
-  // stack, bottom to top: 3D depth faces, then the links over them, then the block
-  // front faces (so links tuck behind the front face and look centered), then the
-  // tip status markers
-  backFaces.raise()
-  g.selectAll(".link-block-block").raise()
-  g.selectAll(".text-blocks-not-shown").raise()
-  blocks.raise()
-  node_groups.raise()
-  countdownLayer.raise()
-  miningLabelLayer.raise()
-
   // keep open descriptions (and their connectors) anchored to their block as the
-  // layout shifts, and raise the overlay so the info boxes stay on top of everything
+  // layout shifts
   descLayer.selectAll(".block-description").each(function () {
     let hash = this.getAttribute("data-hash")
     let node = root_node.descendants().find(n => n.data.data.hash == hash)
@@ -947,7 +963,6 @@ function draw(opts) {
       connector.attr("transform", transform)
     }
   })
-  descLayer.raise()
 
   lastTipPos = { x: offset_x, y: offset_y }
 
@@ -1162,7 +1177,7 @@ function draw_mining_pool_clouds(root_node, htoi) {
 function recalc_miner_boxes() {
   // all reads before all writes: a read after a write forces the browser to lay
   // out the whole SVG again, once per block
-  const groups = g.selectAll(".block-miner-group")
+  const groups = blockLayer.selectAll(".block-miner-group")
   const boxes = groups.nodes().map(el => el.querySelector("text.block-miner").getBBox())
   groups.select("rect.block-miner-bg")
     .attr("x", (d, i) => boxes[i].width ? boxes[i].x : 0).attr("y", (d, i) => boxes[i].y)
@@ -1175,7 +1190,7 @@ function recalc_miner_boxes() {
 function recalc_tip_boxes() {
   const bottom_edge = -1 * ((BLOCK_SIZE / 2) + 3)
   // all reads before all writes, see recalc_miner_boxes()
-  const rows = g.selectAll(".tip-info").nodes().flatMap(tip => {
+  const rows = tipLayer.selectAll(".tip-info").nodes().flatMap(tip => {
     const rs = Array.from(tip.querySelectorAll("g.tip-info-row"))
     return rs.map((row, j) => ({ row: d3.select(row), j, n: rs.length }))
   })
@@ -1193,7 +1208,7 @@ function recalc_tip_boxes() {
 // text-metric reason as recalc_miner_boxes().
 function recalc_signal_chips() {
   // all reads before all writes, see recalc_miner_boxes()
-  const chips = g.selectAll("g.signal-chips").nodes().flatMap(block_chips => {
+  const chips = blockLayer.selectAll("g.signal-chips").nodes().flatMap(block_chips => {
     const cs = Array.from(block_chips.querySelectorAll("g.signal-chip"))
     return cs.map((chip, j) => ({ chip: d3.select(chip), j, n: cs.length }))
   })
