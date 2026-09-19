@@ -618,13 +618,15 @@ function draw(opts) {
     .data(root_node.links(), d => `${d.source.data.data.hash}-${d.target.data.data.hash}`)
     .join(
       enter => {
-        enter.append("path")
+        const paths = enter.append("path")
           .attr("class", "link link-block-block")
           .attr("filter", "#url(shadow)")
           .attr("d", o.linkDir(htoi))
-          .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
+        const lengths = paths.nodes().map(p => p.getTotalLength())
+        paths
+          .attr("stroke-dasharray", (d, i) => d.target.data.data.height - d.source.data.data.height == 1 ? lengths[i] + " "  + lengths[i] : "4 5")
           .attr("fill", "transparent")
-          .attr("stroke-dashoffset", (d, x, y) => y[x].getTotalLength())
+          .attr("stroke-dashoffset", (d, i) => lengths[i])
           .attr("stroke-opacity", 1)
           .classed("being-mined", d => from_stratum_feed(d.target.data.data))
           .transition(d3.transition().duration(300))
@@ -634,9 +636,11 @@ function draw(opts) {
           .attr("stroke-opacity", 1)
       },
       update => {
-        move(update, 600)
+        const moved = move(update, 600)
           .attr("d", o.linkDir(htoi))
-          .attr("stroke-dasharray", (d, x, y) => d.target.data.data.height - d.source.data.data.height == 1 ? y[x].getTotalLength() + " "  + y[x].getTotalLength() : "4 5")
+        const lengths = update.nodes().map(p => p.getTotalLength())
+        moved
+          .attr("stroke-dasharray", (d, i) => d.target.data.data.height - d.source.data.data.height == 1 ? lengths[i] + " "  + lengths[i] : "4 5")
           .attr("stroke-dashoffset", 0)
           .attr("stroke-opacity", 1)
       }
@@ -1115,30 +1119,30 @@ function draw_mining_pool_clouds(root_node, htoi) {
 // (getBBox) only become reliable once the element is laid out, so this also runs on
 // zoom to correct any boxes measured before their text was fully rendered.
 function recalc_miner_boxes() {
-  g.selectAll(".block-miner-group").each(function () {
-    let text = d3.select(this).select("text.block-miner").node()
-    let bb = text.getBBox()
-    d3.select(this).select("rect.block-miner-bg")
-      .attr("x", bb.width ? bb.x : 0).attr("y", bb.y)
-      .attr("width", bb.width ? bb.width : 0).attr("height", bb.height)
-  })
+  // all reads before all writes: a read after a write forces the browser to lay
+  // out the whole SVG again, once per block
+  const groups = g.selectAll(".block-miner-group")
+  const boxes = groups.nodes().map(el => el.querySelector("text.block-miner").getBBox())
+  groups.select("rect.block-miner-bg")
+    .attr("x", (d, i) => boxes[i].width ? boxes[i].x : 0).attr("y", (d, i) => boxes[i].y)
+    .attr("width", (d, i) => boxes[i].width ? boxes[i].width : 0).attr("height", (d, i) => boxes[i].height)
 }
 
 // measure each tip-status label and stack the boxes just off the block. Runs on draw
 // and on zoom, for the same text-metric reason as recalc_miner_boxes().
 function recalc_tip_boxes() {
   const bottom_edge = -1 * ((BLOCK_SIZE / 2) + 3)
-  g.selectAll(".tip-info").each(function () {
-    let rows = d3.select(this).selectAll("g.tip-info-row")
-    let n = rows.size()
-    rows.each(function (d, j) {
-      let row = d3.select(this)
-      let w = row.select("text").node().getComputedTextLength() + 2 * TIP_PAD_X
-      let top_y = bottom_edge - TIP_BOX_H - (n - 1 - j) * (TIP_BOX_H + TIP_ROW_GAP)
-      row.attr("transform", "translate(" + BLOCK_DEPTH/2 + "," + top_y + ")")
-      row.select("rect").attr("x", -BLOCK_SIZE/2).attr("y", 0).attr("width", w).attr("height", TIP_BOX_H)
-      row.select("text").attr("x", -BLOCK_SIZE/2 + TIP_PAD_X).attr("y", TIP_BOX_H/2)
-    })
+  // all reads before all writes, see recalc_miner_boxes()
+  const rows = g.selectAll(".tip-info").nodes().flatMap(tip => {
+    const rs = Array.from(tip.querySelectorAll("g.tip-info-row"))
+    return rs.map((row, j) => ({ row: d3.select(row), j, n: rs.length }))
+  })
+  const widths = rows.map(({ row }) => row.select("text").node().getComputedTextLength() + 2 * TIP_PAD_X)
+  rows.forEach(({ row, j, n }, i) => {
+    let top_y = bottom_edge - TIP_BOX_H - (n - 1 - j) * (TIP_BOX_H + TIP_ROW_GAP)
+    row.attr("transform", "translate(" + BLOCK_DEPTH/2 + "," + top_y + ")")
+    row.select("rect").attr("x", -BLOCK_SIZE/2).attr("y", 0).attr("width", widths[i]).attr("height", TIP_BOX_H)
+    row.select("text").attr("x", -BLOCK_SIZE/2 + TIP_PAD_X).attr("y", TIP_BOX_H/2)
   })
 }
 
