@@ -1192,17 +1192,17 @@ function recalc_tip_boxes() {
 // corner of the block face. Runs on draw and once the fonts have settled, for the same
 // text-metric reason as recalc_miner_boxes().
 function recalc_signal_chips() {
-  g.selectAll("g.signal-chips").each(function () {
-    let chips = d3.select(this).selectAll("g.signal-chip")
-    let n = chips.size()
-    chips.each(function (d, j) {
-      let chip = d3.select(this)
-      let w = chip.select("text").node().getComputedTextLength() + 2 * CHIP_PAD_X
-      let top_y = BLOCK_SIZE/2 - CHIP_INSET - CHIP_H - (n - 1 - j) * (CHIP_H + CHIP_GAP)
-      chip.attr("transform", "translate(" + (-BLOCK_SIZE/2 + CHIP_INSET) + "," + top_y + ")")
-      chip.select("rect").attr("x", 0).attr("y", 0).attr("width", w).attr("height", CHIP_H)
-      chip.select("text").attr("x", CHIP_PAD_X).attr("y", CHIP_H/2)
-    })
+  // all reads before all writes, see recalc_miner_boxes()
+  const chips = g.selectAll("g.signal-chips").nodes().flatMap(block_chips => {
+    const cs = Array.from(block_chips.querySelectorAll("g.signal-chip"))
+    return cs.map((chip, j) => ({ chip: d3.select(chip), j, n: cs.length }))
+  })
+  const widths = chips.map(({ chip }) => chip.select("text").node().getComputedTextLength() + 2 * CHIP_PAD_X)
+  chips.forEach(({ chip, j, n }, i) => {
+    let top_y = BLOCK_SIZE/2 - CHIP_INSET - CHIP_H - (n - 1 - j) * (CHIP_H + CHIP_GAP)
+    chip.attr("transform", "translate(" + (-BLOCK_SIZE/2 + CHIP_INSET) + "," + top_y + ")")
+    chip.select("rect").attr("x", 0).attr("y", 0).attr("width", widths[i]).attr("height", CHIP_H)
+    chip.select("text").attr("x", CHIP_PAD_X).attr("y", CHIP_H/2)
   })
 }
 
