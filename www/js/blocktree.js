@@ -641,7 +641,6 @@ function draw(opts) {
       enter => {
         const paths = enter.append("path")
           .attr("class", "link link-block-block")
-          .attr("filter", "#url(shadow)")
           .attr("d", o.linkDir(htoi))
         const lengths = paths.nodes().map(p => p.getTotalLength())
         paths
