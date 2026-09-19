@@ -442,6 +442,27 @@ function refresh_mining() {
   draw_mining_pool_clouds(miningDrawCtx.root_node, miningDrawCtx.htoi)
 }
 
+// the miner label is the pool name, cut short so it stays about as wide as the
+// block it belongs to
+function miner_label(miner) {
+  return miner.length > 14 ? miner.substring(0, 14) + "…" : miner
+}
+
+// builds the miner tag - a small background box (rect) behind the miner text - on
+// each block group in `sel`. The group carries the rotation; the rect is sized to
+// the text in a later layout pass (recalc_miner_boxes).
+function append_miner_label(sel) {
+  let group = sel.append("g").attr("class", "block-miner-group")
+  group.append("rect").attr("class", "block-miner-bg")
+  group.append("text")
+    .classed("block-pool-name", true)
+    .attr("dy", o.miner_dy)
+    .attr("dx", o.miner_dx)
+    .classed("block-miner", true)
+    .text(d => miner_label(d.data.data.miner))
+  return group
+}
+
 function preprocess_data(data) {
   let header_infos = data.header_infos;
   let node_infos = data.nodes;
@@ -722,23 +743,11 @@ function draw(opts) {
           .attr("class", "block-text")
           .text(d => d.data.data.height);
 
-        // miner tag: a small background box (rect) behind the miner text. the group
-        // carries the rotation; the rect is sized to the text in a later layout pass.
-        // Only blocks whose miner we know get one - the rest would carry an empty
-        // group, an empty box and an empty text each, three elements per block that
-        // draw nothing.
-        let miner_group = block_child_group
-          .filter(d => d.data.data.miner)
-          .append("g")
-          .attr("class", "block-miner-group")
-        miner_group.append("rect").attr("class", "block-miner-bg")
-        let pool_text = miner_group
-          .append("text")
-          .classed("block-pool-name", true)
-          .attr("dy", o.miner_dy)
-          .attr("dx", o.miner_dx)
-          .classed("block-miner", true)
-          .text(d => d.data.data.miner.length > 14 ? d.data.data.miner.substring(0, 14) + "…" : d.data.data.miner);
+        // Only blocks whose miner we know get a label - for the rest it would be an
+        // empty group, an empty box and an empty text each, three elements per block
+        // that draw nothing. The update branch below adds one when the miner of a
+        // block that is already drawn is identified.
+        let miner_group = append_miner_label(block_child_group.filter(d => d.data.data.miner))
 
         // status tag below the blocks that come from the stratum feed, styled like the
         // tip-status boxes so it reads as a status label. Lives in the block group, so
@@ -810,6 +819,22 @@ function draw(opts) {
         update
           .attr("x", d => o.x(d, htoi))
           .attr("y", d => o.y(d, htoi))
+        // A block is drawn as soon as its header arrives, which is before the pool
+        // that mined it has been identified - that takes fetching the block and
+        // looking at its coinbase, and lands on one of the next redraws. The block
+        // keeps its key, so it comes through here and not through the enter branch
+        // above: its label has to be updated (or built) here.
+        let with_miner = update.filter(d => d.data.data.miner)
+        append_miner_label(
+          with_miner.filter(function () { return !this.querySelector(".block-miner-group") })
+            .select(".block-child-group"))
+        // only touch the text when it actually changed - this runs for every block
+        // on every redraw, and writing the same string back still dirties the DOM
+        with_miner.select("text.block-miner").each(function (d) {
+          let label = miner_label(d.data.data.miner)
+          if (this.textContent != label) this.textContent = label
+        })
+
         update.selectAll(".block-pool-name")
           .attr("dy", o.miner_dy)
           .attr("dx", o.miner_dx)
