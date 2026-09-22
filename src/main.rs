@@ -112,6 +112,13 @@ async fn startup() -> Result<(config::Config, Db, Caches, Option<Activity>), Mai
 
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
+    // Both rustls CryptoProviders (ring and aws-lc-rs) are compiled in, see the
+    // electrum-client comment in Cargo.toml. rustls refuses to pick one on its
+    // own, so install ring before anything opens a TLS connection.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("no rustls CryptoProvider has been installed yet");
+
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let (config, db, caches, activity) = startup().await?;
 

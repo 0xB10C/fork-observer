@@ -2,6 +2,7 @@
 name = "fork-observer"
 version = "0.1.0"
 edition = "2018"
+resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -30,8 +31,20 @@ bitcoin-pool-identification = "0.3.7"
 # dependency graph agrees on a single rustls CryptoProvider. corepc-node's
 # downloader (via bitreq) pulls `rustls/ring`; mixing it with aws-lc-rs makes
 # rustls unable to pick a provider and panics when downloading bitcoind in CI.
+#
+# electrum-client 0.25's `rustls-ring` feature also turns on its `rustls`
+# feature (and with it rustls' default aws-lc-rs provider), so both providers
+# end up compiled in. `resolver = "2"` keeps that out of the build-script graph
+# (the bitcoind download), and main() installs ring as the process-wide default
+# so runtime TLS (e.g. an https RPC host) doesn't hit the same panic.
 electrum-client = { version = "0.25.0", default-features = false, features = ["proxy", "use-rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 corepc-client = { version = "0.16.0", features = ["client-sync"] }
+# corepc-client talks to Bitcoin Core via jsonrpc's bitreq transport, which only
+# speaks https with bitreq's TLS feature on. Enable it here so `https://` RPC
+# hosts keep working; with resolver 2 it no longer leaks in from corepc-node's
+# downloader (a dev-dependency).
+bitreq = { version = "0.3.7", features = ["https"] }
 
 [dev-dependencies]
 corepc-node = { version = "0.12.0", features = ["29_0", "download"] }
