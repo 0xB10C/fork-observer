@@ -996,4 +996,57 @@ mod tests {
             .await;
         assert_eq!(resp.status(), 404);
     }
+
+    // An unreachable node whose name contains characters that must be escaped
+    // before they can go into the RSS feed.
+    fn caches_with_unreachable_node(network_id: u32, name: &str) -> Caches {
+        let mut node_data = BTreeMap::new();
+        node_data.insert(
+            0u32,
+            crate::types::NodeDataJson::new(node_info(0, name), &[], String::new(), 0, false),
+        );
+        let mut map = BTreeMap::new();
+        map.insert(
+            network_id,
+            Cache {
+                header_infos_json: vec![],
+                node_data,
+                forks: vec![],
+                stale_blocks: vec![],
+                block_cache: HashMap::new(),
+                recent_miners: vec![],
+            },
+        );
+        Arc::new(Mutex::new(map))
+    }
+
+    #[tokio::test]
+    async fn rss_feed_is_well_formed_xml_for_a_node_name_containing_markup() {
+        let caches = caches_with_unreachable_node(0, "Alice & Bob <main>");
+        let route = routes(caches, vec![make_network(0, vec![])]);
+
+        let resp = warp::test::request()
+            .path("/rss/0/unreachable.xml")
+            .reply(&route)
+            .await;
+
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "application/rss+xml"
+        );
+        let body = String::from_utf8(resp.body().to_vec()).unwrap();
+        assert!(body.contains("Alice &amp; Bob &lt;main&gt;"), "{}", body);
+        assert!(!body.contains("Alice & Bob"), "{}", body);
+    }
+
+    #[tokio::test]
+    async fn rss_feed_for_an_unknown_network_is_a_404() {
+        let route = routes(caches_with_stale(0, vec![]), vec![make_network(0, vec![])]);
+        let resp = warp::test::request()
+            .path("/rss/99/forks.xml")
+            .reply(&route)
+            .await;
+        assert_eq!(resp.status(), 404);
+    }
 }
