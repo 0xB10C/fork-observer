@@ -29,11 +29,13 @@ fn escape_xml(s: &str) -> String {
 }
 
 /// Builds the `<link>` (the web page this feed is about) and the `atom:link`
-/// self `href` for a feed.
+/// self `href` for a feed. `base_url` comes from the config and may or may not
+/// carry a trailing slash, so it is normalized here.
 fn feed_urls(base_url: &str, network_id: u32, feed_name: &str, src: &str) -> (String, String) {
+    let base = base_url.trim_end_matches('/');
     (
-        format!("{}?network={}&src={}", base_url, network_id, src),
-        format!("{}/rss/{}/{}.xml", base_url, network_id, feed_name),
+        format!("{}/?network={}&src={}", base, network_id, src),
+        format!("{}/rss/{}/{}.xml", base, network_id, feed_name),
     )
 }
 
@@ -495,6 +497,21 @@ mod tests {
         let (link, _href) = feed_urls("https://example.com/", 1, "forks", "forks-rss");
 
         assert_eq!(link, "https://example.com/?network=1&src=forks-rss");
+    }
+
+    #[test]
+    fn feed_urls_do_not_depend_on_a_trailing_slash_in_the_base_url() {
+        let with_slash = feed_urls("https://example.com/", 1, "forks", "forks-rss");
+        let without_slash = feed_urls("https://example.com", 1, "forks", "forks-rss");
+
+        assert_eq!(with_slash, without_slash);
+        assert_eq!(
+            with_slash,
+            (
+                "https://example.com/?network=1&src=forks-rss".to_string(),
+                "https://example.com/rss/1/forks.xml".to_string(),
+            )
+        );
     }
 
     #[test]
