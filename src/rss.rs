@@ -49,6 +49,15 @@ fn escape_xml(s: &str) -> String {
     escaped
 }
 
+/// Builds the `<link>` (the web page this feed is about) and the `atom:link`
+/// self `href` for a feed.
+fn feed_urls(base_url: &str, network_id: u32, feed_name: &str, src: &str) -> (String, String) {
+    (
+        format!("{}?network={}&src={}", base_url, network_id, src),
+        format!("{}/rss/{}/{}.xml", base_url, network_id, feed_name),
+    )
+}
+
 pub fn with_rss_base_url(
     base_url: String,
 ) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
@@ -191,6 +200,7 @@ pub async fn forks_response(
                 network_name = &network.name;
             }
 
+            let (link, href) = feed_urls(&base_url, network_id, "forks", "forks-rss");
             let feed = Feed {
                 channel: Channel {
                     title: format!("Recent Forks - {}", network_name),
@@ -199,8 +209,8 @@ pub async fn forks_response(
                         network_name
                     )
                     .to_string(),
-                    link: format!("{}?network={}?src=forks-rss", base_url.clone(), network_id),
-                    href: format!("{}/rss/{}/forks.xml", base_url, network_id),
+                    link,
+                    href,
                     items: cache.forks.iter().map(|f| f.clone().into()).collect(),
                 },
             };
@@ -293,6 +303,7 @@ pub async fn lagging_nodes_response(
                 }
             }
 
+            let (link, href) = feed_urls(&base_url, network_id, "lagging", "lagging-rss");
             let feed = Feed {
                 channel: Channel {
                     title: format!("Lagging nodes on {}", network_name),
@@ -301,8 +312,8 @@ pub async fn lagging_nodes_response(
                         network_name
                     )
                     .to_string(),
-                    link: format!("{}?network={}?src=lagging-rss", base_url.clone(), network_id),
-                    href: format!("{}/rss/{}/lagging.xml", base_url, network_id),
+                    link,
+                    href,
                     items: lagging_nodes,
                 },
             };
@@ -351,6 +362,7 @@ pub async fn invalid_blocks_response(
             let mut invalid_blocks: Vec<(&TipInfoJson, &Vec<NodeDataJson>)> =
                 invalid_blocks_to_node_id.iter().collect();
             invalid_blocks.sort_by_key(|b| std::cmp::Reverse(b.0.height));
+            let (link, href) = feed_urls(&base_url, network_id, "invalid", "invalid-rss");
             let feed = Feed {
                 channel: Channel {
                     title: format!("Invalid Blocks - {}", network_name),
@@ -358,12 +370,8 @@ pub async fn invalid_blocks_response(
                         "Recent invalid blocks on the Bitcoin {} network",
                         network_name
                     ),
-                    link: format!(
-                        "{}?network={}?src=invalid-rss",
-                        base_url.clone(),
-                        network_id
-                    ),
-                    href: format!("{}/rss/{}/invalid.xml", base_url, network_id),
+                    link,
+                    href,
                     items: invalid_blocks
                         .iter()
                         .map(|(tipinfo, nodes)| (*tipinfo, *nodes).into())
@@ -405,6 +413,7 @@ pub async fn unreachable_nodes_response(
                 .filter(|node| !node.reachable)
                 .map(Item::unreachable_node_item)
                 .collect();
+            let (link, href) = feed_urls(&base_url, network_id, "unreachable", "unreachable-nodes");
             let feed = Feed {
                 channel: Channel {
                     title: format!("Unreachable nodes - {}", network_name),
@@ -412,12 +421,8 @@ pub async fn unreachable_nodes_response(
                         "Nodes on the {} network that can't be reached",
                         network_name
                     ),
-                    link: format!(
-                        "{}?network={}?src=unreachable-nodes",
-                        base_url.clone(),
-                        network_id
-                    ),
-                    href: format!("{}/rss/{}/unreachable.xml", base_url, network_id),
+                    link,
+                    href,
                     items: unreachable_node_items,
                 },
             };
@@ -531,6 +536,25 @@ mod tests {
             xml
         );
         assert_eq!(xml.matches("remote").count(), 2);
+    }
+
+    #[test]
+    fn feed_urls_separate_the_query_parameters_with_an_ampersand() {
+        let (link, _href) = feed_urls("https://example.com/", 1, "forks", "forks-rss");
+
+        assert_eq!(link, "https://example.com/?network=1&src=forks-rss");
+    }
+
+    #[test]
+    fn feed_urls_are_escaped_when_rendered() {
+        let (link, href) = feed_urls("https://example.com/", 1, "forks", "forks-rss");
+        let mut feed = feed_with_hostile_text();
+        feed.channel.link = link;
+        feed.channel.href = href;
+
+        assert!(feed
+            .to_string()
+            .contains("<link>https://example.com/?network=1&amp;src=forks-rss</link>"));
     }
 
     #[test]
