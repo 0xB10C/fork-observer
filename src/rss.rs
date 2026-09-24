@@ -9,6 +9,46 @@ use crate::types::{Caches, ChainTipStatus, Fork, NetworkJson, NodeDataJson, TipI
 
 const THREASHOLD_NODE_LAGGING: u64 = 3; // blocks
 
+/// Characters that XML 1.0 forbids in a document no matter how they are
+/// written: the C0 controls other than tab, newline and carriage return, and
+/// the two non-characters at the end of the basic multilingual plane. Escaping
+/// does not help here, a character reference such as `&#1;` is just as invalid
+/// as the raw character, so the only way to keep the feed parseable is to drop
+/// them.
+fn is_xml_illegal(c: char) -> bool {
+    matches!(c,
+        '\u{0}'..='\u{8}'
+            | '\u{b}'
+            | '\u{c}'
+            | '\u{e}'..='\u{1f}'
+            | '\u{fffe}'
+            | '\u{ffff}'
+    )
+}
+
+/// Escapes text for inclusion in XML character data or in a double-quoted
+/// attribute value, and drops the characters XML cannot represent at all.
+/// Without this a node or network name containing `&`, `<` or a stray control
+/// character makes the whole feed unparseable, and RSS readers reject it
+/// outright rather than skipping the offending item. The names are not always
+/// picked by the local operator: those of nodes behind a remote fork-observer
+/// arrive as JSON strings from that instance.
+fn escape_xml(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            c if is_xml_illegal(c) => (),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
+}
+
 pub fn with_rss_base_url(
     base_url: String,
 ) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
@@ -32,7 +72,9 @@ impl fmt::Display for Item {
 	<description>{}</description>
 	<guid isPermaLink="false">{}</guid>
   </item>"#,
-            self.title, self.description, self.guid,
+            escape_xml(&self.title),
+            escape_xml(&self.description),
+            escape_xml(&self.guid),
         )
     }
 }
@@ -57,10 +99,10 @@ impl fmt::Display for Channel {
   <atom:link href="{}" rel="self" type="application/rss+xml" />
   {}
 </channel>"#,
-            self.title,
-            self.description,
-            self.link,
-            self.href,
+            escape_xml(&self.title),
+            escape_xml(&self.description),
+            escape_xml(&self.link),
+            escape_xml(&self.href),
             self.items.iter().map(|i| i.to_string()).collect::<String>(),
         )
     }
@@ -402,4 +444,112 @@ pub fn response_unknown_network(network_infos: Vec<NetworkJson>) -> Response<Str
             avaliable_networks.join(", ")
         ))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A node name an operator could plausibly pick that breaks unescaped XML.
+    const HOSTILE: &str = r#"A & B <main> "primary" 'alt'"#;
+
+    // Every `&` in well-formed XML must start an entity reference. Scanning for
+    // that catches an unescaped `&` anywhere in the document, which is what
+    // makes RSS readers drop the whole feed.
+    fn every_ampersand_is_an_entity(xml: &str) -> bool {
+        xml.match_indices('&').all(|(i, _)| {
+            ["amp;", "lt;", "gt;", "quot;", "apos;"]
+                .iter()
+                .any(|entity| xml[i + 1..].starts_with(entity))
+        })
+    }
+
+    fn feed_with_hostile_text() -> Feed {
+        Feed {
+            channel: Channel {
+                title: format!("Unreachable nodes - {}", HOSTILE),
+                description: format!("Nodes on the {} network that can't be reached", HOSTILE),
+                link: "https://example.com/?network=1".to_string(),
+                href: "https://example.com/rss/1/unreachable.xml".to_string(),
+                items: vec![Item {
+                    title: format!("Node '{}' (id=0) is unreachable", HOSTILE),
+                    description: format!("Seen by {}", HOSTILE),
+                    guid: format!("unreachable-node-{}-last-0", HOSTILE),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn escape_xml_escapes_the_five_predefined_entities() {
+        assert_eq!(
+            escape_xml(r#"&<>"'"#),
+            "&amp;&lt;&gt;&quot;&apos;".to_string()
+        );
+        assert_eq!(escape_xml("nothing to do"), "nothing to do".to_string());
+    }
+
+    #[test]
+    fn rendered_feed_escapes_markup_in_names() {
+        let xml = feed_with_hostile_text().to_string();
+
+        assert!(
+            every_ampersand_is_an_entity(&xml),
+            "unescaped ampersand in feed:\n{}",
+            xml
+        );
+        // The raw characters must not survive into the document...
+        assert!(!xml.contains("<main>"));
+        assert!(!xml.contains("A & B"));
+        // ...but their escaped forms must, in both channel fields and all three
+        // item fields.
+        assert_eq!(xml.matches("A &amp; B &lt;main&gt;").count(), 5);
+    }
+
+    #[test]
+    fn escape_xml_drops_characters_xml_cannot_represent() {
+        // A control character has no escaped form, so it has to go entirely...
+        assert_eq!(
+            escape_xml("node\u{1}one\u{1f}\u{fffe}"),
+            "nodeone".to_string()
+        );
+        // ...while the three controls XML does allow are kept as they are.
+        assert_eq!(escape_xml("a\tb\nc\rd"), "a\tb\nc\rd".to_string());
+    }
+
+    #[test]
+    fn rendered_feed_drops_control_characters_in_names() {
+        // A remote fork-observer can send any JSON string as a node name.
+        let mut feed = feed_with_hostile_text();
+        feed.channel.title = "Unreachable nodes - re\u{1}mote".to_string();
+        feed.channel.items[0].title = "Node 're\u{1}mote' (id=0) is unreachable".to_string();
+        let xml = feed.to_string();
+
+        assert!(
+            !xml.contains('\u{1}'),
+            "illegal character in feed:\n{}",
+            xml
+        );
+        assert_eq!(xml.matches("remote").count(), 2);
+    }
+
+    #[test]
+    fn empty_feed_still_carries_the_required_channel_elements() {
+        let xml = Feed {
+            channel: Channel {
+                title: "Recent Forks - Mainnet".to_string(),
+                description: "Recent forks".to_string(),
+                link: "https://example.com/?network=0".to_string(),
+                href: "https://example.com/rss/0/forks.xml".to_string(),
+                items: vec![],
+            },
+        }
+        .to_string();
+
+        assert!(xml.starts_with(r#"<?xml version="1.0" encoding="UTF-8" ?>"#));
+        assert!(xml.contains("<title>Recent Forks - Mainnet</title>"));
+        assert!(xml.contains("<description>Recent forks</description>"));
+        assert!(xml.contains("<link>https://example.com/?network=0</link>"));
+        assert!(!xml.contains("<item>"));
+    }
 }
