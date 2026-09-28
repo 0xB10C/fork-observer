@@ -49,7 +49,7 @@ bitreq = { version = "0.3.7", features = ["https"] }
 [dev-dependencies]
 corepc-node = { version = "0.12.0", features = ["29_0", "download"] }
 warp = { version = "0.4.2", features = ["test"] }
-criterion = { version = "0.7", features = ["async_tokio"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
 
 [[bench]]
 name = "headertree"
