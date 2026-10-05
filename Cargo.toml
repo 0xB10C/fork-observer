@@ -39,7 +39,7 @@ bitcoin-pool-identification = "0.3.7"
 # so runtime TLS (e.g. an https RPC host) doesn't hit the same panic.
 electrum-client = { version = "0.25.0", default-features = false, features = ["proxy", "use-rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-corepc-client = { version = "0.16.0", features = ["client-sync"] }
+corepc-client = { version = "0.17.0", features = ["client-sync"] }
 # corepc-client talks to Bitcoin Core via jsonrpc's bitreq transport, which only
 # speaks https with bitreq's TLS feature on. Enable it here so `https://` RPC
 # hosts keep working; with resolver 2 it no longer leaks in from corepc-node's
