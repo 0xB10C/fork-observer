@@ -25,7 +25,7 @@ petgraph = { version = "0.8.2", features = ["serde-1"] }
 
 base64 = "0.23.0"
 
-async-trait = "0.1.89"
+async-trait = "0.1.92"
 bitcoin-pool-identification = "0.3.7"
 # Use the `ring` rustls provider (not the default aws-lc-rs) so that the whole
 # dependency graph agrees on a single rustls CryptoProvider. corepc-node's
