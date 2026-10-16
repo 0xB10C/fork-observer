@@ -9,6 +9,36 @@ use crate::types::{Caches, ChainTipStatus, Fork, NetworkJson, NodeDataJson, TipI
 
 const THREASHOLD_NODE_LAGGING: u64 = 3; // blocks
 
+/// Escapes text for inclusion in XML character data or in a double-quoted
+/// attribute value. Without this a node or network name containing `&` or `<`
+/// makes the whole feed unparseable, and RSS readers reject it outright rather
+/// than skipping the offending item.
+fn escape_xml(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
+}
+
+/// Builds the `<link>` (the web page this feed is about) and the `atom:link`
+/// self `href` for a feed. `base_url` comes from the config and may or may not
+/// carry a trailing slash, so it is normalized here.
+fn feed_urls(base_url: &str, network_id: u32, feed_name: &str, src: &str) -> (String, String) {
+    let base = base_url.trim_end_matches('/');
+    (
+        format!("{}/?network={}&src={}", base, network_id, src),
+        format!("{}/rss/{}/{}.xml", base, network_id, feed_name),
+    )
+}
+
 pub fn with_rss_base_url(
     base_url: String,
 ) -> impl Filter<Extract = (String,), Error = Infallible> + Clone {
@@ -32,7 +62,9 @@ impl fmt::Display for Item {
 	<description>{}</description>
 	<guid isPermaLink="false">{}</guid>
   </item>"#,
-            self.title, self.description, self.guid,
+            escape_xml(&self.title),
+            escape_xml(&self.description),
+            escape_xml(&self.guid),
         )
     }
 }
@@ -57,10 +89,10 @@ impl fmt::Display for Channel {
   <atom:link href="{}" rel="self" type="application/rss+xml" />
   {}
 </channel>"#,
-            self.title,
-            self.description,
-            self.link,
-            self.href,
+            escape_xml(&self.title),
+            escape_xml(&self.description),
+            escape_xml(&self.link),
+            escape_xml(&self.href),
             self.items.iter().map(|i| i.to_string()).collect::<String>(),
         )
     }
@@ -149,6 +181,7 @@ pub async fn forks_response(
                 network_name = &network.name;
             }
 
+            let (link, href) = feed_urls(&base_url, network_id, "forks", "forks-rss");
             let feed = Feed {
                 channel: Channel {
                     title: format!("Recent Forks - {}", network_name),
@@ -157,8 +190,8 @@ pub async fn forks_response(
                         network_name
                     )
                     .to_string(),
-                    link: format!("{}?network={}?src=forks-rss", base_url.clone(), network_id),
-                    href: format!("{}/rss/{}/forks.xml", base_url, network_id),
+                    link,
+                    href,
                     items: cache.forks.iter().map(|f| f.clone().into()).collect(),
                 },
             };
@@ -251,6 +284,7 @@ pub async fn lagging_nodes_response(
                 }
             }
 
+            let (link, href) = feed_urls(&base_url, network_id, "lagging", "lagging-rss");
             let feed = Feed {
                 channel: Channel {
                     title: format!("Lagging nodes on {}", network_name),
@@ -259,8 +293,8 @@ pub async fn lagging_nodes_response(
                         network_name
                     )
                     .to_string(),
-                    link: format!("{}?network={}?src=lagging-rss", base_url.clone(), network_id),
-                    href: format!("{}/rss/{}/lagging.xml", base_url, network_id),
+                    link,
+                    href,
                     items: lagging_nodes,
                 },
             };
@@ -309,6 +343,7 @@ pub async fn invalid_blocks_response(
             let mut invalid_blocks: Vec<(&TipInfoJson, &Vec<NodeDataJson>)> =
                 invalid_blocks_to_node_id.iter().collect();
             invalid_blocks.sort_by_key(|b| std::cmp::Reverse(b.0.height));
+            let (link, href) = feed_urls(&base_url, network_id, "invalid", "invalid-rss");
             let feed = Feed {
                 channel: Channel {
                     title: format!("Invalid Blocks - {}", network_name),
@@ -316,12 +351,8 @@ pub async fn invalid_blocks_response(
                         "Recent invalid blocks on the Bitcoin {} network",
                         network_name
                     ),
-                    link: format!(
-                        "{}?network={}?src=invalid-rss",
-                        base_url.clone(),
-                        network_id
-                    ),
-                    href: format!("{}/rss/{}/invalid.xml", base_url, network_id),
+                    link,
+                    href,
                     items: invalid_blocks
                         .iter()
                         .map(|(tipinfo, nodes)| (*tipinfo, *nodes).into())
@@ -363,6 +394,7 @@ pub async fn unreachable_nodes_response(
                 .filter(|node| !node.reachable)
                 .map(Item::unreachable_node_item)
                 .collect();
+            let (link, href) = feed_urls(&base_url, network_id, "unreachable", "unreachable-nodes");
             let feed = Feed {
                 channel: Channel {
                     title: format!("Unreachable nodes - {}", network_name),
@@ -370,12 +402,8 @@ pub async fn unreachable_nodes_response(
                         "Nodes on the {} network that can't be reached",
                         network_name
                     ),
-                    link: format!(
-                        "{}?network={}?src=unreachable-nodes",
-                        base_url.clone(),
-                        network_id
-                    ),
-                    href: format!("{}/rss/{}/unreachable.xml", base_url, network_id),
+                    link,
+                    href,
                     items: unreachable_node_items,
                 },
             };
@@ -402,4 +430,119 @@ pub fn response_unknown_network(network_infos: Vec<NetworkJson>) -> Response<Str
             avaliable_networks.join(", ")
         ))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A node name an operator could plausibly pick that breaks unescaped XML.
+    const HOSTILE: &str = r#"A & B <main> "primary" 'alt'"#;
+
+    // Every `&` in well-formed XML must start an entity reference. Scanning for
+    // that catches an unescaped `&` anywhere in the document, which is what
+    // makes RSS readers drop the whole feed.
+    fn every_ampersand_is_an_entity(xml: &str) -> bool {
+        xml.match_indices('&').all(|(i, _)| {
+            ["amp;", "lt;", "gt;", "quot;", "apos;"]
+                .iter()
+                .any(|entity| xml[i + 1..].starts_with(entity))
+        })
+    }
+
+    fn feed_with_hostile_text() -> Feed {
+        Feed {
+            channel: Channel {
+                title: format!("Unreachable nodes - {}", HOSTILE),
+                description: format!("Nodes on the {} network that can't be reached", HOSTILE),
+                link: "https://example.com/?network=1".to_string(),
+                href: "https://example.com/rss/1/unreachable.xml".to_string(),
+                items: vec![Item {
+                    title: format!("Node '{}' (id=0) is unreachable", HOSTILE),
+                    description: format!("Seen by {}", HOSTILE),
+                    guid: format!("unreachable-node-{}-last-0", HOSTILE),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn escape_xml_escapes_the_five_predefined_entities() {
+        assert_eq!(
+            escape_xml(r#"&<>"'"#),
+            "&amp;&lt;&gt;&quot;&apos;".to_string()
+        );
+        assert_eq!(escape_xml("nothing to do"), "nothing to do".to_string());
+    }
+
+    #[test]
+    fn rendered_feed_escapes_markup_in_names() {
+        let xml = feed_with_hostile_text().to_string();
+
+        assert!(
+            every_ampersand_is_an_entity(&xml),
+            "unescaped ampersand in feed:\n{}",
+            xml
+        );
+        // The raw characters must not survive into the document...
+        assert!(!xml.contains("<main>"));
+        assert!(!xml.contains("A & B"));
+        // ...but their escaped forms must, in both channel fields and all three
+        // item fields.
+        assert_eq!(xml.matches("A &amp; B &lt;main&gt;").count(), 5);
+    }
+
+    #[test]
+    fn feed_urls_separate_the_query_parameters_with_an_ampersand() {
+        let (link, _href) = feed_urls("https://example.com/", 1, "forks", "forks-rss");
+
+        assert_eq!(link, "https://example.com/?network=1&src=forks-rss");
+    }
+
+    #[test]
+    fn feed_urls_do_not_depend_on_a_trailing_slash_in_the_base_url() {
+        let with_slash = feed_urls("https://example.com/", 1, "forks", "forks-rss");
+        let without_slash = feed_urls("https://example.com", 1, "forks", "forks-rss");
+
+        assert_eq!(with_slash, without_slash);
+        assert_eq!(
+            with_slash,
+            (
+                "https://example.com/?network=1&src=forks-rss".to_string(),
+                "https://example.com/rss/1/forks.xml".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn feed_urls_are_escaped_when_rendered() {
+        let (link, href) = feed_urls("https://example.com/", 1, "forks", "forks-rss");
+        let mut feed = feed_with_hostile_text();
+        feed.channel.link = link;
+        feed.channel.href = href;
+
+        assert!(feed
+            .to_string()
+            .contains("<link>https://example.com/?network=1&amp;src=forks-rss</link>"));
+    }
+
+    #[test]
+    fn empty_feed_still_carries_the_required_channel_elements() {
+        let xml = Feed {
+            channel: Channel {
+                title: "Recent Forks - Mainnet".to_string(),
+                description: "Recent forks".to_string(),
+                link: "https://example.com/?network=0".to_string(),
+                href: "https://example.com/rss/0/forks.xml".to_string(),
+                items: vec![],
+            },
+        }
+        .to_string();
+
+        assert!(xml.starts_with(r#"<?xml version="1.0" encoding="UTF-8" ?>"#));
+        assert!(xml.contains("<title>Recent Forks - Mainnet</title>"));
+        assert!(xml.contains("<description>Recent forks</description>"));
+        assert!(xml.contains("<link>https://example.com/?network=0</link>"));
+        assert!(!xml.contains("<item>"));
+    }
 }
