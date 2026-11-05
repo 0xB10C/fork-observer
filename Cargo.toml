@@ -39,7 +39,7 @@ bitcoin-pool-identification = "0.3.7"
 # so runtime TLS (e.g. an https RPC host) doesn't hit the same panic.
 electrum-client = { version = "0.25.0", default-features = false, features = ["proxy", "use-rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-corepc-client = { version = "0.18.0", features = ["client-sync"] }
+corepc-client = "0.18.0"
 
 [dev-dependencies]
 corepc-node = { version = "0.12.0", features = ["29_0", "download"] }

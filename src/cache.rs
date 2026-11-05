@@ -15,7 +15,7 @@ use crate::types::{
     StaleBlockJson, Tree,
 };
 
-use corepc_client::client_sync::Error::JsonRpc;
+use corepc_client::Error::JsonRpc;
 use log::{debug, error, warn};
 use petgraph::graph::NodeIndex;
 use std::fmt;

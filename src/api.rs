@@ -441,7 +441,7 @@ mod tests {
     use crate::types::{Cache, Caches, NetworkJson, StaleBlockJson};
     use corepc_client::bitcoin::consensus::deserialize;
     use corepc_client::bitcoin::{Block, BlockHash};
-    use corepc_client::client_sync::Auth;
+    use corepc_client::Auth;
     use std::collections::{BTreeMap, HashMap};
     use std::str::FromStr;
     use std::sync::Arc;

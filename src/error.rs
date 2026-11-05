@@ -7,7 +7,7 @@ use corepc_client::bitcoin::hashes::hex::parse::HexToArrayError;
 #[derive(Debug)]
 pub enum FetchError {
     TokioJoin(tokio::task::JoinError),
-    BitcoinCoreRPC(corepc_client::client_sync::Error),
+    BitcoinCoreRPC(corepc_client::Error),
     BitcoinCoreREST(String),
     BtcdRPC(JsonRPCError),
     EsploraREST(EsploraRESTError),
@@ -61,11 +61,31 @@ impl From<tokio::task::JoinError> for FetchError {
     }
 }
 
-impl From<corepc_client::client_sync::Error> for FetchError {
-    fn from(e: corepc_client::client_sync::Error) -> Self {
+impl From<corepc_client::Error> for FetchError {
+    fn from(e: corepc_client::Error) -> Self {
         FetchError::BitcoinCoreRPC(e)
     }
 }
+
+/// The async client has one error type per RPC method, each an `Rpc(Error)` /
+/// `Model(..)` pair. Flatten them into `FetchError` so that the `JsonRpc` match
+/// in cache.rs keeps working.
+macro_rules! from_rpc_method_error {
+    ($($error:ident),* $(,)?) => {
+        $(
+            impl From<corepc_client::$error> for FetchError {
+                fn from(e: corepc_client::$error) -> Self {
+                    match e {
+                        corepc_client::$error::Rpc(e) => FetchError::BitcoinCoreRPC(e),
+                        corepc_client::$error::Model(e) => FetchError::DataError(e.to_string()),
+                    }
+                }
+            }
+        )*
+    };
+}
+
+from_rpc_method_error!(GetBlockError, GetBlockHashError, GetBlockHeaderError);
 
 impl From<electrum_client::Error> for FetchError {
     fn from(e: electrum_client::Error) -> Self {

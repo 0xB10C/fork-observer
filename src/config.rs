@@ -3,7 +3,7 @@ use crate::backend::{
 };
 use crate::error::ConfigError;
 use corepc_client::bitcoin::Network as BitcoinNetwork;
-use corepc_client::client_sync::Auth;
+use corepc_client::Auth;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
