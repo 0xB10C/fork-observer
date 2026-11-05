@@ -1258,6 +1258,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lagging_rss_feed_skips_nodes_without_tip_data() {
+        let caches = caches_with(
+            0,
+            vec![
+                node_with_tips(0, "at-tip", true, &[chain_tip(100, ChainTipStatus::Active)]),
+                // Never reached, so there is no tip data for it at all.
+                node_with_tips(1, "no-data", false, &[]),
+            ],
+            vec![],
+        );
+
+        let xml = rss_feed(caches, "/rss/0/lagging.xml").await;
+
+        assert!(
+            !xml.contains("no-data"),
+            "a node we have no tip data for is not known to be lagging:\n{}",
+            xml
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_blocks_rss_feed_groups_the_nodes_and_lists_the_newest_first() {
         let caches = caches_with(
             0,
