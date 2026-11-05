@@ -738,7 +738,6 @@ dependencies = [
  "async-trait",
  "base64 0.23.0",
  "bitcoin-pool-identification",
- "bitreq 0.3.7",
  "corepc-client 0.17.0",
  "corepc-node",
  "criterion",
