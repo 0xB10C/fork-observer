@@ -275,22 +275,18 @@ pub async fn lagging_nodes_response(
 
             let mut lagging_nodes: Vec<Item> = vec![];
             if cache.node_data.len() > 1 {
+                // Nodes we have no active tip for - one we never reached, say -
+                // are skipped instead of counting as height 0. We don't know
+                // how far along such a node is, and a made-up height both puts
+                // it in this feed and ends up stated as fact in the item.
                 let nodes_with_active_height: Vec<(&NodeDataJson, u64)> = cache
                     .node_data
                     .values()
-                    .map(|node| {
-                        (
-                            node,
-                            node.tips
-                                .iter()
-                                .rfind(|tip| tip.status == "active")
-                                .unwrap_or(&TipInfoJson {
-                                    height: 0,
-                                    status: "active".to_string(),
-                                    hash: "dummy".to_string(),
-                                })
-                                .height,
-                        )
+                    .filter_map(|node| {
+                        node.tips
+                            .iter()
+                            .rfind(|tip| tip.status == "active")
+                            .map(|tip| (node, tip.height))
                     })
                     .collect();
                 let max_height: u64 = *nodes_with_active_height
