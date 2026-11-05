@@ -477,6 +477,7 @@ mod tests {
             slug: format!("net{}", id),
             min_fork_height: 0,
             max_interesting_heights: 100,
+            genesis_hash: None,
             nodes,
             remote_forkobservers: vec![],
             pool_identification: PoolIdentification::default(),
