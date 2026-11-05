@@ -64,6 +64,11 @@ description = "An example mainnet node."
 # slug = "mainnet"
 min_fork_height = 0
 max_interesting_heights = 100
+# Optional, recommended: the genesis block hash the network's nodes have to
+# serve. Headers are only fetched from a node that serves this chain, which
+# keeps a node serving another chain (see README) out of the header tree.
+# This is the mainnet genesis block hash.
+# genesis_hash = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
 # Optional: override [activity].retention_days for this network.
 # activity_retention_days = 30
     [networks.pool_identification]

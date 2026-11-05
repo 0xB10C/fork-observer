@@ -27,6 +27,7 @@ use fork_observer::cache::{
 use fork_observer::config;
 use fork_observer::db;
 use fork_observer::error::{DbError, MainError};
+use fork_observer::genesis_check::GenesisCheck;
 use fork_observer::headertree;
 use fork_observer::remote_forkobserver;
 use fork_observer::sync_gate::SyncGate;
@@ -237,6 +238,10 @@ async fn main() -> Result<(), MainError> {
 
             let mut last_tips: Vec<ChainTip> = vec![];
             task::spawn(async move {
+                let mut genesis_check = network
+                    .genesis_hash
+                    .map(|hash| GenesisCheck::new(hash, &network.name));
+
                 // Try to load the node version an update the cache with it.
                 let version = load_node_version(node.clone(), &network.name).await;
                 update_cache(
@@ -343,6 +348,15 @@ async fn main() -> Result<(), MainError> {
                     tips.sort();
 
                     if last_tips != tips {
+                        // Before fetching anything from the node, and before its
+                        // tips reach the cache: a node serving another chain is
+                        // skipped entirely.
+                        if let Some(ref mut check) = genesis_check {
+                            if !check.passes(node.as_ref()).await {
+                                continue;
+                            }
+                        }
+
                         let (new_headers, miners_needed): (Vec<HeaderInfo>, Vec<BlockHash>) =
                             match node
                                 .new_headers(&tips, &tree_clone, network.min_fork_height)
