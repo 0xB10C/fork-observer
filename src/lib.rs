@@ -14,4 +14,5 @@ pub mod headertree;
 pub mod jsonrpc;
 pub mod remote_forkobserver;
 pub mod rss;
+pub mod sync_gate;
 pub mod types;

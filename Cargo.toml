@@ -44,6 +44,8 @@ corepc-client = "0.18.0"
 [dev-dependencies]
 corepc-node = { version = "0.12.0", features = ["29_0", "download"] }
 warp = { version = "0.4.2", features = ["test"] }
+# `start_paused` in the sync gate tests, so a test doesn't have to wait out a timeout.
+tokio = { version = "1.52", features = ["test-util"] }
 criterion = { version = "0.8", features = ["async_tokio"] }
 
 [[bench]]
