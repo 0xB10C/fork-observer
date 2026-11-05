@@ -10,6 +10,7 @@ pub mod cache;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod genesis_check;
 pub mod headertree;
 pub mod jsonrpc;
 pub mod remote_forkobserver;
