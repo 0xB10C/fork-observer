@@ -593,4 +593,23 @@ mod tests {
         assert!(xml.contains("<link>https://example.com/?network=0</link>"));
         assert!(!xml.contains("<item>"));
     }
+
+    #[test]
+    fn rendered_feed_escapes_the_self_href() {
+        // `base_url` is whatever the config says, and it ends up inside a
+        // double-quoted attribute value, where an `&` is just as fatal as in
+        // character data.
+        let (link, href) = feed_urls("https://example.com/a&b", 0, "forks", "forks-rss");
+        let mut feed = feed_with_hostile_text();
+        feed.channel.link = link;
+        feed.channel.href = href;
+        let xml = feed.to_string();
+
+        assert!(
+            every_ampersand_is_an_entity(&xml),
+            "unescaped ampersand in feed:\n{}",
+            xml
+        );
+        assert!(xml.contains(r#"href="https://example.com/a&amp;b/rss/0/forks.xml""#));
+    }
 }

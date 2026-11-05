@@ -438,9 +438,14 @@ mod tests {
     use super::build_routes;
     use crate::backend::{BitcoinCoreNode, NodeInfo};
     use crate::config::{BoxedSyncSendNode, Config, Network, PoolIdentification};
-    use crate::types::{Cache, Caches, NetworkJson, StaleBlockJson};
+    use crate::types::{
+        Cache, Caches, ChainTip, ChainTipStatus, Fork, HeaderInfo, NetworkJson, NodeDataJson,
+        StaleBlockJson,
+    };
+    use corepc_client::bitcoin::blockdata::block::{Header, Version};
     use corepc_client::bitcoin::consensus::deserialize;
-    use corepc_client::bitcoin::{Block, BlockHash};
+    use corepc_client::bitcoin::hashes::Hash;
+    use corepc_client::bitcoin::{Block, BlockHash, CompactTarget, TxMerkleNode};
     use corepc_client::Auth;
     use std::collections::{BTreeMap, HashMap};
     use std::str::FromStr;
@@ -1048,5 +1053,241 @@ mod tests {
             .reply(&route)
             .await;
         assert_eq!(resp.status(), 404);
+        // The body is what tells the reader which networks do exist.
+        assert_eq!(
+            String::from_utf8(resp.body().to_vec()).unwrap(),
+            "Unknown network. Avaliable networks are: 0 (net0)."
+        );
+    }
+
+    fn chain_tip(height: u64, status: ChainTipStatus) -> ChainTip {
+        ChainTip {
+            height,
+            hash: format!("{}-{}", status, height),
+            branchlen: 0,
+            status,
+        }
+    }
+
+    fn node_with_tips(id: u32, name: &str, reachable: bool, tips: &[ChainTip]) -> NodeDataJson {
+        NodeDataJson::new(node_info(id, name), tips, String::new(), 0, reachable)
+    }
+
+    // A structurally valid (PoW-invalid) header. The nonce keeps the block
+    // hashes of sibling blocks distinct.
+    fn fork_header(nonce: u32) -> Header {
+        Header {
+            version: Version::from_consensus(0x2000_0000),
+            prev_blockhash: BlockHash::all_zeros(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: 1_600_000_000,
+            bits: CompactTarget::from_consensus(0x207f_ffff),
+            nonce,
+        }
+    }
+
+    // A fork at `height` with `children` blocks building on the same parent.
+    fn fork_at(height: u64, children: u32) -> Fork {
+        Fork {
+            common: HeaderInfo {
+                height,
+                header: fork_header(0),
+                miner: String::new(),
+            },
+            children: (1..=children)
+                .map(|nonce| HeaderInfo {
+                    height: height + 1,
+                    header: fork_header(nonce),
+                    miner: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn caches_with(network_id: u32, nodes: Vec<NodeDataJson>, forks: Vec<Fork>) -> Caches {
+        let mut node_data = BTreeMap::new();
+        for node in nodes {
+            node_data.insert(node.id, node);
+        }
+        let mut map = BTreeMap::new();
+        map.insert(
+            network_id,
+            Cache {
+                header_infos_json: vec![],
+                node_data,
+                forks,
+                stale_blocks: vec![],
+                block_cache: HashMap::new(),
+                recent_miners: vec![],
+            },
+        );
+        Arc::new(Mutex::new(map))
+    }
+
+    async fn rss_feed(caches: Caches, path: &str) -> String {
+        let route = routes(caches, vec![make_network(0, vec![])]);
+        let resp = warp::test::request().path(path).reply(&route).await;
+
+        assert_eq!(resp.status(), 200);
+        String::from_utf8(resp.body().to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn forks_rss_feed_describes_each_fork() {
+        let caches = caches_with(0, vec![], vec![fork_at(100, 2), fork_at(200, 3)]);
+
+        let xml = rss_feed(caches, "/rss/0/forks.xml").await;
+
+        assert!(xml.contains("<title>Recent Forks - net0</title>"));
+        assert!(xml.contains("?network=0&amp;src=forks-rss"));
+        assert!(xml.contains("<title>Fork at height 100</title>"));
+        assert!(xml.contains("There are 2 blocks building on-top of block"));
+        // Three or more blocks on a common parent make it a multi-fork.
+        assert!(xml.contains("<title>Multi-fork at height 200</title>"));
+    }
+
+    #[tokio::test]
+    async fn unreachable_rss_feed_lists_only_the_unreachable_nodes() {
+        let caches = caches_with(
+            0,
+            vec![
+                node_with_tips(
+                    0,
+                    "online-node",
+                    true,
+                    &[chain_tip(100, ChainTipStatus::Active)],
+                ),
+                node_with_tips(1, "offline-node", false, &[]),
+            ],
+            vec![],
+        );
+
+        let xml = rss_feed(caches, "/rss/0/unreachable.xml").await;
+
+        assert!(xml.contains("<title>Unreachable nodes - net0</title>"));
+        assert!(xml.contains("Node &apos;offline-node&apos; (id=1) is unreachable"));
+        assert!(!xml.contains("online-node"));
+    }
+
+    #[tokio::test]
+    async fn lagging_rss_feed_flags_only_nodes_further_behind_than_the_threshold() {
+        let caches = caches_with(
+            0,
+            vec![
+                node_with_tips(0, "at-tip", true, &[chain_tip(100, ChainTipStatus::Active)]),
+                // Exactly at the threshold of three blocks: still fine.
+                node_with_tips(
+                    1,
+                    "at-threshold",
+                    true,
+                    &[chain_tip(97, ChainTipStatus::Active)],
+                ),
+                node_with_tips(
+                    2,
+                    "far-behind",
+                    true,
+                    &[chain_tip(96, ChainTipStatus::Active)],
+                ),
+            ],
+            vec![],
+        );
+
+        let xml = rss_feed(caches, "/rss/0/lagging.xml").await;
+
+        assert!(xml.contains("<title>Lagging nodes on net0</title>"));
+        assert!(xml.contains("Node &apos;far-behind&apos; is lagging behind"));
+        assert!(xml.contains("active tip is on height 96"));
+        assert!(!xml.contains("at-threshold"));
+        assert!(!xml.contains("at-tip"));
+    }
+
+    #[tokio::test]
+    async fn lagging_rss_feed_goes_by_the_active_tip_not_the_highest_header() {
+        // A node that is catching up has headers well above its active tip,
+        // and those must not count as progress.
+        let caches = caches_with(
+            0,
+            vec![
+                node_with_tips(
+                    0,
+                    "at-tip",
+                    true,
+                    &[
+                        chain_tip(50, ChainTipStatus::ValidFork),
+                        chain_tip(100, ChainTipStatus::Active),
+                    ],
+                ),
+                node_with_tips(
+                    1,
+                    "far-behind",
+                    true,
+                    &[
+                        chain_tip(90, ChainTipStatus::Active),
+                        chain_tip(500, ChainTipStatus::HeadersOnly),
+                    ],
+                ),
+            ],
+            vec![],
+        );
+
+        let xml = rss_feed(caches, "/rss/0/lagging.xml").await;
+
+        assert!(xml.contains("Node &apos;far-behind&apos; is lagging behind"));
+        assert!(xml.contains("active tip is on height 90"));
+        assert!(!xml.contains("at-tip"));
+    }
+
+    #[tokio::test]
+    async fn lagging_rss_feed_is_empty_for_a_single_node() {
+        // With one node there is nothing to compare against, so it can never
+        // be reported as behind.
+        let caches = caches_with(
+            0,
+            vec![node_with_tips(
+                0,
+                "only-node",
+                true,
+                &[chain_tip(100, ChainTipStatus::Active)],
+            )],
+            vec![],
+        );
+
+        let xml = rss_feed(caches, "/rss/0/lagging.xml").await;
+
+        assert!(!xml.contains("<item>"), "{}", xml);
+    }
+
+    #[tokio::test]
+    async fn invalid_blocks_rss_feed_groups_the_nodes_and_lists_the_newest_first() {
+        let caches = caches_with(
+            0,
+            vec![
+                node_with_tips(
+                    0,
+                    "node-a",
+                    true,
+                    &[
+                        chain_tip(100, ChainTipStatus::Active),
+                        chain_tip(90, ChainTipStatus::Invalid),
+                    ],
+                ),
+                node_with_tips(1, "node-b", true, &[chain_tip(90, ChainTipStatus::Invalid)]),
+                node_with_tips(2, "node-c", true, &[chain_tip(95, ChainTipStatus::Invalid)]),
+            ],
+            vec![],
+        );
+
+        let xml = rss_feed(caches, "/rss/0/invalid.xml").await;
+
+        assert!(xml.contains("<title>Invalid Blocks - net0</title>"));
+        // Invalid tips only, never the active ones.
+        assert!(!xml.contains("height 100"));
+        // The most recent invalid block comes first.
+        let at_95 = xml.find("Invalid block at height 95").unwrap();
+        let at_90 = xml.find("Invalid block at height 90").unwrap();
+        assert!(at_95 < at_90, "items not ordered by height:\n{}", xml);
+        // Nodes that saw the same block are listed together, in node id order.
+        assert!(xml.contains("seen by nodes: node-a (id=0), node-b (id=1)"));
+        assert!(xml.contains("seen by node: node-c (id=2)"));
     }
 }
