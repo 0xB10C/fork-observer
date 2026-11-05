@@ -636,6 +636,7 @@ mod tests {
             pool_identification: PoolIdentification::default(),
             activity_retention_days: None,
             activity_log_node_ids: BTreeSet::new(),
+            preferred_sync_node_ids: BTreeSet::new(),
         }
     }
 

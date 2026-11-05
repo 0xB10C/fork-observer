@@ -483,6 +483,7 @@ mod tests {
             countdown: None,
             activity_retention_days: None,
             activity_log_node_ids: std::collections::BTreeSet::new(),
+            preferred_sync_node_ids: std::collections::BTreeSet::new(),
         }
     }
 
