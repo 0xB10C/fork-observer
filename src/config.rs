@@ -139,6 +139,9 @@ pub struct Network {
     /// The ids of this network's nodes that opted into activity logging
     /// (`activity_log = true`).
     pub activity_log_node_ids: BTreeSet<u32>,
+    /// The ids of this network's nodes that fetch headers first
+    /// (`preferred_sync_source = true`).
+    pub preferred_sync_node_ids: BTreeSet<u32>,
 }
 
 /// Another fork-observer instance used as a data source: its header and node
@@ -193,12 +196,13 @@ struct TomlNode {
     use_waitfornewblock: Option<bool>,
     implementation: Option<String>,
     activity_log: Option<bool>,
+    preferred_sync_source: Option<bool>,
 }
 
 impl fmt::Display for TomlNode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
-            f,"Node (id={}, description='{}', name='{}', rpc_host='{}', rpc_port={}, rpc_user='{}', rpc_password='***', rpc_cookie_file={:?}, use_rest={}, use_waitfornewblock={}, implementation='{}')",
+            f,"Node (id={}, description='{}', name='{}', rpc_host='{}', rpc_port={}, rpc_user='{}', rpc_password='***', rpc_cookie_file={:?}, use_rest={}, use_waitfornewblock={}, implementation='{}', preferred_sync_source={})",
             self.id,
             self.description,
             self.name,
@@ -209,6 +213,7 @@ impl fmt::Display for TomlNode {
             self.use_rest.unwrap_or(DEFAULT_USE_REST),
             self.use_waitfornewblock.unwrap_or(DEFAULT_USE_WAITFORNEWBLOCK),
             self.implementation.as_ref().unwrap_or(&"".to_string()),
+            self.preferred_sync_source.unwrap_or(false),
         )
     }
 }
@@ -297,7 +302,11 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
         let mut nodes: Vec<BoxedSyncSendNode> = vec![];
         let mut node_ids: Vec<u32> = vec![];
         let mut activity_log_node_ids: BTreeSet<u32> = BTreeSet::new();
+        let mut preferred_sync_node_ids: BTreeSet<u32> = BTreeSet::new();
         for toml_node in toml_network.nodes.iter() {
+            if toml_node.preferred_sync_source.unwrap_or(false) {
+                preferred_sync_node_ids.insert(toml_node.id);
+            }
             if toml_node.activity_log.unwrap_or(false) {
                 if toml_config.activity.is_some() {
                     activity_log_node_ids.insert(toml_node.id);
@@ -329,7 +338,20 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
                 }
             }
         }
-        match parse_toml_network(toml_network, nodes, activity_log_node_ids) {
+        // Preferring every node is the same as preferring none.
+        if !nodes.is_empty() && preferred_sync_node_ids.len() == nodes.len() {
+            warn!(
+                "every node on network '{}' sets preferred_sync_source = true, so no node \
+                 waits for another to sync headers first",
+                toml_network.name
+            );
+        }
+        match parse_toml_network(
+            toml_network,
+            nodes,
+            activity_log_node_ids,
+            preferred_sync_node_ids,
+        ) {
             Ok(network) => {
                 if network_ids.contains(&network.id) {
                     error!(
@@ -398,6 +420,7 @@ fn parse_toml_network(
     toml_network: &TomlNetwork,
     nodes: Vec<BoxedSyncSendNode>,
     activity_log_node_ids: BTreeSet<u32>,
+    preferred_sync_node_ids: BTreeSet<u32>,
 ) -> Result<Network, ConfigError> {
     // Use the configured slug if present, otherwise derive one from the name.
     // Either way we slugify to guarantee a URL-safe result. As a last resort
@@ -441,6 +464,7 @@ fn parse_toml_network(
         countdown: toml_network.countdown.clone(),
         activity_retention_days: toml_network.activity_retention_days,
         activity_log_node_ids,
+        preferred_sync_node_ids,
     })
 }
 
@@ -924,6 +948,80 @@ mod tests {
         // opted in (a warning is logged).
         assert!(config.activity.is_none());
         assert!(config.networks[0].activity_log_node_ids.is_empty());
+    }
+
+    #[test]
+    fn preferred_sync_source_parsing() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Slow node"
+                description = ""
+                rpc_host = "https://mempool.space/api"
+                implementation = "mempoolspace"
+
+                [[networks.nodes]]
+                id = 1
+                name = "Fast node"
+                description = ""
+                rpc_host = "https://block-dn.org"
+                implementation = "block-dn"
+                preferred_sync_source = true
+        "#,
+        )
+        .expect("a config with a preferred sync source should parse");
+
+        assert_eq!(
+            config.networks[0].preferred_sync_node_ids,
+            BTreeSet::from([1])
+        );
+    }
+
+    #[test]
+    fn no_preferred_sync_source_by_default() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        )
+        .expect("a config without a preferred sync source should parse");
+
+        assert!(config.networks[0].preferred_sync_node_ids.is_empty());
     }
 
     #[test]
