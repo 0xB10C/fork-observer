@@ -229,6 +229,30 @@ The other nodes wait until this node finished its first fetch - or ran into an
 error, which lets them go ahead too, as does a 30 minute timeout. Setting it on
 more than one node makes the others wait for all of them.
 
+## Checking the chain a node serves
+
+A node that serves a chain other than the one its network is configured for - a
+mainnet network with a node that starts serving testnet headers, for example -
+shares no block with the network's header tree. Nothing then stops the backwards
+header walk, so that whole foreign chain ends up in the tree and the database.
+Set a network's `genesis_hash` to only fetch headers from nodes that serve the
+expected chain:
+
+```toml
+[[networks]]
+id = 1
+name = "Mainnet"
+min_fork_height = 0
+max_interesting_heights = 100
+genesis_hash = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+```
+
+The hash is checked with a single request before headers are fetched, so once
+per tip change. A node serving a different genesis block is logged and skipped -
+its chain tips aren't shown either - and checked again a minute later, then with
+a doubling delay up to about an hour. A node that can't be asked for its genesis
+block hash at all is treated like any other unreachable node and still used.
+
 ## Countdown to a block height
 
 Each network can optionally show a countdown to a specific block height (e.g. a
