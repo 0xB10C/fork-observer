@@ -29,6 +29,7 @@ use fork_observer::db;
 use fork_observer::error::{DbError, MainError};
 use fork_observer::headertree;
 use fork_observer::remote_forkobserver;
+use fork_observer::sync_gate::SyncGate;
 use fork_observer::types::{Caches, ChainTip, Db, HeaderInfo, NetworkJson, Tree};
 
 async fn startup() -> Result<(config::Config, Db, Caches, Option<Activity>), MainError> {
@@ -197,6 +198,12 @@ async fn main() -> Result<(), MainError> {
         let lagging_state: Arc<Mutex<BTreeMap<u32, bool>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let network_logs_activity = activity.is_some() && !network.activity_log_node_ids.is_empty();
 
+        // Lets the nodes preferred for syncing fill the header tree first.
+        let sync_gate = Arc::new(SyncGate::new(
+            &network.name,
+            network.preferred_sync_node_ids.clone(),
+        ));
+
         for node in network.nodes.iter() {
             let node = node.clone();
             let network = network.clone();
@@ -226,6 +233,7 @@ async fn main() -> Result<(), MainError> {
                 None
             };
             let lagging_state = lagging_state.clone();
+            let sync_gate = sync_gate.clone();
 
             let mut last_tips: Vec<ChainTip> = vec![];
             task::spawn(async move {
@@ -251,19 +259,27 @@ async fn main() -> Result<(), MainError> {
                         // Fetch immediately on startup (after a small stagger) so
                         // we catch up on headers we missed while we were down.
                         sleep(initial_stagger).await;
+                        // Returns right away for a preferred node.
+                        sync_gate.wait(node.info().id).await;
                         first_iteration = false;
-                    } else if let Err(e) = node.wait_for_tip_change(query_interval).await {
-                        // `wait_for_tip_change` failed (e.g. `waitfornewblock` is
-                        // not whitelisted on the node). Fall back to a fixed-delay
-                        // poll so we don't busy-loop.
-                        debug!(
-                            "wait_for_tip_change failed for {} on network '{}' (id={}): {} - falling back to polling",
-                            node.info(),
-                            network.name,
-                            network.id,
-                            e
-                        );
-                        sleep(query_interval).await;
+                    } else {
+                        // Our first fetch is done, success or not: nodes waiting
+                        // for this one may go ahead.
+                        sync_gate.first_fetch_done(node.info().id);
+
+                        if let Err(e) = node.wait_for_tip_change(query_interval).await {
+                            // `wait_for_tip_change` failed (e.g. `waitfornewblock` is
+                            // not whitelisted on the node). Fall back to a fixed-delay
+                            // poll so we don't busy-loop.
+                            debug!(
+                                "wait_for_tip_change failed for {} on network '{}' (id={}): {} - falling back to polling",
+                                node.info(),
+                                network.name,
+                                network.id,
+                                e
+                            );
+                            sleep(query_interval).await;
+                        }
                     }
                     let mut tips = match node.tips().await {
                         Ok(tips) => {
