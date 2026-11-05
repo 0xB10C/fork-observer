@@ -92,6 +92,10 @@ max_interesting_heights = 100
     # Record this node's events in the activity log (requires the [activity]
     # section). Defaults to false.
     # activity_log = true
+    # Fetch headers from this node first, the network's other nodes wait for it.
+    # Worth setting on a node that serves batches of headers (Bitcoin Core with
+    # REST, block-dn) when other nodes of the network don't. Defaults to false.
+    # preferred_sync_source = true
 
     [[networks.nodes]]
     id = 1

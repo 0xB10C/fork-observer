@@ -203,6 +203,32 @@ rather than the two accumulating each other's imports indefinitely.
 > are written to the local database permanently. Only import from an instance you
 > trust as much as you'd trust one of your own nodes.
 
+## Syncing headers from a preferred node
+
+Every node walks the chain backwards from its own tip until it reaches a header
+fork-observer already has, which with an empty database means fetching the whole
+chain: a few hundred requests for a node that serves batches of headers (Bitcoin
+Core with REST, block-dn), tens of thousands for a node that serves one header
+per request.
+
+The first node to finish fills the header tree for the whole network, and the
+others then stop at the first header they find in it. Nodes known to be fast can
+be put in front of the rest with `preferred_sync_source`:
+
+```toml
+[[networks.nodes]]
+id = 5
+name = "block-dn.org"
+description = "public block-dn instance"
+rpc_host = "https://block-dn.org"
+implementation = "block-dn"
+preferred_sync_source = true
+```
+
+The other nodes wait until this node finished its first fetch - or ran into an
+error, which lets them go ahead too, as does a 30 minute timeout. Setting it on
+more than one node makes the others wait for all of them.
+
 ## Countdown to a block height
 
 Each network can optionally show a countdown to a specific block height (e.g. a
