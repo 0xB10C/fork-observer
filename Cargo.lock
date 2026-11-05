@@ -437,9 +437,9 @@ dependencies = [
 
 [[package]]
 name = "corepc-client"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3909247bf69ff43c8929294e636c7d8d248397e10feb2b0b5fdff42280c036c2"
+checksum = "9e371481af3feb399abfc3c1d51e4c7d029e9f82a0867bd2e2efdab63ef13bb8"
 dependencies = [
  "bitcoin",
  "corepc-types 0.16.0",
@@ -739,7 +739,7 @@ dependencies = [
  "base64 0.23.0",
  "bitcoin-pool-identification",
  "bitreq 0.3.7",
- "corepc-client 0.17.0",
+ "corepc-client 0.18.0",
  "corepc-node",
  "criterion",
  "electrum-client",
