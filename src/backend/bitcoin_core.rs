@@ -4,11 +4,10 @@ use crate::types::ChainTip;
 use async_trait::async_trait;
 use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::{BlockHash, Transaction};
-use corepc_client::client_sync::v31::Client;
-use corepc_client::client_sync::Auth;
+use corepc_client::{Auth, Client};
 use log::{debug, error};
+use std::convert::TryFrom;
 use std::time::Duration;
-use tokio::task;
 
 #[derive(Hash, Clone)]
 pub struct BitcoinCoreNode {
@@ -70,40 +69,25 @@ impl Node for BitcoinCoreNode {
     }
 
     async fn version(&self) -> Result<String, FetchError> {
-        let rpc = self.rpc_client()?;
-        task::spawn_blocking(move || -> Result<String, FetchError> {
-            Ok(rpc
-                .get_network_info()?
-                .into_model()
-                .map_err(|e| FetchError::DataError(e.to_string()))?
-                .subversion)
-        })
-        .await?
+        // No typed `getnetworkinfo` on the async client, and `server_version()`
+        // returns only the numeric version, not the subversion string.
+        Ok(self
+            .rpc_client()?
+            .call::<corepc_client::types::v31::GetNetworkInfo>("getnetworkinfo", &[])
+            .await?
+            .into_model()
+            .map_err(|e| FetchError::DataError(e.to_string()))?
+            .subversion)
     }
 
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
-        let rpc = self.rpc_client()?;
-        task::spawn_blocking(move || -> Result<BlockHash, FetchError> {
-            Ok(rpc
-                .get_block_hash(height)?
-                .into_model()
-                .map_err(|e| FetchError::DataError(e.to_string()))?
-                .0)
-        })
-        .await?
+        let height = u32::try_from(height)
+            .map_err(|_| FetchError::DataError(format!("block height {} out of range", height)))?;
+        Ok(self.rpc_client()?.get_block_hash(height).await?)
     }
 
     async fn block_header_hash(&self, hash: &BlockHash) -> Result<Header, FetchError> {
-        let rpc = self.rpc_client()?;
-        let hash_clone = *hash;
-        task::spawn_blocking(move || -> Result<Header, FetchError> {
-            Ok(rpc
-                .get_block_header(&hash_clone)?
-                .into_model()
-                .map_err(|e| FetchError::DataError(e.to_string()))?
-                .0)
-        })
-        .await?
+        Ok(self.rpc_client()?.get_block_header(hash).await?)
     }
 
     async fn block_header_height(&self, _: u64) -> Result<Header, FetchError> {
@@ -114,19 +98,12 @@ impl Node for BitcoinCoreNode {
     }
 
     async fn coinbase(&self, hash: &BlockHash, _height: u64) -> Result<Transaction, FetchError> {
-        let rpc = self.rpc_client()?;
-        let hash_clone = *hash;
-        match task::spawn_blocking(move || rpc.get_block(hash_clone)).await {
-            Ok(result) => match result {
-                Ok(result) => Ok(result
-                    .txdata
-                    .first()
-                    .expect("Block should have a coinbase transaction")
-                    .clone()),
-                Err(e) => Err(e.into()),
-            },
-            Err(e) => Err(e.into()),
-        }
+        let block = self.rpc_client()?.get_block(hash).await?;
+        Ok(block
+            .txdata
+            .first()
+            .expect("Block should have a coinbase transaction")
+            .clone())
     }
 
     async fn block(&self, hash: &BlockHash) -> Result<Vec<u8>, FetchError> {
@@ -147,28 +124,22 @@ impl Node for BitcoinCoreNode {
             return Ok(res.as_bytes().to_vec());
         }
 
-        let rpc = self.rpc_client()?;
-        let hash_clone = *hash;
-        match task::spawn_blocking(move || rpc.get_block(hash_clone)).await {
-            Ok(Ok(block)) => Ok(corepc_client::bitcoin::consensus::encode::serialize(&block)),
-            Ok(Err(e)) => Err(e.into()),
-            Err(e) => Err(e.into()),
-        }
+        let block = self.rpc_client()?.get_block(hash).await?;
+        Ok(corepc_client::bitcoin::consensus::encode::serialize(&block))
     }
 
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError> {
-        let rpc = self.rpc_client()?;
-        task::spawn_blocking(move || -> Result<Vec<ChainTip>, FetchError> {
-            Ok(rpc
-                .get_chain_tips()?
-                .into_model()
-                .map_err(|e| FetchError::DataError(e.to_string()))?
-                .0
-                .into_iter()
-                .map(|t| t.into())
-                .collect())
-        })
-        .await?
+        // No typed `getchaintips` on the async client either.
+        Ok(self
+            .rpc_client()?
+            .call::<corepc_client::types::v31::GetChainTips>("getchaintips", &[])
+            .await?
+            .into_model()
+            .map_err(|e| FetchError::DataError(e.to_string()))?
+            .0
+            .into_iter()
+            .map(|t| t.into())
+            .collect())
     }
 
     async fn wait_for_tip_change(&self, timeout: Duration) -> Result<(), FetchError> {
@@ -184,16 +155,11 @@ impl Node for BitcoinCoreNode {
         const MAX_WAIT: Duration = Duration::from_secs(50);
         let timeout_ms = timeout.min(MAX_WAIT).as_millis() as u64;
 
-        let rpc = self.rpc_client()?;
-        task::spawn_blocking(move || -> Result<(), FetchError> {
-            // `corepc_client`'s `wait_for_new_block()` helper sends no timeout
-            // (i.e. blocks indefinitely), so we issue the raw call with an
-            // explicit timeout in milliseconds instead. We only use the response
-            // as a wake-up signal and re-fetch the tips afterwards.
-            rpc.call::<serde_json::Value>("waitfornewblock", &[timeout_ms.into()])?;
-            Ok(())
-        })
-        .await?
+        // The response is only a wake-up signal; the tips are re-fetched after.
+        self.rpc_client()?
+            .call::<serde_json::Value>("waitfornewblock", &[timeout_ms.into()])
+            .await?;
+        Ok(())
     }
 
     async fn batch_header_fetch(
