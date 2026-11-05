@@ -2,6 +2,7 @@ use crate::backend::{
     BitcoinCoreNode, BlockDn, BtcdNode, Electrum, Esplora, MempoolSpace, Node, NodeInfo,
 };
 use crate::error::ConfigError;
+use corepc_client::bitcoin::BlockHash;
 use corepc_client::bitcoin::Network as BitcoinNetwork;
 use corepc_client::Auth;
 use log::{error, info, warn};
@@ -115,6 +116,7 @@ struct TomlNetwork {
     slug: Option<String>,
     min_fork_height: u64,
     max_interesting_heights: usize,
+    genesis_hash: Option<String>,
     nodes: Vec<TomlNode>,
     forkobservers: Option<Vec<TomlRemoteForkObserver>>,
     pool_identification: Option<PoolIdentification>,
@@ -130,6 +132,9 @@ pub struct Network {
     pub slug: String,
     pub min_fork_height: u64,
     pub max_interesting_heights: usize,
+    /// The genesis block hash the network's nodes have to serve. Headers are
+    /// only fetched from a node that does.
+    pub genesis_hash: Option<BlockHash>,
     pub nodes: Vec<BoxedSyncSendNode>,
     pub remote_forkobservers: Vec<RemoteForkObserver>,
     pub pool_identification: PoolIdentification,
@@ -430,6 +435,24 @@ fn parse_toml_network(
         slug = toml_network.id.to_string();
     }
 
+    let genesis_hash = match toml_network.genesis_hash {
+        Some(ref hash) => Some(BlockHash::from_str(hash).map_err(|e| {
+            error!(
+                "Invalid genesis_hash '{}' on network '{}': {}",
+                hash, toml_network.name, e
+            );
+            ConfigError::InvalidGenesisHash
+        })?),
+        None => {
+            warn!(
+                "network '{}' has no genesis_hash set, so a node serving another chain can't be \
+                 detected",
+                toml_network.name
+            );
+            None
+        }
+    };
+
     let max_local_node_id = nodes.iter().map(|n| n.info().id).max();
     let mut remote_forkobservers: Vec<RemoteForkObserver> = vec![];
     let mut offsets: Vec<u32> = vec![];
@@ -458,6 +481,7 @@ fn parse_toml_network(
         description: toml_network.description.clone(),
         min_fork_height: toml_network.min_fork_height,
         max_interesting_heights: toml_network.max_interesting_heights,
+        genesis_hash,
         nodes,
         remote_forkobservers,
         pool_identification: toml_network.pool_identification.clone().unwrap_or_default(),
@@ -854,6 +878,111 @@ mod tests {
                 // test OK, as we expect this to error
             }
             _ => panic!("expected DuplicateNetworkSlug error"),
+        }
+    }
+
+    const MAINNET_GENESIS: &str =
+        "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+
+    #[test]
+    fn genesis_hash_parsing() {
+        let config = parse_config(&format!(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+            genesis_hash = "{}"
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+            MAINNET_GENESIS
+        ))
+        .expect("a config with a genesis_hash should parse");
+
+        assert_eq!(
+            config.networks[0].genesis_hash,
+            Some(BlockHash::from_str(MAINNET_GENESIS).expect("a valid block hash"))
+        );
+    }
+
+    #[test]
+    fn no_genesis_hash_by_default() {
+        let config = parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        )
+        .expect("a config without a genesis_hash should parse");
+
+        assert!(config.networks[0].genesis_hash.is_none());
+    }
+
+    #[test]
+    fn error_on_invalid_genesis_hash() {
+        match parse_config(
+            r#"
+            database_path = ""
+            www_path = "./www"
+            query_interval = 15
+            address = "127.0.0.1:2323"
+            rss_base_url = ""
+            footer_html = ""
+
+            [[networks]]
+            id = 1
+            name = ""
+            description = ""
+            min_fork_height = 0
+            max_interesting_heights = 0
+            genesis_hash = "not a block hash"
+
+                [[networks.nodes]]
+                id = 0
+                name = "Node A"
+                description = ""
+                rpc_host = "127.0.0.1"
+                rpc_user = ""
+                rpc_password = ""
+        "#,
+        ) {
+            Err(ConfigError::InvalidGenesisHash) => (),
+            _ => panic!("expected an InvalidGenesisHash error"),
         }
     }
 

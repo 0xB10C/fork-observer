@@ -630,6 +630,7 @@ mod tests {
             slug: format!("net{}", id),
             min_fork_height: 0,
             max_interesting_heights: 100,
+            genesis_hash: None,
             nodes: vec![],
             remote_forkobservers: vec![],
             countdown: None,
