@@ -1182,6 +1182,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&archive_dir);
     }
 
+    #[tokio::test]
+    async fn the_retention_task_archives_on_its_first_tick() {
+        let activity = test_activity().await;
+        let now = unix_time_now();
+        let mut old = event(0, 1, ActivityEventKind::NodeReachable {});
+        old.timestamp = now - 100 * 86400;
+        write_events(&activity, &[old]).await.expect("write");
+
+        let archive_dir = std::env::temp_dir().join(format!(
+            "fork-observer-retention-task-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&archive_dir);
+
+        // The task archives right away and only then waits out its interval.
+        let task = tokio::spawn(run_retention(
+            activity.clone(),
+            archive_dir.clone(),
+            vec![(0, 90)],
+        ));
+        let archived = tokio::time::timeout(Duration::from_secs(10), async {
+            while !activity
+                .events_before(0, i64::MAX, 10)
+                .await
+                .expect("query")
+                .is_empty()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        task.abort();
+
+        assert!(archived.is_ok(), "the event was not archived");
+        assert!(archive_dir
+            .join(format!("activity-archive-{}.sqlite", year_month(now)))
+            .exists());
+
+        let _ = std::fs::remove_dir_all(&archive_dir);
+    }
+
     #[test]
     fn year_month_from_unix_time() {
         // The algorithm counts years from March and has the leap year and
