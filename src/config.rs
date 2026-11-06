@@ -1653,6 +1653,43 @@ mod tests {
         // A network without nodes isn't preferring anything.
         assert!(!every_node_is_preferred(0, 0));
     }
+
+    #[test]
+    fn a_node_is_logged_without_its_password() {
+        let node = toml_test_node("rpc_user = \"forkobserver\"\nrpc_password = \"hunter2\"");
+
+        let logged = node.to_string();
+
+        assert!(logged.contains("id=0"));
+        assert!(logged.contains("name='n'"));
+        assert!(logged.contains("rpc_host='127.0.0.1'"));
+        assert!(logged.contains("rpc_user='forkobserver'"));
+        // The password is only ever logged masked.
+        assert!(logged.contains("rpc_password='***'"));
+        assert!(!logged.contains("hunter2"));
+    }
+
+    #[test]
+    fn a_network_is_logged_with_its_id_name_and_heights() {
+        let network: TomlNetwork = toml::from_str(
+            r#"
+            id = 1
+            name = "Mainnet"
+            description = "a description"
+            min_fork_height = 800000
+            max_interesting_heights = 100
+            nodes = []
+            "#,
+        )
+        .expect("the network should parse");
+
+        let logged = network.to_string();
+
+        assert!(logged.contains("id=1"));
+        assert!(logged.contains("name='Mainnet'"));
+        assert!(logged.contains("min_fork_height=800000"));
+        assert!(logged.contains("max_interesting_heights=100"));
+    }
 }
 
 #[test]
