@@ -88,6 +88,7 @@ impl GenesisCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::FetchError;
     use corepc_client::bitcoin::hashes::Hash;
 
     fn node_info() -> NodeInfo {
@@ -144,5 +145,142 @@ mod tests {
         assert!(check.record(BlockHash::all_zeros(), &node_info()));
         assert_eq!(check.failures, 0);
         assert!(check.retry_at.is_none());
+    }
+
+    /// A node serving `genesis`, or failing the request when it is `None`.
+    struct FakeNode {
+        genesis: Option<BlockHash>,
+        /// How often the node was asked for its genesis block.
+        asked: std::sync::Mutex<usize>,
+    }
+
+    impl FakeNode {
+        fn serving(genesis: BlockHash) -> Self {
+            FakeNode {
+                genesis: Some(genesis),
+                asked: std::sync::Mutex::new(0),
+            }
+        }
+
+        fn unreachable() -> Self {
+            FakeNode {
+                genesis: None,
+                asked: std::sync::Mutex::new(0),
+            }
+        }
+
+        fn asked(&self) -> usize {
+            *self.asked.lock().expect("the lock")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Node for FakeNode {
+        fn info(&self) -> NodeInfo {
+            node_info()
+        }
+
+        fn capabilities(&self) -> crate::backend::Capabilities {
+            unimplemented!("the genesis check only asks for a block hash")
+        }
+
+        fn rpc_url(&self) -> String {
+            "fake".to_string()
+        }
+
+        async fn version(&self) -> Result<String, FetchError> {
+            unimplemented!("the genesis check only asks for a block hash")
+        }
+
+        async fn block_header_hash(
+            &self,
+            _hash: &BlockHash,
+        ) -> Result<corepc_client::bitcoin::blockdata::block::Header, FetchError> {
+            unimplemented!("the genesis check only asks for a block hash")
+        }
+
+        async fn block_header_height(
+            &self,
+            _height: u64,
+        ) -> Result<corepc_client::bitcoin::blockdata::block::Header, FetchError> {
+            unimplemented!("the genesis check only asks for a block hash")
+        }
+
+        async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
+            assert_eq!(height, 0, "the genesis check asks for height 0");
+            *self.asked.lock().expect("the lock") += 1;
+            self.genesis
+                .ok_or_else(|| FetchError::DataError("the node is not reachable".to_string()))
+        }
+
+        async fn tips(&self) -> Result<Vec<crate::types::ChainTip>, FetchError> {
+            unimplemented!("the genesis check only asks for a block hash")
+        }
+
+        async fn coinbase(
+            &self,
+            _hash: &BlockHash,
+            _height: u64,
+        ) -> Result<corepc_client::bitcoin::Transaction, FetchError> {
+            unimplemented!("the genesis check only asks for a block hash")
+        }
+
+        async fn block(&self, _hash: &BlockHash) -> Result<Vec<u8>, FetchError> {
+            unimplemented!("the genesis check only asks for a block hash")
+        }
+
+        async fn batch_header_fetch(
+            &self,
+            _start_height: u64,
+            _count: u64,
+        ) -> Result<Vec<corepc_client::bitcoin::blockdata::block::Header>, FetchError> {
+            unimplemented!("the genesis check only asks for a block hash")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_node_on_the_expected_chain_passes() {
+        let expected = BlockHash::all_zeros();
+        let node = FakeNode::serving(expected);
+        let mut check = GenesisCheck::new(expected, "Mainnet");
+
+        assert!(check.passes(&node).await);
+        assert_eq!(node.asked(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_node_on_another_chain_is_not_asked_again_right_away() {
+        let node = FakeNode::serving(BlockHash::from_byte_array([1u8; 32]));
+        let mut check = GenesisCheck::new(BlockHash::all_zeros(), "Mainnet");
+
+        assert!(!check.passes(&node).await);
+        assert_eq!(node.asked(), 1);
+
+        // The retry delay hasn't passed, so the node isn't even asked.
+        assert!(!check.passes(&node).await);
+        assert_eq!(node.asked(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_node_is_asked_again_once_the_retry_delay_passed() {
+        let node = FakeNode::serving(BlockHash::from_byte_array([1u8; 32]));
+        let mut check = GenesisCheck::new(BlockHash::all_zeros(), "Mainnet");
+        assert!(!check.passes(&node).await);
+
+        // As if the delay had passed.
+        check.retry_at = Some(Instant::now() - Duration::from_secs(1));
+
+        assert!(!check.passes(&node).await);
+        assert_eq!(node.asked(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_node_that_cant_be_asked_is_used_anyway() {
+        let node = FakeNode::unreachable();
+        let mut check = GenesisCheck::new(BlockHash::all_zeros(), "Mainnet");
+
+        // An unreachable node is not one on another chain.
+        assert!(check.passes(&node).await);
+        assert_eq!(node.asked(), 1);
     }
 }
