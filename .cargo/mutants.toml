@@ -12,8 +12,6 @@ exclude_globs = [
     "src/backend/bitcoin_core.rs",
     "src/backend/btcd.rs",
     "src/backend/electrum.rs",
-    "src/backend/esplora.rs",
-    "src/backend/mempool_space.rs",
 ]
 
 # All tests live in the library. Skipping the other targets avoids building the
