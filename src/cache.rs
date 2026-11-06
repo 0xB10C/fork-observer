@@ -452,25 +452,15 @@ pub async fn insert_new_headers_into_tree(tree: &Tree, new_headers: &[HeaderInfo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::NodeInfo;
+    use crate::backend::{BitcoinCoreNode, NodeInfo};
     use crate::types::ChainTipStatus;
     use corepc_client::bitcoin::blockdata::block::{Header, Version};
     use corepc_client::bitcoin::hashes::Hash;
     use corepc_client::bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
+    use corepc_client::Auth;
     use petgraph::graph::DiGraph;
     use std::sync::Arc;
     use tokio::sync::Mutex;
-
-    async fn get_test_node_reachable(caches: &Caches, net_id: u32, node_id: u32) -> bool {
-        let locked_caches = caches.lock().await;
-        locked_caches
-            .get(&net_id)
-            .expect("network id should be there")
-            .node_data
-            .get(&node_id)
-            .expect("node id should be there")
-            .reachable
-    }
 
     #[tokio::test]
     async fn test_node_reachable() {
@@ -503,7 +493,7 @@ mod tests {
                 },
             );
         }
-        assert!(get_test_node_reachable(&caches, network_id, node.id).await);
+        assert!(is_node_reachable(&caches, network_id, node.id).await);
 
         update_cache(
             &caches,
@@ -515,7 +505,7 @@ mod tests {
             &dummy_sender,
         )
         .await;
-        assert!(!get_test_node_reachable(&caches, network_id, node.id).await);
+        assert!(!is_node_reachable(&caches, network_id, node.id).await);
 
         update_cache(
             &caches,
@@ -527,7 +517,7 @@ mod tests {
             &dummy_sender,
         )
         .await;
-        assert!(get_test_node_reachable(&caches, network_id, node.id).await);
+        assert!(is_node_reachable(&caches, network_id, node.id).await);
     }
 
     #[tokio::test]
@@ -874,5 +864,258 @@ mod tests {
         let locked = tree.lock().await;
         assert_eq!(locked.0.node_count(), 2);
         assert_eq!(locked.0.edge_count(), 1);
+    }
+
+    fn test_network(id: u32) -> config::Network {
+        config::Network {
+            id,
+            description: String::new(),
+            name: format!("net{}", id),
+            slug: format!("net{}", id),
+            min_fork_height: 0,
+            max_interesting_heights: 100,
+            nodes: vec![],
+            remote_forkobservers: vec![],
+            pool_identification: config::PoolIdentification::default(),
+            countdown: None,
+            activity_retention_days: None,
+            activity_log_node_ids: BTreeSet::new(),
+            preferred_sync_node_ids: BTreeSet::new(),
+            genesis_hash: None,
+        }
+    }
+
+    // A chain of `count` headers with a second block at height 2, so the tree
+    // has a fork and a stale block.
+    fn tree_with_a_fork(count: u32) -> Tree {
+        let mut graph: DiGraph<HeaderInfo, bool> = DiGraph::new();
+        let mut index: HashMap<BlockHash, _> = HashMap::new();
+        let mut headers: Vec<HeaderInfo> = Vec::new();
+        let mut prev = BlockHash::all_zeros();
+        for height in 0..count as u64 {
+            let header = Header {
+                prev_blockhash: prev,
+                ..test_header(height as u32)
+            };
+            prev = header.block_hash();
+            headers.push(HeaderInfo {
+                height,
+                header,
+                miner: MINER_UNKNOWN.to_string(),
+            });
+        }
+        headers.push(HeaderInfo {
+            height: 2,
+            header: Header {
+                prev_blockhash: headers[1].header.block_hash(),
+                ..test_header(1000)
+            },
+            miner: MINER_UNKNOWN.to_string(),
+        });
+        for h in headers.iter() {
+            let idx = graph.add_node(h.clone());
+            index.insert(h.header.block_hash(), idx);
+        }
+        for h in headers.iter() {
+            let current = index[&h.header.block_hash()];
+            if let Some(prev) = index.get(&h.header.prev_blockhash) {
+                graph.update_edge(*prev, current, false);
+            }
+        }
+        Arc::new(Mutex::new((graph, index)))
+    }
+
+    #[tokio::test]
+    async fn the_cache_is_populated_from_the_tree_and_recomputed_on_demand() {
+        let network = test_network(0);
+        let tree = tree_with_a_fork(5);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+
+        populate_cache(&network, &tree, &caches).await;
+
+        {
+            let locked = caches.lock().await;
+            let cache = locked.get(&network.id).expect("the network's cache");
+            assert!(!cache.header_infos_json.is_empty());
+            // The fork at height 2 and the block it left behind.
+            assert_eq!(cache.forks.len(), 1);
+            assert_eq!(cache.stale_blocks.len(), 1);
+        }
+
+        // A header the cache doesn't know about yet.
+        let tip = {
+            let locked = tree.lock().await;
+            let highest = locked
+                .0
+                .raw_nodes()
+                .iter()
+                .map(|node| node.weight.clone())
+                .max_by_key(|h| h.height)
+                .expect("a tip");
+            HeaderInfo {
+                height: highest.height + 1,
+                header: Header {
+                    prev_blockhash: highest.header.block_hash(),
+                    ..test_header(2000)
+                },
+                miner: MINER_UNKNOWN.to_string(),
+            }
+        };
+        insert_new_headers_into_tree(&tree, std::slice::from_ref(&tip)).await;
+
+        let (cache_changed_tx, mut cache_changed_rx) = broadcast::channel(2);
+        update_header_tree_cache(
+            &network,
+            &tree,
+            &caches,
+            std::iter::once(tip.height),
+            &cache_changed_tx,
+        )
+        .await;
+
+        let locked = caches.lock().await;
+        let cache = locked.get(&network.id).expect("the network's cache");
+        let hashes: Vec<String> = cache
+            .header_infos_json
+            .iter()
+            .map(|h| h.hash.clone())
+            .collect();
+        assert!(hashes.contains(&tip.header.block_hash().to_string()));
+        // Whoever listens for cache changes is told about this one.
+        assert_eq!(
+            cache_changed_rx.try_recv().expect("a cache change"),
+            network.id
+        );
+    }
+
+    #[tokio::test]
+    async fn the_tip_heights_are_collected_from_every_node() {
+        let network_id: u32 = 0;
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        let mut node_data: NodeData = BTreeMap::new();
+        node_data.insert(
+            0,
+            NodeDataJson::new(
+                node_info(0, "a"),
+                &[
+                    chain_tip(100, ChainTipStatus::Active),
+                    chain_tip(98, ChainTipStatus::ValidFork),
+                ],
+                "".to_string(),
+                0,
+                true,
+            ),
+        );
+        node_data.insert(
+            1,
+            NodeDataJson::new(
+                node_info(1, "b"),
+                &[chain_tip(99, ChainTipStatus::Active)],
+                "".to_string(),
+                0,
+                true,
+            ),
+        );
+        cached_network(&caches, network_id, cache_with(vec![], node_data)).await;
+
+        let heights = tip_heights(network_id, &caches).await;
+
+        // Every tip of every node, active or not, deduplicated and sorted.
+        assert_eq!(heights.into_iter().collect::<Vec<u64>>(), [98, 99, 100]);
+    }
+
+    #[tokio::test]
+    async fn an_activity_event_goes_into_the_channel() {
+        let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        send_activity(&activity_tx, 3, 7, ActivityEventKind::NodeUnreachable {});
+
+        let event = activity_rx.try_recv().expect("an activity event");
+        assert_eq!(event.network_id, 3);
+        assert_eq!(event.node_id, 7);
+    }
+
+    #[test]
+    fn a_cache_update_says_what_it_changes() {
+        let mined = HeaderInfo {
+            miner: "Miner A".to_string(),
+            ..header_info(5, 1)
+        };
+        let rendered = CacheUpdate::HeaderMiner {
+            header_info: mined.clone(),
+        }
+        .to_string();
+        assert!(rendered.contains(&mined.header.block_hash().to_string()));
+        assert!(rendered.contains("Miner A"));
+
+        assert!(CacheUpdate::NodeReachability {
+            node_id: 4,
+            reachable: false,
+        }
+        .to_string()
+        .contains("node 4 to reachable=false"));
+
+        assert!(CacheUpdate::HeaderTree {
+            header_infos_json: vec![],
+            forks: vec![],
+            stale_blocks: vec![],
+        }
+        .to_string()
+        .contains("empty header list"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_node_version_is_retried_before_giving_up() {
+        // Nothing listens on this port, so every attempt fails.
+        let node: BoxedSyncSendNode = Arc::new(BitcoinCoreNode::new(
+            node_info(0, "core"),
+            "http://127.0.0.1:1".to_string(),
+            Auth::UserPass("user".to_string(), "password".to_string()),
+            false,
+            false,
+        ));
+        let start = tokio::time::Instant::now();
+
+        assert_eq!(load_node_version(node, "net0").await, VERSION_UNKNOWN);
+
+        // A node that doesn't answer might still be starting up, so this is
+        // retried a few times before the version is given up on.
+        assert!(start.elapsed() >= Duration::from_secs(40));
+    }
+
+    #[tokio::test]
+    async fn a_version_update_replaces_the_cached_version() {
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        let mut node_data: NodeData = BTreeMap::new();
+        node_data.insert(
+            0,
+            NodeDataJson::new(
+                node_info(0, "node"),
+                &[],
+                VERSION_UNKNOWN.to_string(),
+                0,
+                true,
+            ),
+        );
+        cached_network(&caches, network_id, cache_with(vec![], node_data)).await;
+
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::NodeVersion {
+                node_id: 0,
+                version: "/Satoshi:28.0.0/".to_string(),
+            },
+            &dummy_sender,
+        )
+        .await;
+
+        let locked = caches.lock().await;
+        assert_eq!(
+            locked.get(&network_id).unwrap().node_data[&0].version,
+            "/Satoshi:28.0.0/"
+        );
     }
 }
