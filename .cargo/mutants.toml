@@ -40,6 +40,11 @@ exclude_re = [
     "replace > with >= in lagging_nodes_response",
     # Only decides whether to log a warning.
     "src/db\\.rs:.*in load_treeinfos",
+    # Only decides whether the node coming back is worth an info line.
+    "replace > with .* in GenesisCheck::record",
+    # `<=` instead of `<` only differs for the one instant the retry delay
+    # expires at.
+    "replace < with <= in GenesisCheck::passes",
     # Both only decide whether a mismatch in the JSON-RPC envelope is logged.
     "src/jsonrpc\\.rs:.*in Response<T>::check",
     # An EsploraRESTError never wraps another error, so `None` is what the
