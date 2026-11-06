@@ -10,7 +10,6 @@ exclude_globs = [
     "src/main.rs",
     "src/jsonrpc.rs",
     "src/backend/bitcoin_core.rs",
-    "src/backend/block_dn.rs",
     "src/backend/btcd.rs",
     "src/backend/electrum.rs",
     "src/backend/esplora.rs",
