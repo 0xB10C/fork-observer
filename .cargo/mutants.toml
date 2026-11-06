@@ -8,9 +8,7 @@
 # mutated - it needs no network.
 exclude_globs = [
     "src/main.rs",
-    "src/jsonrpc.rs",
     "src/backend/bitcoin_core.rs",
-    "src/backend/btcd.rs",
     "src/backend/electrum.rs",
 ]
 
@@ -33,6 +31,8 @@ exclude_re = [
     "replace > with >= in lagging_nodes_response",
     # Only decides whether to log a warning.
     "src/db\\.rs:.*in load_treeinfos",
+    # Both only decide whether a mismatch in the JSON-RPC envelope is logged.
+    "src/jsonrpc\\.rs:.*in Response<T>::check",
     # An EsploraRESTError never wraps another error, so `None` is what the
     # match arms return anyway.
     "src/error\\.rs:.*EsploraRESTError.*::source",
