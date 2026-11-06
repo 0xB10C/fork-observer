@@ -71,7 +71,7 @@ impl Node for BtcdNode {
         _start_height: u64,
         _count: u64,
     ) -> Result<Vec<Header>, FetchError> {
-        assert!(self.capabilities().batch_header_fetch);
+        assert!(!self.capabilities().batch_header_fetch);
         Err(FetchError::DataError(
             "batch header fetch not implemented".to_string(),
         ))
