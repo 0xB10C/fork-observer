@@ -288,13 +288,13 @@ pub async fn recent_forks(tree: &Tree, how_many: usize) -> Vec<Fork> {
 
 #[cfg(test)]
 mod tests {
-    use super::{stale_blocks, strip_tree};
+    use super::{recent_forks, stale_blocks, strip_tree};
     use crate::types::{HeaderInfo, Tree, TreeInfo};
     use corepc_client::bitcoin::blockdata::block::{Header, Version};
     use corepc_client::bitcoin::hashes::Hash;
     use corepc_client::bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
     use petgraph::graph::DiGraph;
-    use std::collections::{BTreeSet, HashMap};
+    use std::collections::{BTreeSet, HashMap, HashSet};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -470,6 +470,15 @@ mod tests {
                 expected
             );
         }
+
+        // Blocks away from both the countdown and the tip are still dropped.
+        for dropped in [0, 5, 7, 13, 15, 17] {
+            assert!(
+                !heights.contains(&dropped),
+                "height {} is neither interesting nor near the countdown",
+                dropped
+            );
+        }
     }
 
     #[tokio::test]
@@ -517,5 +526,104 @@ mod tests {
         heights.sort();
 
         assert_eq!(heights, vec![18, 19, 20]);
+    }
+
+    #[tokio::test]
+    async fn a_fork_makes_the_heights_around_it_interesting() {
+        // A linear chain with a second block at height 3. That height is the
+        // only one with more than one block, which is what makes it
+        // interesting.
+        let mut headers = linear_chain(20);
+        let fork = hi(3, header(headers[2].header.block_hash(), EASY_BITS, 99));
+        headers.push(fork);
+        let tree = tree_from(&headers);
+
+        let result = strip_tree(&tree, 100, BTreeSet::new(), None).await;
+        let heights: Vec<u64> = result.iter().map(|h| h.height).collect();
+
+        // Both blocks at the fork height are kept, ...
+        assert_eq!(heights.iter().filter(|h| **h == 3).count(), 2);
+        // ... together with the blocks surrounding it, ...
+        for expected in [1, 2, 4] {
+            assert!(
+                heights.contains(&expected),
+                "height {} should be kept around the fork",
+                expected
+            );
+        }
+        // ... while the heights between the fork and the tip are dropped.
+        for dropped in 5..=17u64 {
+            assert!(
+                !heights.contains(&dropped),
+                "height {} has one block and isn't near a fork",
+                dropped
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stripped_sub_trees_are_reconnected() {
+        // max_interesting_heights = 1 keeps the blocks around the tip (18..=20)
+        // and the countdown keeps 8..=12: two sub trees with a gap between them.
+        let headers = linear_chain(20);
+        let tree = tree_from(&headers);
+
+        let result = strip_tree(&tree, 1, BTreeSet::new(), Some(10)).await;
+        let height_by_id: HashMap<usize, u64> = result.iter().map(|h| (h.id, h.height)).collect();
+
+        // Only the lowest block of the lower sub tree has no previous block.
+        let roots: Vec<u64> = result
+            .iter()
+            .filter(|h| h.prev_id == usize::MAX)
+            .map(|h| h.height)
+            .collect();
+        assert_eq!(roots, vec![8]);
+
+        // The lowest block of the upper sub tree hangs off the highest block of
+        // the lower one, so the frontend is handed a connected tree.
+        let upper_root = result.iter().find(|h| h.height == 18).unwrap();
+        assert_eq!(height_by_id.get(&upper_root.prev_id), Some(&12));
+    }
+
+    #[tokio::test]
+    async fn recent_forks_reports_the_block_a_fork_starts_at() {
+        //   root(0) -> a(1) -> b(2)
+        //                   \-> c(2)
+        let root = hi(0, header(BlockHash::all_zeros(), EASY_BITS, 0));
+        let a = hi(1, header(root.header.block_hash(), EASY_BITS, 1));
+        let b = hi(2, header(a.header.block_hash(), EASY_BITS, 2));
+        let c = hi(2, header(a.header.block_hash(), EASY_BITS, 3));
+        let tree = tree_from(&[root, a.clone(), b.clone(), c.clone()]);
+
+        let forks = recent_forks(&tree, 10).await;
+
+        // Only `a` has more than one block building on it.
+        assert_eq!(forks.len(), 1);
+        assert_eq!(forks[0].common.header.block_hash(), a.header.block_hash());
+        let children: HashSet<BlockHash> = forks[0]
+            .children
+            .iter()
+            .map(|h| h.header.block_hash())
+            .collect();
+        assert_eq!(
+            children,
+            HashSet::from([b.header.block_hash(), c.header.block_hash()])
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_forks_returns_the_highest_forks_first() {
+        // A chain of 7 blocks with a fork off the blocks at heights 1, 3 and 5.
+        let mut headers = linear_chain(7);
+        for height in [1u64, 3, 5] {
+            let prev = headers[height as usize].header.block_hash();
+            headers.push(hi(height + 1, header(prev, EASY_BITS, 50 + height as u32)));
+        }
+        let tree = tree_from(&headers);
+
+        let forks = recent_forks(&tree, 2).await;
+
+        let heights: Vec<u64> = forks.iter().map(|f| f.common.height).collect();
+        assert_eq!(heights, vec![5, 3]);
     }
 }
