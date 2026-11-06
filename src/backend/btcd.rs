@@ -252,10 +252,22 @@ mod tests {
         });
         let node = node_for(&server.url);
 
+        // The error the node reported is carried in the message, code and all.
+        let error = node
+            .block_header_hash(&BlockHash::all_zeros())
+            .await
+            .expect_err("an error");
         assert!(matches!(
-            node.block_header_hash(&BlockHash::all_zeros()).await,
-            Err(FetchError::BtcdRPC(JsonRPCError::JsonRpc(_)))
+            error,
+            FetchError::BtcdRPC(JsonRPCError::JsonRpc(_))
         ));
+        let message = error.to_string();
+        assert!(
+            message.contains("code=-8"),
+            "unexpected message: {}",
+            message
+        );
+        assert!(message.contains("nope"), "unexpected message: {}", message);
         assert!(matches!(
             node.tips().await,
             Err(FetchError::BtcdRPC(JsonRPCError::JsonRpc(_)))
