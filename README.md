@@ -334,3 +334,27 @@ cargo bench -- --baseline before               # ... and compare a change agains
 ```
 
 Criterion writes a report to `target/criterion/report/index.html`.
+
+## Mutation testing
+
+[cargo-mutants](https://mutants.rs) changes the code in small ways - flipping a
+comparison, dropping a match arm, returning an empty `Vec` - and runs the test
+suite for each change. A mutant that no test fails on ("missed") is a piece of
+logic the tests don't actually check. This complements line coverage: a line can
+be executed by a test without the test asserting anything about what it does.
+
+```
+cargo mutants                                  # everything (a few minutes)
+cargo mutants -f src/headertree.rs             # only one file
+cargo mutants -j 8                             # in parallel
+cargo mutants --in-diff <(git diff main)       # only what a branch changed
+```
+
+`.cargo/mutants.toml` configures which code is mutated: the backends,
+`src/jsonrpc.rs` and `src/main.rs` are left out, as they talk to nodes or only
+wire things together, and a few mutants that provably don't change behaviour
+are excluded by name there.
+
+Two mutants turn a loop into an endless one (the activity writer and its ring
+buffer). The tests catch them by hanging, which is reported as `TIMEOUT`
+instead of `caught`.
