@@ -8,6 +8,8 @@ mod btcd;
 mod electrum;
 mod esplora;
 mod mempool_space;
+#[cfg(test)]
+mod test_server;
 
 pub use bitcoin_core::BitcoinCoreNode;
 pub use block_dn::BlockDn;
