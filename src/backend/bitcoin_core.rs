@@ -99,11 +99,11 @@ impl Node for BitcoinCoreNode {
 
     async fn coinbase(&self, hash: &BlockHash, _height: u64) -> Result<Transaction, FetchError> {
         let block = self.rpc_client()?.get_block(hash).await?;
-        Ok(block
+        block
             .txdata
             .first()
-            .expect("Block should have a coinbase transaction")
-            .clone())
+            .cloned()
+            .ok_or_else(|| FetchError::DataError(format!("block {} has no transactions", hash)))
     }
 
     async fn block(&self, hash: &BlockHash) -> Result<Vec<u8>, FetchError> {
