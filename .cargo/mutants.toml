@@ -1,0 +1,36 @@
+# Configuration for cargo-mutants (https://mutants.rs), a mutation testing
+# tool: it changes the code in small ways and checks that some test fails. A
+# mutant that survives points at logic no test looks at. See the README.
+
+# Code that talks to a node or another fork-observer over the network, and
+# main.rs, which only wires things together: there are no unit tests here that
+# could catch a mutant.
+exclude_globs = ["src/main.rs", "src/backend/**", "src/jsonrpc.rs"]
+
+# All tests live in the library. Skipping the other targets avoids building the
+# benchmarks and the Bitcoin Core backend tests, which start a bitcoind each.
+additional_cargo_test_args = ["--lib", "--", "--skip", "backend::bitcoin_core"]
+
+# Timeouts and intervals are a matter of taste, not of logic.
+skip_calls = ["from_secs"]
+
+# Mutants that change the code without changing what it does, so no test can
+# catch them:
+exclude_re = [
+    # strip_tree connects a stripped sub tree to a header at the maximum
+    # height of the previous one. With `>=` it picks another header of that
+    # same height, which is just as good.
+    "replace > with >= in strip_tree",
+    # A node can only lag behind another node, so the `> 1` guard on the
+    # number of nodes only saves work.
+    "replace > with >= in lagging_nodes_response",
+    # Only decides whether to log a warning.
+    "src/db\\.rs:.*in load_treeinfos",
+    # An EsploraRESTError never wraps another error, so `None` is what the
+    # match arms return anyway.
+    "src/error\\.rs:.*EsploraRESTError.*::source",
+    # Both only run against a remote fork-observer to poll, and
+    # check_remote_network only logs.
+    "check_remote_network",
+    "run_poller",
+]
