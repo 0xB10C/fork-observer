@@ -355,6 +355,5 @@ cargo mutants --in-diff <(git diff main)       # only what a branch changed
 wire things together, and a few mutants that provably don't change behaviour
 are excluded by name there.
 
-Two mutants turn a loop into an endless one (the activity writer and its ring
-buffer). The tests catch them by hanging, which is reported as `TIMEOUT`
-instead of `caught`.
+Some mutants turn a loop into an endless one. The tests catch those by
+hanging, which is reported as `TIMEOUT` rather than as caught.
