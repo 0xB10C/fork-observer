@@ -98,28 +98,32 @@ impl Node for Esplora {
         match res.status_code {
             200 => {
                 let url = format!("{}/tx/{}/hex", self.api_url, res.as_str()?);
-                let coinbase_hex = res.as_str()?;
                 let res = minreq::get(url.clone())
                     .with_header("content-type", "plain/text")
                     .with_timeout(8)
                     .send()?;
 
                 match res.status_code {
-                    200 => match Vec::from_hex(coinbase_hex) {
-                        Ok(coinbase_bytes) => {
-                            match corepc_client::bitcoin::consensus::deserialize(&coinbase_bytes) {
-                                Ok(tx) => Ok(tx),
-                                Err(e) => Err(FetchError::DataError(format!(
-                                    "Can't deserialize coinbase transaction '{}': {}",
-                                    coinbase_hex, e
-                                ))),
+                    200 => {
+                        let coinbase_hex = res.as_str()?;
+                        match Vec::from_hex(coinbase_hex) {
+                            Ok(coinbase_bytes) => {
+                                match corepc_client::bitcoin::consensus::deserialize(
+                                    &coinbase_bytes,
+                                ) {
+                                    Ok(tx) => Ok(tx),
+                                    Err(e) => Err(FetchError::DataError(format!(
+                                        "Can't deserialize coinbase transaction '{}': {}",
+                                        coinbase_hex, e
+                                    ))),
+                                }
                             }
+                            Err(e) => Err(FetchError::DataError(format!(
+                                "Can't hex decode coinbase transaction '{}': {}",
+                                coinbase_hex, e
+                            ))),
                         }
-                        Err(e) => Err(FetchError::DataError(format!(
-                            "Can't hex decode coinbase transaction '{}': {}",
-                            coinbase_hex, e
-                        ))),
-                    },
+                    }
                     _ => {
                         return Err(FetchError::EsploraREST(EsploraRESTError::Http(format!(
                             "HTTP request to {} failed: {} {}: {}",
@@ -246,3 +250,4 @@ impl Node for Esplora {
         }
     }
 }
+
