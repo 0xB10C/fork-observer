@@ -19,6 +19,10 @@ additional_cargo_test_args = ["--lib", "--", "--skip", "backend::bitcoin_core"]
 # Timeouts and intervals are a matter of taste, not of logic.
 skip_calls = ["from_secs"]
 
+# Build the way the CI build and test jobs do, so a local run and the CI run
+# agree on which mutants even compile.
+additional_cargo_args = ["--all-features"]
+
 # Mutants that change the code without changing what it does, so no test can
 # catch them:
 exclude_re = [
