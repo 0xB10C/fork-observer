@@ -1499,14 +1499,37 @@ mod tests {
     }
 
     #[test]
-    fn backend_from_str_accepts_mempool_space_aliases() {
-        for alias in ["mempoolspace", "mempool.space", "mempool", "MempoolSpace"] {
-            assert!(
-                matches!(alias.parse::<Backend>(), Ok(Backend::MempoolSpace)),
-                "expected '{}' to parse as Backend::MempoolSpace",
-                alias
-            );
+    fn every_accepted_implementation_name_parses() {
+        let spellings = [
+            (
+                vec!["bitcoincore", "bitcoin core", "Bitcoin Core", "core"],
+                Backend::BitcoinCore,
+            ),
+            (vec!["btcd", "BTCD"], Backend::Btcd),
+            (vec!["esplora"], Backend::Esplora),
+            (vec!["electrum"], Backend::Electrum),
+            (
+                vec!["mempoolspace", "mempool.space", "mempool", "MempoolSpace"],
+                Backend::MempoolSpace,
+            ),
+            (vec!["blockdn", "block-dn"], Backend::BlockDn),
+        ];
+        for (names, backend) in spellings {
+            for name in names {
+                assert_eq!(
+                    name.parse::<Backend>()
+                        .unwrap_or_else(|_| panic!("'{}' should parse", name))
+                        .to_string(),
+                    backend.to_string(),
+                    "unexpected backend for '{}'",
+                    name
+                );
+            }
         }
+        assert!(matches!(
+            "bitcoin-core".parse::<Backend>(),
+            Err(ConfigError::UnknownImplementation)
+        ));
     }
 
     #[test]
@@ -1547,6 +1570,71 @@ mod tests {
                 panic!("block-dn backend config invalid: {}", e);
             }
         }
+    }
+
+    // A minimal Bitcoin Core node, plus whatever `extra` TOML lines are given.
+    fn toml_test_node(extra: &str) -> TomlNode {
+        toml::from_str(&format!(
+            r#"
+            id = 0
+            name = "n"
+            description = ""
+            rpc_host = "127.0.0.1"
+            {}
+            "#,
+            extra
+        ))
+        .expect("the node should parse")
+    }
+
+    #[test]
+    fn a_configured_cookie_file_has_to_exist() {
+        let missing = toml_test_node(r#"rpc_cookie_file = "/does/not/exist/.cookie""#);
+        assert!(matches!(
+            parse_rpc_auth(&missing),
+            Err(ConfigError::CookieFileDoesNotExist)
+        ));
+
+        // A file that does exist is taken as the cookie file.
+        let existing = toml_test_node(&format!(
+            r#"rpc_cookie_file = "{}/Cargo.toml""#,
+            env!("CARGO_MANIFEST_DIR")
+        ));
+        assert!(matches!(parse_rpc_auth(&existing), Ok(Auth::CookieFile(_))));
+    }
+
+    #[test]
+    fn rpc_auth_needs_a_cookie_file_or_a_user_and_a_password() {
+        assert!(matches!(
+            parse_rpc_auth(&toml_test_node("")),
+            Err(ConfigError::NoBitcoinCoreRpcAuth)
+        ));
+        assert!(matches!(
+            parse_rpc_auth(&toml_test_node(r#"rpc_user = "u""#)),
+            Err(ConfigError::NoBitcoinCoreRpcAuth)
+        ));
+        assert!(matches!(
+            parse_rpc_auth(&toml_test_node("rpc_user = \"u\"\nrpc_password = \"p\"")),
+            Ok(Auth::UserPass(_, _))
+        ));
+    }
+
+    #[test]
+    fn a_btcd_node_needs_both_a_user_and_a_password() {
+        for incomplete in [
+            r#"implementation = "btcd""#,
+            "implementation = \"btcd\"\nrpc_user = \"u\"",
+            "implementation = \"btcd\"\nrpc_password = \"p\"",
+        ] {
+            assert!(matches!(
+                parse_toml_node(&toml_test_node(incomplete)),
+                Err(ConfigError::NoBtcdRpcAuth)
+            ));
+        }
+        assert!(parse_toml_node(&toml_test_node(
+            "implementation = \"btcd\"\nrpc_user = \"u\"\nrpc_password = \"p\""
+        ))
+        .is_ok());
     }
 }
 
