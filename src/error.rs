@@ -357,3 +357,36 @@ impl From<HexToArrayError> for JsonRPCError {
         JsonRPCError::BitcoinFromHex(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    // An error that's cheap to come by and wrapped by several of our types.
+    fn hex_error() -> hex::FromHexError {
+        hex::decode("not hex").expect_err("this isn't hex")
+    }
+
+    #[test]
+    fn a_wrapped_error_is_reported_as_the_source() {
+        assert!(DbError::DecodeHex(hex_error()).source().is_some());
+        assert!(JsonRPCError::FromHex(hex_error()).source().is_some());
+        assert!(FetchError::EsploraREST(EsploraRESTError::NotImplemented)
+            .source()
+            .is_some());
+        assert!(MainError::Db(DbError::DecodeHex(hex_error()))
+            .source()
+            .is_some());
+        assert!(ConfigError::ReadError(io::Error::other("nope"))
+            .source()
+            .is_some());
+    }
+
+    #[test]
+    fn an_error_that_only_carries_a_message_has_no_source() {
+        assert!(FetchError::DataError("nope".to_string()).source().is_none());
+        assert!(JsonRPCError::NotImplemented.source().is_none());
+        assert!(ConfigError::NoNetworks.source().is_none());
+    }
+}
