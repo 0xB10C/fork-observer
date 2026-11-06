@@ -85,11 +85,9 @@ impl Node for BtcdNode {
             self.rpc_password.clone(),
             hash.to_string(),
         ) {
-            Ok(block) => Ok(block
-                .txdata
-                .first()
-                .expect("Block should have a coinbase transaction")
-                .clone()),
+            Ok(block) => block.txdata.first().cloned().ok_or_else(|| {
+                FetchError::DataError(format!("block {} has no transactions", hash))
+            }),
             Err(error) => Err(FetchError::BtcdRPC(error)),
         }
     }
@@ -137,6 +135,7 @@ mod tests {
     use super::*;
     use corepc_client::bitcoin::consensus::serialize;
     use corepc_client::bitcoin::hashes::Hash as _;
+    use corepc_client::bitcoin::Block;
 
     fn node_for(rpc_url: &str) -> BtcdNode {
         BtcdNode::new(
@@ -289,5 +288,26 @@ mod tests {
         assert_eq!(node.info().id, 2);
         assert_eq!(node.capabilities().header_fetch_type, HeaderFetchType::Hash);
         assert!(!node.capabilities().batch_header_fetch);
+    }
+
+    #[tokio::test]
+    async fn a_block_without_transactions_has_no_coinbase() {
+        // A block with an empty transaction list: not something a node should
+        // serve, but it shouldn't take the node's task down either.
+        let block = Block {
+            header: test_chain::block_with_a_coinbase().header,
+            txdata: vec![],
+        };
+        let block_hex = hex::encode(serialize(&block));
+        let server = serve(move |request: &Request| match method_of(request).as_str() {
+            "getblock" => rpc_response(&format!(r#""{}""#, block_hex)),
+            _ => Response::status(500),
+        });
+        let node = node_for(&server.url);
+
+        assert!(matches!(
+            node.coinbase(&BlockHash::all_zeros(), 100).await,
+            Err(FetchError::DataError(_))
+        ));
     }
 }
