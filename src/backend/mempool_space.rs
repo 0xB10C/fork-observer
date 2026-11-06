@@ -158,7 +158,7 @@ impl Node for MempoolSpace {
         _start_height: u64,
         _count: u64,
     ) -> Result<Vec<Header>, FetchError> {
-        assert!(self.capabilities().batch_header_fetch);
+        assert!(!self.capabilities().batch_header_fetch);
         Err(FetchError::DataError(
             "batch header fetch not implemented".to_string(),
         ))
@@ -241,5 +241,120 @@ mod tests {
         let json = r#"{"hostname":"node208.fra.mempool.space","version":"3.4-dev","gitCommit":"3da515d4f","lightning":false,"backend":"esplora"}"#;
         let info: MempoolSpaceBackendInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.version, "3.4-dev");
+    }
+
+    use super::super::test_chain;
+    use super::super::test_server::{serve, Request, Response};
+    use corepc_client::bitcoin::consensus::serialize;
+    use corepc_client::bitcoin::hashes::Hash as _;
+
+    const STALE_BLOCK_HASH: &str =
+        "00000000000000000001e9c1b31d923680b0472cc3d8e301210dfca4631e2996";
+
+    fn node_for(api_url: &str) -> MempoolSpace {
+        MempoolSpace::new(
+            NodeInfo {
+                id: 9,
+                name: "mempool.space".to_string(),
+                description: String::new(),
+                implementation: "mempool.space".to_string(),
+            },
+            api_url.to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_version_and_the_chain_tips_come_from_the_v1_api() {
+        let server = serve(|request: &Request| match request.path.as_str() {
+            "/v1/backend-info" => Response::ok(r#"{"version":"3.4-dev"}"#),
+            "/v1/chain-tips" => Response::ok(
+                r#"[{"height":960315,"hash":"00000000000000000000c4dd83a223d8a32c9904c787948fd42c88c30739553a","branchlen":0,"status":"active"}]"#,
+            ),
+            _ => Response::status(500),
+        });
+        let node = node_for(&server.url);
+
+        assert_eq!(node.version().await.expect("the version"), "3.4-dev");
+
+        let tips = node.tips().await.expect("the tips");
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].height, 960_315);
+        assert_eq!(tips[0].status, ChainTipStatus::Active);
+    }
+
+    #[tokio::test]
+    async fn a_fork_header_is_read_out_of_the_block_json() {
+        // The Esplora header endpoint 404s for blocks off the active chain, so
+        // the header comes from the block JSON instead.
+        let hash = BlockHash::from_str(STALE_BLOCK_HASH).expect("a block hash");
+        let server =
+            serve(
+                move |request: &Request| match request.path == format!("/v1/block/{}", hash) {
+                    true => Response::ok(STALE_BLOCK_JSON),
+                    false => Response::status(404),
+                },
+            );
+        let node = node_for(&server.url);
+
+        assert_eq!(
+            node.block_header_hash(&hash)
+                .await
+                .expect("the header")
+                .block_hash(),
+            hash
+        );
+        // A block the instance doesn't have.
+        assert!(matches!(
+            node.block_header_hash(&BlockHash::all_zeros()).await,
+            Err(FetchError::EsploraREST(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_response_that_isnt_the_json_we_expect_is_an_error() {
+        let server = serve(|_: &Request| Response::ok("not json"));
+        let node = node_for(&server.url);
+
+        assert!(matches!(
+            node.version().await,
+            Err(FetchError::DataError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_esplora_endpoints_are_used_for_everything_else() {
+        let block = test_chain::block_with_a_coinbase();
+        let hash = block.block_hash();
+        let raw_block = serialize(&block);
+        let served_block = raw_block.clone();
+        let server = serve(move |request: &Request| {
+            if request.path == "/block-height/830000" {
+                Response::ok(&hash.to_string())
+            } else if request.path == format!("/block/{}/raw", hash) {
+                Response::bytes(200, served_block.clone())
+            } else {
+                Response::status(404)
+            }
+        });
+        let node = node_for(&server.url);
+
+        assert_eq!(node.block_hash(830_000).await.expect("the hash"), hash);
+        assert_eq!(node.block(&hash).await.expect("the block"), raw_block);
+
+        // Only headers by hash, and one header per request.
+        assert!(matches!(
+            node.block_header_height(1).await,
+            Err(FetchError::DataError(_))
+        ));
+        assert!(matches!(
+            node.batch_header_fetch(0, 10).await,
+            Err(FetchError::DataError(_))
+        ));
+        assert_eq!(node.capabilities().header_fetch_type, HeaderFetchType::Hash);
+        assert!(!node.capabilities().batch_header_fetch);
+        // mempool.space reports headers-only tips it can't serve headers for.
+        assert!(node.capabilities().partial_nonactive_headers);
+        assert_eq!(node.rpc_url(), server.url);
+        assert_eq!(node.info().id, 9);
     }
 }
