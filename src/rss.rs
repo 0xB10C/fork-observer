@@ -452,6 +452,15 @@ pub fn response_unknown_network(network_infos: Vec<NetworkJson>) -> Response<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{with_caches, with_networks};
+    use crate::backend::NodeInfo;
+    use crate::types::{Cache, ChainTip, HeaderInfo, NodeData};
+    use corepc_client::bitcoin::blockdata::block::{Header, Version};
+    use corepc_client::bitcoin::hashes::Hash;
+    use corepc_client::bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     // A node name an operator could plausibly pick that breaks unescaped XML.
     const HOSTILE: &str = r#"A & B <main> "primary" 'alt'"#;
@@ -607,5 +616,189 @@ mod tests {
             xml
         );
         assert!(xml.contains(r#"href="https://example.com/a&amp;b/rss/0/forks.xml""#));
+    }
+
+    // Two networks, so a feed that looks up the wrong one is noticeable.
+    fn network_infos() -> Vec<NetworkJson> {
+        vec![
+            NetworkJson {
+                id: 0,
+                name: "Mainnet".to_string(),
+                slug: "mainnet".to_string(),
+                description: "".to_string(),
+            },
+            NetworkJson {
+                id: 1,
+                name: "Signet".to_string(),
+                slug: "signet".to_string(),
+                description: "".to_string(),
+            },
+        ]
+    }
+
+    fn header_info(height: u64, nonce: u32) -> HeaderInfo {
+        HeaderInfo {
+            height,
+            header: Header {
+                version: Version::from_consensus(0x2000_0000),
+                prev_blockhash: BlockHash::all_zeros(),
+                merkle_root: TxMerkleNode::all_zeros(),
+                time: 1_600_000_000,
+                bits: CompactTarget::from_consensus(0x207f_ffff),
+                nonce,
+            },
+            miner: "".to_string(),
+        }
+    }
+
+    fn chain_tip(height: u64, hash: &str, status: ChainTipStatus) -> ChainTip {
+        ChainTip {
+            height,
+            hash: hash.to_string(),
+            branchlen: 0,
+            status,
+        }
+    }
+
+    fn node(id: u32, name: &str, tips: &[ChainTip], reachable: bool) -> NodeDataJson {
+        NodeDataJson::new(
+            NodeInfo {
+                id,
+                name: name.to_string(),
+                description: "".to_string(),
+                implementation: "".to_string(),
+            },
+            tips,
+            "".to_string(),
+            0,
+            reachable,
+        )
+    }
+
+    fn caches_with(forks: Vec<Fork>, nodes: Vec<NodeDataJson>) -> Caches {
+        let mut node_data: NodeData = BTreeMap::new();
+        for node in nodes {
+            node_data.insert(node.id, node);
+        }
+        let mut map = BTreeMap::new();
+        map.insert(
+            0,
+            Cache {
+                header_infos_json: vec![],
+                node_data,
+                forks,
+                stale_blocks: vec![],
+                block_cache: HashMap::new(),
+                recent_miners: vec![],
+            },
+        );
+        Arc::new(Mutex::new(map))
+    }
+
+    // Serves `handler` as a route and returns the feed it renders for network 0.
+    async fn feed_body<F, R>(
+        caches: Caches,
+        handler: fn(u32, Caches, Vec<NetworkJson>, String) -> F,
+    ) -> String
+    where
+        F: std::future::Future<Output = Result<R, Infallible>> + Send + 'static,
+        R: warp::Reply + 'static,
+    {
+        let route = warp::path!("rss" / u32)
+            .and(with_caches(caches))
+            .and(with_networks(network_infos()))
+            .and(with_rss_base_url("https://example.com/".to_string()))
+            .and_then(handler);
+        let response = warp::test::request().path("/rss/0").reply(&route).await;
+        assert_eq!(response.status(), 200);
+        String::from_utf8(response.body().to_vec()).expect("the feed should be valid UTF-8")
+    }
+
+    #[tokio::test]
+    async fn the_forks_feed_names_the_network_it_was_asked_for() {
+        let common = header_info(10, 0);
+        let fork = Fork {
+            common: common.clone(),
+            children: vec![header_info(11, 1), header_info(11, 2)],
+        };
+
+        let body = feed_body(caches_with(vec![fork], vec![]), forks_response).await;
+
+        assert!(body.contains("Recent Forks - Mainnet"));
+        assert!(!body.contains("Signet"));
+        assert!(body.contains("Fork at height 10"));
+        assert!(body.contains(&common.header.block_hash().to_string()));
+    }
+
+    #[tokio::test]
+    async fn the_lagging_feed_only_lists_nodes_behind_the_threshold() {
+        let nodes = vec![
+            // The furthest ahead, so it sets the height the others lag behind.
+            node(
+                0,
+                "ahead",
+                &[chain_tip(100, "aa", ChainTipStatus::Active)],
+                true,
+            ),
+            // Lagging: its active tip is 10 blocks behind. The higher fork tip
+            // isn't its active tip and doesn't count.
+            node(
+                1,
+                "behind",
+                &[
+                    chain_tip(90, "bb", ChainTipStatus::Active),
+                    chain_tip(100, "cc", ChainTipStatus::ValidFork),
+                ],
+                true,
+            ),
+            // Exactly `THREASHOLD_NODE_LAGGING` blocks behind, which is not
+            // enough to be lagging yet.
+            node(
+                2,
+                "edge",
+                &[chain_tip(97, "dd", ChainTipStatus::Active)],
+                true,
+            ),
+        ];
+
+        let body = feed_body(caches_with(vec![], nodes), lagging_nodes_response).await;
+
+        assert!(body.contains("Lagging nodes on Mainnet"));
+        // The node names are quoted in the titles, so they come escaped.
+        assert!(body.contains("Node &apos;behind&apos; is lagging behind"));
+        assert!(body.contains("active tip is on height 90"));
+        assert!(!body.contains("ahead"));
+        assert!(!body.contains("edge"));
+    }
+
+    #[tokio::test]
+    async fn the_invalid_blocks_feed_only_lists_invalid_tips() {
+        let nodes = vec![node(
+            0,
+            "node",
+            &[
+                chain_tip(100, "the-active-tip", ChainTipStatus::Active),
+                chain_tip(99, "the-invalid-block", ChainTipStatus::Invalid),
+            ],
+            true,
+        )];
+
+        let body = feed_body(caches_with(vec![], nodes), invalid_blocks_response).await;
+
+        assert!(body.contains("Invalid Blocks - Mainnet"));
+        assert!(body.contains("Invalid block at height 99"));
+        assert!(body.contains("the-invalid-block"));
+        assert!(!body.contains("the-active-tip"));
+    }
+
+    #[tokio::test]
+    async fn the_unreachable_feed_only_lists_unreachable_nodes() {
+        let nodes = vec![node(0, "online", &[], true), node(1, "offline", &[], false)];
+
+        let body = feed_body(caches_with(vec![], nodes), unreachable_nodes_response).await;
+
+        assert!(body.contains("Unreachable nodes - Mainnet"));
+        assert!(body.contains("Node &apos;offline&apos; (id=1) is unreachable"));
+        assert!(!body.contains("online"));
     }
 }
