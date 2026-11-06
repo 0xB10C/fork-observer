@@ -23,6 +23,11 @@ skip_calls = ["from_secs"]
 # agree on which mutants even compile.
 additional_cargo_args = ["--all-features"]
 
+# A mutant that leaves an argument unused would trip the `strict` feature's
+# deny(warnings) and be reported as unviable rather than tested, so cap the
+# lints for the mutation build.
+cap_lints = true
+
 # Mutants that change the code without changing what it does, so no test can
 # catch them:
 exclude_re = [
