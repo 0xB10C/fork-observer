@@ -377,21 +377,26 @@ async fn main() -> Result<(), MainError> {
                         // Keeping tracking of changes:
                         let mut tree_changed = false;
                         if !new_headers.is_empty() {
+                            // Write to the database before writing to the in-memory header tree.
+                            // Otherwise, headers that made it into the tree would never be written
+                            // to the database. On a database write failure, the node keeps polling
+                            // the headers and fetches them again at the next poll.
+                            if let Err(e) =
+                                db::write_to_db(&new_headers, db_write, network.id).await
+                            {
+                                error!("Could not write new headers for network '{}' by node {} to database: {} - fetching them again at the next poll", network.name, node.info(), e);
+                                last_tips = old_tips;
+                                continue;
+                            }
+                            info!(
+                                "Written {} headers to database for network '{}' by node {}",
+                                new_headers.len(),
+                                network.name,
+                                node.info()
+                            );
+
                             tree_changed =
                                 insert_new_headers_into_tree(&tree_clone, &new_headers).await;
-
-                            match db::write_to_db(&new_headers, db_write, network.id).await {
-                                Ok(_) => info!(
-                                    "Written {} headers to database for network '{}' by node {}",
-                                    new_headers.len(),
-                                    network.name,
-                                    node.info()
-                                ),
-                                Err(e) => {
-                                    error!("Could not write new headers for network '{}' by node {} to database: {}", network.name, node.info(), e);
-                                    return MainError::Db(e);
-                                }
-                            }
                         }
 
                         // Log tip activity after the new headers were inserted
