@@ -181,7 +181,7 @@ pub fn btcd_blockhash(
     if hash_hex.len() != BITCOIN_BLOCK_HASH_HEX_LENGTH {
         return Err(JsonRPCError::RpcUnexpectedResponseContents(format!(
             "JSON RPC response for request '{}' has not the correct length for a Bitcoin block hash. Expected {} hex chars but got {} chars. Content: {}",
-            METHOD, BITCOIN_BLOCK_HEADER_HEX_LENGTH, hash_hex.len(), hash_hex
+            METHOD, BITCOIN_BLOCK_HASH_HEX_LENGTH, hash_hex.len(), hash_hex
         )));
     }
 
