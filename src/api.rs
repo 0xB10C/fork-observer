@@ -435,7 +435,7 @@ pub fn with_slugs(
 
 #[cfg(test)]
 mod tests {
-    use super::build_routes;
+    use super::{build_routes, data_changed_sse};
     use crate::backend::{BitcoinCoreNode, NodeInfo};
     use crate::config::{BoxedSyncSendNode, Config, Network, PoolIdentification};
     use crate::types::{
@@ -1312,5 +1312,17 @@ mod tests {
         // Nodes that saw the same block are listed together, in node id order.
         assert!(xml.contains("seen by nodes: node-a (id=0), node-b (id=1)"));
         assert!(xml.contains("seen by node: node-c (id=2)"));
+    }
+
+    #[test]
+    fn a_cache_change_is_sent_as_a_named_sse_event() {
+        let rendered = data_changed_sse(7)
+            .expect("the event should serialize")
+            .to_string();
+
+        // The frontend listens for this event name and reads the network id
+        // out of the data.
+        assert!(rendered.contains("event:cache_changed"));
+        assert!(rendered.contains(r#""network_id":7"#));
     }
 }

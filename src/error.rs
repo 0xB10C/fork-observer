@@ -389,4 +389,29 @@ mod tests {
         assert!(JsonRPCError::NotImplemented.source().is_none());
         assert!(ConfigError::NoNetworks.source().is_none());
     }
+
+    #[test]
+    fn an_error_says_what_went_wrong_and_where() {
+        // The messages are what an operator gets to debug with, so they have
+        // to name both the kind of error and the error itself.
+        let rendered = FetchError::DataError("the tip is in the future".to_string()).to_string();
+        assert!(rendered.contains("Invalid data response"));
+        assert!(rendered.contains("the tip is in the future"));
+
+        assert!(DbError::DecodeHex(hex_error())
+            .to_string()
+            .contains("hex decoding error"));
+        assert!(MainError::Config(ConfigError::NoNetworks)
+            .to_string()
+            .contains("config error"));
+        assert!(ConfigError::ReadError(io::Error::other("no such file"))
+            .to_string()
+            .contains("no such file"));
+        assert!(EsploraRESTError::Http("502 Bad Gateway".to_string())
+            .to_string()
+            .contains("502 Bad Gateway"));
+        assert!(JsonRPCError::JsonRpc("-8: nope".to_string())
+            .to_string()
+            .contains("-8: nope"));
+    }
 }

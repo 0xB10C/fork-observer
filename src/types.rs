@@ -8,6 +8,7 @@ use crate::backend::NodeInfo;
 use crate::config::{Countdown, Network};
 
 use corepc_client::bitcoin::blockdata::block::Header;
+use corepc_client::bitcoin::hashes::hex::parse::HexToArrayError;
 use corepc_client::bitcoin::BlockHash;
 use corepc_client::types::model::{ChainTips, ChainTipsStatus};
 use log::warn;
@@ -336,14 +337,19 @@ impl From<ChainTips> for ChainTip {
 }
 
 impl ChainTip {
-    pub fn block_hash(&self) -> BlockHash {
-        BlockHash::from_str(&self.hash).unwrap()
+    /// The tip's block hash. A tip reported by a node carries its hash as an
+    /// unvalidated string, so this can fail.
+    pub fn block_hash(&self) -> Result<BlockHash, HexToArrayError> {
+        BlockHash::from_str(&self.hash)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ChainTipStatus;
+    use super::{ChainTipStatus, HeaderInfo};
+    use corepc_client::bitcoin::blockdata::block::{Header, Version};
+    use corepc_client::bitcoin::hashes::Hash as _;
+    use corepc_client::bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
 
     #[test]
     fn a_chain_tip_status_round_trips_through_its_string() {
@@ -366,5 +372,25 @@ mod tests {
             ChainTipStatus::from("something new".to_string()).to_string(),
             "unknown"
         );
+    }
+
+    #[test]
+    fn a_header_takes_the_miner_it_is_given() {
+        let mut header_info = HeaderInfo {
+            height: 1,
+            header: Header {
+                version: Version::from_consensus(0x2000_0000),
+                prev_blockhash: BlockHash::all_zeros(),
+                merkle_root: TxMerkleNode::all_zeros(),
+                time: 1_600_000_000,
+                bits: CompactTarget::from_consensus(0x207f_ffff),
+                nonce: 1,
+            },
+            miner: String::new(),
+        };
+
+        header_info.update_miner("Some Pool".to_string());
+
+        assert_eq!(header_info.miner, "Some Pool");
     }
 }

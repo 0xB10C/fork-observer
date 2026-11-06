@@ -4,8 +4,13 @@
 
 # Code that talks to a node or another fork-observer over the network, and
 # main.rs, which only wires things together: there are no unit tests here that
-# could catch a mutant.
-exclude_globs = ["src/main.rs", "src/backend/**", "src/jsonrpc.rs"]
+# could catch a mutant. The shared fetching logic in src/backend/mod.rs is
+# mutated - it needs no network.
+exclude_globs = [
+    "src/main.rs",
+    "src/backend/bitcoin_core.rs",
+    "src/backend/electrum.rs",
+]
 
 # All tests live in the library. Skipping the other targets avoids building the
 # benchmarks and the Bitcoin Core backend tests, which start a bitcoind each.
@@ -13,6 +18,15 @@ additional_cargo_test_args = ["--lib", "--", "--skip", "backend::bitcoin_core"]
 
 # Timeouts and intervals are a matter of taste, not of logic.
 skip_calls = ["from_secs"]
+
+# Build the way the CI build and test jobs do, so a local run and the CI run
+# agree on which mutants even compile.
+additional_cargo_args = ["--all-features"]
+
+# A mutant that leaves an argument unused would trip the `strict` feature's
+# deny(warnings) and be reported as unviable rather than tested, so cap the
+# lints for the mutation build.
+cap_lints = true
 
 # Mutants that change the code without changing what it does, so no test can
 # catch them:
@@ -26,6 +40,13 @@ exclude_re = [
     "replace > with >= in lagging_nodes_response",
     # Only decides whether to log a warning.
     "src/db\\.rs:.*in load_treeinfos",
+    # Only decides whether the node coming back is worth an info line.
+    "replace > with .* in GenesisCheck::record",
+    # `<=` instead of `<` only differs for the one instant the retry delay
+    # expires at.
+    "replace < with <= in GenesisCheck::passes",
+    # Both only decide whether a mismatch in the JSON-RPC envelope is logged.
+    "src/jsonrpc\\.rs:.*in Response<T>::check",
     # An EsploraRESTError never wraps another error, so `None` is what the
     # match arms return anyway.
     "src/error\\.rs:.*EsploraRESTError.*::source",

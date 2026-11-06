@@ -328,4 +328,252 @@ mod tests {
             ]
         );
     }
+
+    use super::super::test_chain;
+    use super::super::test_server::{serve, Request, Response};
+    use corepc_client::bitcoin::consensus::serialize;
+    use corepc_client::bitcoin::hashes::Hash as _;
+
+    fn node_for(api_url: &str) -> BlockDn {
+        BlockDn::new(
+            NodeInfo {
+                id: 7,
+                name: "block-dn".to_string(),
+                description: String::new(),
+                implementation: "block-dn".to_string(),
+            },
+            api_url.to_string(),
+        )
+    }
+
+    // `count` headers and the bytes a block-dn header file holds for them.
+    fn header_file(count: u32) -> (Vec<Header>, Vec<u8>) {
+        let headers = test_chain::chain(count);
+        let bytes = headers.iter().flat_map(serialize).collect();
+        (headers, bytes)
+    }
+
+    #[tokio::test]
+    async fn the_status_gives_the_active_tip_and_the_version() {
+        const TIP_HASH: &str = "00000000000000000000000000000000000000000000000000000000000000ab";
+        let server = serve(|request: &Request| match request.path.as_str() {
+            "/status" => Response::ok(&format!(
+                r#"{{"best_block_height": 879000, "best_block_hash": "{}", "version": "block-dn 1.2.3"}}"#,
+                TIP_HASH
+            )),
+            _ => Response::status(404),
+        });
+        let node = node_for(&server.url);
+
+        let tips = node.tips().await.expect("the tips");
+
+        // block-dn only knows the one tip it serves headers for.
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].height, 879_000);
+        assert_eq!(tips[0].hash, TIP_HASH);
+        assert_eq!(tips[0].branchlen, 0);
+        assert_eq!(tips[0].status, ChainTipStatus::Active);
+
+        assert_eq!(node.version().await.expect("the version"), "block-dn 1.2.3");
+        assert_eq!(node.rpc_url(), server.url);
+        assert_eq!(node.info().id, 7);
+        assert_eq!(server.paths(), ["/status", "/status"]);
+    }
+
+    #[tokio::test]
+    async fn a_status_without_a_version_or_without_a_200_is_an_error() {
+        let server = serve(|request: &Request| match request.path.as_str() {
+            "/status" => Response::ok(
+                r#"{"best_block_height": 1, "best_block_hash": "00000000000000000000000000000000000000000000000000000000000000ab"}"#,
+            ),
+            _ => Response::status(500),
+        });
+
+        // The version field is undocumented, so it can be missing.
+        assert!(matches!(
+            node_for(&server.url).version().await,
+            Err(FetchError::BlockDnREST(_))
+        ));
+
+        // A status request that doesn't answer 200.
+        let elsewhere = node_for(&format!("{}/not-block-dn", server.url));
+        assert!(matches!(
+            elsewhere.tips().await,
+            Err(FetchError::BlockDnREST(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_sealed_file_answers_with_the_range_it_was_asked_for() {
+        let (headers, bytes) = header_file(10);
+        let server = serve(move |request: &Request| {
+            if request.path != "/headers/0" || request.range.as_deref() != Some("bytes=400-479") {
+                return Response::status(500);
+            }
+            // The range asked for, plus bytes we didn't ask for.
+            Response::bytes(206, bytes[400..560].to_vec())
+        });
+        let node = node_for(&server.url);
+
+        assert_eq!(
+            node.batch_header_fetch(5, 1).await.expect("the header"),
+            [headers[5]]
+        );
+        assert_eq!(
+            node.block_header_height(5).await.expect("the header"),
+            headers[5]
+        );
+        assert_eq!(
+            node.block_hash(5).await.expect("the hash"),
+            headers[5].block_hash()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_unsealed_tail_is_sliced_out_locally() {
+        let (headers, bytes) = header_file(10);
+        // The tail is streamed whole with a plain 200, ignoring the range.
+        let server = serve(move |_: &Request| Response::bytes(200, bytes.clone()));
+        let node = node_for(&server.url);
+
+        assert_eq!(
+            node.batch_header_fetch(7, 2).await.expect("the headers"),
+            headers[7..9]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_range_past_the_tip_has_no_headers() {
+        let server = serve(|_: &Request| Response::status(416));
+        let node = node_for(&server.url);
+
+        assert!(node
+            .batch_header_fetch(100, 5)
+            .await
+            .expect("no headers")
+            .is_empty());
+        assert!(matches!(
+            node.block_header_height(100).await,
+            Err(FetchError::DataError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn only_whole_headers_are_taken_from_a_file() {
+        let (headers, bytes) = header_file(10);
+        // A tail ending in the middle of a header, as a growing file can.
+        let partial = bytes[..100].to_vec();
+        let server = serve(move |_: &Request| Response::bytes(200, partial.clone()));
+        let node = node_for(&server.url);
+
+        assert_eq!(
+            node.batch_header_fetch(0, 5).await.expect("the header"),
+            [headers[0]]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_range_spanning_two_files_is_fetched_from_both() {
+        // The last 3 headers of one file and the first 3 of the next.
+        let (headers, bytes) = header_file(6);
+        let first_file = bytes[..240].to_vec();
+        let second_file = bytes[240..].to_vec();
+        let server = serve(move |request: &Request| match request.path.as_str() {
+            "/headers/0" => Response::bytes(206, first_file.clone()),
+            "/headers/100000" => Response::bytes(206, second_file.clone()),
+            _ => Response::status(500),
+        });
+        let node = node_for(&server.url);
+
+        assert_eq!(
+            node.batch_header_fetch(99_997, 6)
+                .await
+                .expect("the headers"),
+            headers
+        );
+        assert_eq!(server.paths(), ["/headers/0", "/headers/100000"]);
+    }
+
+    #[tokio::test]
+    async fn a_short_slice_ends_the_fetch_before_the_next_file() {
+        // A range over two files where the first answer is one byte short of
+        // what was asked for, as a CDN serving a growing file can be.
+        let (headers, bytes) = header_file(6);
+        let short_file = bytes[..239].to_vec();
+        let second_file = bytes[240..].to_vec();
+        let server = serve(move |request: &Request| match request.path.as_str() {
+            "/headers/0" => Response::bytes(206, short_file.clone()),
+            "/headers/100000" => Response::bytes(206, second_file.clone()),
+            _ => Response::status(500),
+        });
+        let node = node_for(&server.url);
+
+        // Only the two whole headers of the short answer, and the second file
+        // is left alone.
+        assert_eq!(
+            node.batch_header_fetch(99_997, 6)
+                .await
+                .expect("the headers"),
+            headers[..2]
+        );
+        assert_eq!(server.paths(), ["/headers/0"]);
+    }
+
+    #[tokio::test]
+    async fn a_block_is_served_as_its_bytes_and_its_coinbase_is_checked() {
+        let block = test_chain::block_with_a_coinbase();
+        let hash = block.block_hash();
+        let raw = serialize(&block);
+        let served = raw.clone();
+        let server =
+            serve(
+                move |request: &Request| match request.path == format!("/block/{}", hash) {
+                    true => Response::bytes(200, served.clone()),
+                    false => Response::status(404),
+                },
+            );
+        let node = node_for(&server.url);
+
+        assert_eq!(node.block(&hash).await.expect("the block"), raw);
+        assert_eq!(
+            node.coinbase(&hash, 1).await.expect("the coinbase"),
+            block.txdata[0]
+        );
+
+        // A block the node doesn't have.
+        assert!(matches!(
+            node.block(&BlockHash::all_zeros()).await,
+            Err(FetchError::BlockDnREST(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_block_that_isnt_the_one_asked_for_is_refused() {
+        let raw = serialize(&test_chain::block_with_a_coinbase());
+        // Answers with that block whatever hash is asked for.
+        let server = serve(move |_: &Request| Response::bytes(200, raw.clone()));
+        let node = node_for(&server.url);
+
+        assert!(matches!(
+            node.coinbase(&BlockHash::all_zeros(), 1).await,
+            Err(FetchError::DataError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_block_whose_transactions_dont_match_its_merkle_root_is_refused() {
+        let mut block = test_chain::block_with_a_coinbase();
+        // A transaction the merkle root in the header doesn't account for.
+        let another = block.txdata[0].clone();
+        block.txdata.push(another);
+        let hash = block.block_hash();
+        let raw = serialize(&block);
+        let server = serve(move |_: &Request| Response::bytes(200, raw.clone()));
+        let node = node_for(&server.url);
+
+        assert!(matches!(
+            node.coinbase(&hash, 1).await,
+            Err(FetchError::DataError(_))
+        ));
+    }
 }

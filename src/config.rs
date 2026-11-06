@@ -297,6 +297,12 @@ pub fn load_config() -> Result<Config, ConfigError> {
     parse_config(&config_string)
 }
 
+/// Whether every node of a network is a preferred sync source, which is the
+/// same as none of them being one.
+fn every_node_is_preferred(nodes: usize, preferred: usize) -> bool {
+    nodes > 0 && preferred == nodes
+}
+
 fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
     let toml_config: TomlConfig = toml::from_str(config_str)?;
 
@@ -344,7 +350,7 @@ fn parse_config(config_str: &str) -> Result<Config, ConfigError> {
             }
         }
         // Preferring every node is the same as preferring none.
-        if !nodes.is_empty() && preferred_sync_node_ids.len() == nodes.len() {
+        if every_node_is_preferred(nodes.len(), preferred_sync_node_ids.len()) {
             warn!(
                 "every node on network '{}' sets preferred_sync_source = true, so no node \
                  waits for another to sync headers first",
@@ -1635,6 +1641,54 @@ mod tests {
             "implementation = \"btcd\"\nrpc_user = \"u\"\nrpc_password = \"p\""
         ))
         .is_ok());
+    }
+
+    #[test]
+    fn preferring_every_node_is_the_same_as_preferring_none() {
+        // Worth a warning: nobody is left to wait for the preferred nodes.
+        assert!(every_node_is_preferred(2, 2));
+        // Some nodes still wait for the preferred one.
+        assert!(!every_node_is_preferred(2, 1));
+        assert!(!every_node_is_preferred(2, 0));
+        // A network without nodes isn't preferring anything.
+        assert!(!every_node_is_preferred(0, 0));
+    }
+
+    #[test]
+    fn a_node_is_logged_without_its_password() {
+        let node = toml_test_node("rpc_user = \"forkobserver\"\nrpc_password = \"hunter2\"");
+
+        let logged = node.to_string();
+
+        assert!(logged.contains("id=0"));
+        assert!(logged.contains("name='n'"));
+        assert!(logged.contains("rpc_host='127.0.0.1'"));
+        assert!(logged.contains("rpc_user='forkobserver'"));
+        // The password is only ever logged masked.
+        assert!(logged.contains("rpc_password='***'"));
+        assert!(!logged.contains("hunter2"));
+    }
+
+    #[test]
+    fn a_network_is_logged_with_its_id_name_and_heights() {
+        let network: TomlNetwork = toml::from_str(
+            r#"
+            id = 1
+            name = "Mainnet"
+            description = "a description"
+            min_fork_height = 800000
+            max_interesting_heights = 100
+            nodes = []
+            "#,
+        )
+        .expect("the network should parse");
+
+        let logged = network.to_string();
+
+        assert!(logged.contains("id=1"));
+        assert!(logged.contains("name='Mainnet'"));
+        assert!(logged.contains("min_fork_height=800000"));
+        assert!(logged.contains("max_interesting_heights=100"));
     }
 }
 
