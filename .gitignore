@@ -10,3 +10,12 @@
 /target
 
 config.toml
+
+# Databases written by a local instance
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# cargo-mutants output
+/mutants.out/
+/mutants.out.old/
