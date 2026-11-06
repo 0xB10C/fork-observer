@@ -4,8 +4,18 @@
 
 # Code that talks to a node or another fork-observer over the network, and
 # main.rs, which only wires things together: there are no unit tests here that
-# could catch a mutant.
-exclude_globs = ["src/main.rs", "src/backend/**", "src/jsonrpc.rs"]
+# could catch a mutant. The shared fetching logic in src/backend/mod.rs is
+# mutated - it needs no network.
+exclude_globs = [
+    "src/main.rs",
+    "src/jsonrpc.rs",
+    "src/backend/bitcoin_core.rs",
+    "src/backend/block_dn.rs",
+    "src/backend/btcd.rs",
+    "src/backend/electrum.rs",
+    "src/backend/esplora.rs",
+    "src/backend/mempool_space.rs",
+]
 
 # All tests live in the library. Skipping the other targets avoids building the
 # benchmarks and the Bitcoin Core backend tests, which start a bitcoind each.
