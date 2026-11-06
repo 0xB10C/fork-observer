@@ -9,7 +9,7 @@ mod electrum;
 mod esplora;
 mod mempool_space;
 #[cfg(test)]
-mod test_chain;
+pub(crate) mod test_chain;
 #[cfg(test)]
 mod test_server;
 
