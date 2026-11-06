@@ -8,6 +8,7 @@ use crate::backend::NodeInfo;
 use crate::config::{Countdown, Network};
 
 use corepc_client::bitcoin::blockdata::block::Header;
+use corepc_client::bitcoin::hashes::hex::parse::HexToArrayError;
 use corepc_client::bitcoin::BlockHash;
 use corepc_client::types::model::{ChainTips, ChainTipsStatus};
 use log::warn;
@@ -336,8 +337,10 @@ impl From<ChainTips> for ChainTip {
 }
 
 impl ChainTip {
-    pub fn block_hash(&self) -> BlockHash {
-        BlockHash::from_str(&self.hash).unwrap()
+    /// The tip's block hash. A tip reported by a node carries its hash as an
+    /// unvalidated string, so this can fail.
+    pub fn block_hash(&self) -> Result<BlockHash, HexToArrayError> {
+        BlockHash::from_str(&self.hash)
     }
 }
 
