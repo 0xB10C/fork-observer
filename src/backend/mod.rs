@@ -25,7 +25,7 @@ use crate::types::{ChainTip, ChainTipStatus, HeaderInfo, Tree};
 use async_trait::async_trait;
 use corepc_client::bitcoin::blockdata::block::Header;
 use corepc_client::bitcoin::{BlockHash, Transaction};
-use log::debug;
+use log::{debug, warn};
 use std::cmp::max;
 use std::fmt;
 use std::time::Duration;
@@ -232,10 +232,24 @@ pub trait Node: Sync {
 
         for inactive_tip in tips
             .iter()
-            .filter(|tip| tip.height - tip.branchlen as u64 > min_fork_height)
+            // A branch can't be longer than the height of its tip, so a tip
+            // claiming one isn't something we can walk down.
+            .filter(|tip| tip.height.saturating_sub(tip.branchlen as u64) > min_fork_height)
             .filter(|tip| tip.status != ChainTipStatus::Active)
         {
-            let mut next_header = inactive_tip.block_hash();
+            let mut next_header = match inactive_tip.block_hash() {
+                Ok(hash) => hash,
+                Err(e) => {
+                    warn!(
+                        "{} reported a tip at height {} whose hash '{}' isn't a block hash ({}) - skipping that branch",
+                        self.info(),
+                        inactive_tip.height,
+                        inactive_tip.hash,
+                        e
+                    );
+                    continue;
+                }
+            };
             for i in 0..=inactive_tip.branchlen {
                 {
                     let tree_locked = tree.lock().await;
@@ -394,9 +408,21 @@ mod tests {
             self
         }
 
+        // Reports a tip as given, for the tips a node has no business
+        // reporting.
+        fn raw_tip(mut self, tip: ChainTip) -> Self {
+            self.tips.push(tip);
+            self
+        }
+
         // The header of the branch tip added last.
         fn last_tip_header(&self) -> Header {
-            let hash = self.tips.last().expect("a tip").block_hash();
+            let hash = self
+                .tips
+                .last()
+                .expect("a tip")
+                .block_hash()
+                .expect("a block hash");
             self.fork_headers[&hash]
         }
 
@@ -688,7 +714,12 @@ mod tests {
             .active_tip()
             .fork(7, 2, 100, ChainTipStatus::ValidFork)
             .fork(5, 1, 200, ChainTipStatus::HeadersOnly);
-        let unservable = node.tips.last().expect("a tip").block_hash();
+        let unservable = node
+            .tips
+            .last()
+            .expect("a tip")
+            .block_hash()
+            .expect("a block hash");
         node.unavailable.insert(unservable);
         let known: Vec<(u64, Header)> = (0..=9).map(|h| (h, node.chain[h as usize])).collect();
         let tree = tree_with(&known);
@@ -761,5 +792,48 @@ mod tests {
             info.to_string(),
             "Node(id=3, name='block-dn.org', implementation='block-dn')"
         );
+    }
+
+    #[tokio::test]
+    async fn a_tip_whose_hash_isnt_a_block_hash_is_skipped() {
+        let node = FakeNode::new(chain_of(9))
+            .active_tip()
+            .fork(7, 2, 100, ChainTipStatus::ValidFork)
+            .raw_tip(ChainTip {
+                height: 9,
+                hash: "not a block hash".to_string(),
+                branchlen: 2,
+                status: ChainTipStatus::ValidFork,
+            });
+        let known: Vec<(u64, Header)> = (0..=9).map(|h| (h, node.chain[h as usize])).collect();
+        let tree = tree_with(&known);
+
+        // The branch that is usable is still fetched.
+        let headers = node
+            .new_nonactive_headers(&node.tips, &tree, 5)
+            .await
+            .expect("fetching headers");
+
+        let heights: Vec<u64> = headers.iter().map(|h| h.height).collect();
+        assert_eq!(heights, [9, 8]);
+    }
+
+    #[tokio::test]
+    async fn a_tip_with_a_branch_longer_than_its_height_is_skipped() {
+        // No branch can be longer than the height of its tip.
+        let chain = chain_of(9);
+        let node = FakeNode::new(chain.clone()).active_tip().raw_tip(ChainTip {
+            height: 5,
+            hash: chain[5].block_hash().to_string(),
+            branchlen: 10,
+            status: ChainTipStatus::ValidFork,
+        });
+        let tree = tree_with(&[]);
+
+        assert!(node
+            .new_nonactive_headers(&node.tips, &tree, 0)
+            .await
+            .expect("fetching headers")
+            .is_empty());
     }
 }
