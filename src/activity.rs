@@ -615,6 +615,11 @@ pub async fn archive_and_purge(
     result
 }
 
+/// The timestamp that events older than `days` are archived and purged at.
+fn retention_cutoff(now: u64, days: u64) -> u64 {
+    now.saturating_sub(days * 24 * 60 * 60)
+}
+
 /// Periodically archives and purges events older than each network's
 /// retention. `retentions` holds `(network id, retention in days)` pairs.
 pub async fn run_retention(
@@ -627,7 +632,7 @@ pub async fn run_retention(
         // The first tick is immediate: archive on startup, then every interval.
         interval.tick().await;
         for (network_id, days) in retentions.iter() {
-            let cutoff = unix_time_now().saturating_sub(days * 24 * 60 * 60);
+            let cutoff = retention_cutoff(unix_time_now(), *days);
             match archive_and_purge(&activity.db, &archive_dir, *network_id, cutoff).await {
                 Ok(0) => debug!(
                     "no activity events of network {} older than {} days to archive",
@@ -661,7 +666,9 @@ pub fn unix_time_now() -> u64 {
 fn year_month(unix_ts: u64) -> String {
     let days = (unix_ts / 86400) as i64;
     let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    // `unix_ts` is unsigned, so z is always positive: no correction for
+    // negative days needed.
+    let era = z / 146097;
     let doe = (z - era * 146097) as u64; // day of era
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // year of era
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year (Mar 1 based)
@@ -1177,10 +1184,25 @@ mod tests {
 
     #[test]
     fn year_month_from_unix_time() {
-        assert_eq!(year_month(0), "1970-01");
-        assert_eq!(year_month(1751500800), "2025-07"); // 2025-07-03
-        assert_eq!(year_month(1735689599), "2024-12"); // 2024-12-31 23:59:59
-        assert_eq!(year_month(1735689600), "2025-01"); // 2025-01-01 00:00:00
+        // The algorithm counts years from March and has the leap year and
+        // century rules, so those edges are what matters.
+        for (unix_ts, expected) in [
+            (0u64, "1970-01"),          // the epoch
+            (86_399, "1970-01"),        // the last second of its first day
+            (86_400, "1970-01"),        // its second day
+            (951_782_400, "2000-02"),   // a leap day
+            (951_868_800, "2000-03"),   // where the algorithm's year starts
+            (1_735_689_599, "2024-12"), // 2024-12-31 23:59:59 ...
+            (1_735_689_600, "2025-01"), // ... and a second later
+            (1_751_500_800, "2025-07"),
+            (1_709_164_800, "2024-02"),  // another leap day
+            (4_107_456_000, "2100-02"),  // 2100 is no leap year, so this ...
+            (4_107_542_400, "2100-03"),  // ... Feb 28 is followed by Mar 1
+            (13_569_465_600, "2400-01"), // 2400 is one again
+            (253_370_851_200, "9999-01"),
+        ] {
+            assert_eq!(year_month(unix_ts), expected, "for timestamp {}", unix_ts);
+        }
     }
 
     #[test]
@@ -1200,5 +1222,38 @@ mod tests {
             details,
             serde_json::json!({"hash": "aa", "height": 100, "status": "valid-fork"})
         );
+    }
+
+    #[tokio::test]
+    async fn the_writer_persists_events_and_stops_with_its_senders() {
+        let activity = test_activity().await;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let writer = tokio::spawn(run_activity_writer(activity.clone(), rx));
+
+        tx.send(event(
+            0,
+            1,
+            ActivityEventKind::TipAdded {
+                hash: "aa".to_string(),
+                height: 10,
+                status: "valid-fork".to_string(),
+            },
+        ))
+        .expect("the writer should be receiving");
+        drop(tx);
+
+        // The writer returns once all senders are gone, ...
+        writer.await.expect("the writer shouldn't panic");
+        // ... having written what it received.
+        assert_eq!(activity.recent_events(0, 10).await.len(), 1);
+    }
+
+    #[test]
+    fn retention_cutoff_is_the_given_number_of_days_ago() {
+        let now = 1_700_000_000;
+        assert_eq!(retention_cutoff(now, 1), now - 24 * 60 * 60);
+        assert_eq!(retention_cutoff(now, 90), now - 90 * 24 * 60 * 60);
+        // A retention reaching back past the epoch keeps everything.
+        assert_eq!(retention_cutoff(100, 90), 0);
     }
 }
