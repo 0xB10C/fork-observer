@@ -350,10 +350,11 @@ cargo mutants -j 8                             # in parallel
 cargo mutants --in-diff <(git diff main)       # only what a branch changed
 ```
 
-`.cargo/mutants.toml` configures which code is mutated: the backends,
-`src/jsonrpc.rs` and `src/main.rs` are left out, as they talk to nodes or only
-wire things together, and a few mutants that provably don't change behaviour
-are excluded by name there.
+`.cargo/mutants.toml` configures which code is mutated. Left out are the
+Bitcoin Core and Electrum backends, whose tests need a node to talk to, and
+`src/main.rs`, which only wires things together; the other backends are
+covered with a local test server. A handful of mutants that provably don't
+change behaviour are excluded by name there, each with its reason.
 
 Some mutants turn a loop into an endless one. The tests catch those by
 hanging, which is reported as `TIMEOUT` rather than as caught.
