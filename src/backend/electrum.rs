@@ -8,7 +8,6 @@ use electrum_client::{
     Client as ElectrumClient, ConfigBuilder as ElectrumClientConfigBuilder, ElectrumApi,
 };
 use std::sync::OnceLock;
-use std::thread::sleep;
 use std::time::Duration;
 
 pub struct Electrum {
@@ -26,37 +25,29 @@ impl Electrum {
         }
     }
 
-    fn get_client(&self) -> &ElectrumClient {
-        self.client.get_or_init(|| {
-            const ELECTRUM_RECONNECT_DURATION: Duration = Duration::from_secs(60);
-            let config = ElectrumClientConfigBuilder::new()
-                .timeout(Some(Duration::from_secs(10)))
-                .retry(2)
-                .validate_domain(false)
-                .build();
+    /// The connection to the server, opened on first use. Failing to connect
+    /// is returned to the caller rather than retried here: the node task tries
+    /// again at the next poll, the same way it does for every other backend.
+    fn get_client(&self) -> Result<&ElectrumClient, FetchError> {
+        if let Some(client) = self.client.get() {
+            return Ok(client);
+        }
 
-            loop {
-                match ElectrumClient::from_config(&self.url, config.clone()) {
-                    Ok(client) => {
-                        log::info!(
-                            "Connected to Electrum server {} ({})",
-                            self.info.name,
-                            self.url
-                        );
-                        return client;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Could not connect to Electrum server {}. Retrying in {:?}. Error: {}",
-                            self.url,
-                            ELECTRUM_RECONNECT_DURATION,
-                            e
-                        );
-                        sleep(ELECTRUM_RECONNECT_DURATION);
-                    }
-                }
-            }
-        })
+        let config = ElectrumClientConfigBuilder::new()
+            .timeout(Some(Duration::from_secs(10)))
+            .retry(2)
+            .validate_domain(false)
+            .build();
+        let client = ElectrumClient::from_config(&self.url, config)?;
+        log::info!(
+            "Connected to Electrum server {} ({})",
+            self.info.name,
+            self.url
+        );
+        // A call racing with this one may have set the client first, which
+        // only means dropping the one opened here.
+        let _ = self.client.set(client);
+        Ok(self.client.get().expect("the client was just set"))
     }
 }
 
@@ -79,7 +70,7 @@ impl Node for Electrum {
     }
 
     async fn version(&self) -> Result<String, FetchError> {
-        let client = self.get_client();
+        let client = self.get_client()?;
         let response = client.server_features()?;
         Ok(response.server_version)
     }
@@ -92,19 +83,19 @@ impl Node for Electrum {
     }
 
     async fn block_header_height(&self, height: u64) -> Result<Header, FetchError> {
-        let client = self.get_client();
+        let client = self.get_client()?;
         let header = client.block_header(height as usize)?;
         Ok(header)
     }
 
     async fn block_hash(&self, height: u64) -> Result<BlockHash, FetchError> {
-        let client = self.get_client();
+        let client = self.get_client()?;
         let header = client.block_header(height as usize)?;
         Ok(header.block_hash())
     }
 
     async fn tips(&self) -> Result<Vec<ChainTip>, FetchError> {
-        let client = self.get_client();
+        let client = self.get_client()?;
 
         // Check if we got a header notification since we checked last time.
         let mut last_header_notification = None;
@@ -156,7 +147,7 @@ impl Node for Electrum {
         let hash_electrum = self.block_hash(height).await?;
 
         if *hash == hash_electrum {
-            let client = self.get_client();
+            let client = self.get_client()?;
             let txid = client.txid_from_pos(height as usize, /*coinbase*/ 0)?;
             return Ok(client.transaction_get(&txid)?);
         }
@@ -179,9 +170,33 @@ impl Node for Electrum {
         start_height: u64,
         count: u64,
     ) -> Result<Vec<Header>, FetchError> {
-        let client = self.get_client();
+        let client = self.get_client()?;
         Ok(client
             .block_headers(start_height as usize, count as usize)?
             .headers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_server_that_cant_be_reached_is_an_error() {
+        // Nothing listens on this port.
+        let node = Electrum::new(
+            NodeInfo {
+                id: 3,
+                name: "electrum".to_string(),
+                description: String::new(),
+                implementation: "electrum".to_string(),
+            },
+            "tcp://127.0.0.1:1".to_string(),
+        );
+
+        assert!(matches!(
+            node.tips().await,
+            Err(FetchError::ElectrumClient(_))
+        ));
     }
 }
