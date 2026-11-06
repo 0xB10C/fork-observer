@@ -9,6 +9,8 @@ mod electrum;
 mod esplora;
 mod mempool_space;
 #[cfg(test)]
+mod test_chain;
+#[cfg(test)]
 mod test_server;
 
 pub use bitcoin_core::BitcoinCoreNode;
@@ -291,37 +293,17 @@ impl fmt::Display for NodeInfo {
 
 #[cfg(test)]
 mod tests {
+    use super::test_chain::{chain, header};
     use super::*;
     use crate::types::TreeInfo;
-    use corepc_client::bitcoin::blockdata::block::Version;
-    use corepc_client::bitcoin::hashes::Hash as _;
-    use corepc_client::bitcoin::{CompactTarget, TxMerkleNode};
     use petgraph::graph::DiGraph;
     use std::collections::{BTreeSet, HashMap, HashSet};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    // A structurally valid (PoW-invalid) header. The nonce gives headers that
-    // share a parent distinct block hashes.
-    fn header(prev: BlockHash, nonce: u32) -> Header {
-        Header {
-            version: Version::from_consensus(0x2000_0000),
-            prev_blockhash: prev,
-            merkle_root: TxMerkleNode::all_zeros(),
-            time: 1_600_000_000,
-            bits: CompactTarget::from_consensus(0x207f_ffff),
-            nonce,
-        }
-    }
-
     // A chain of headers at the heights 0..=max_height.
     fn chain_of(max_height: u64) -> Vec<Header> {
-        let mut chain = vec![header(BlockHash::all_zeros(), 0)];
-        for height in 1..=max_height {
-            let prev = chain[chain.len() - 1].block_hash();
-            chain.push(header(prev, height as u32));
-        }
-        chain
+        chain(max_height as u32 + 1)
     }
 
     // A tree that knows the given (height, header) pairs. Only the hash index

@@ -329,14 +329,10 @@ mod tests {
         );
     }
 
+    use super::super::test_chain;
     use super::super::test_server::{serve, Request, Response};
-    use corepc_client::bitcoin::blockdata::block::Version;
     use corepc_client::bitcoin::consensus::serialize;
     use corepc_client::bitcoin::hashes::Hash as _;
-    use corepc_client::bitcoin::{
-        absolute, transaction, Amount, CompactTarget, OutPoint, ScriptBuf, Sequence, TxIn,
-        TxMerkleNode, TxOut, Witness,
-    };
 
     fn node_for(api_url: &str) -> BlockDn {
         BlockDn::new(
@@ -352,53 +348,9 @@ mod tests {
 
     // `count` headers and the bytes a block-dn header file holds for them.
     fn header_file(count: u32) -> (Vec<Header>, Vec<u8>) {
-        let mut headers: Vec<Header> = Vec::new();
-        let mut prev = BlockHash::all_zeros();
-        for nonce in 0..count {
-            let header = Header {
-                version: Version::from_consensus(0x2000_0000),
-                prev_blockhash: prev,
-                merkle_root: TxMerkleNode::all_zeros(),
-                time: 1_600_000_000,
-                bits: CompactTarget::from_consensus(0x207f_ffff),
-                nonce,
-            };
-            prev = header.block_hash();
-            headers.push(header);
-        }
+        let headers = test_chain::chain(count);
         let bytes = headers.iter().flat_map(serialize).collect();
         (headers, bytes)
-    }
-
-    // A block with a single (coinbase) transaction and a matching merkle root.
-    fn block_with_a_coinbase() -> Block {
-        let coinbase = Transaction {
-            version: transaction::Version::ONE,
-            lock_time: absolute::LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: OutPoint::null(),
-                script_sig: ScriptBuf::from_bytes(vec![0x03, 0x01, 0x02, 0x03]),
-                sequence: Sequence::MAX,
-                witness: Witness::new(),
-            }],
-            output: vec![TxOut {
-                value: Amount::from_sat(50 * 100_000_000),
-                script_pubkey: ScriptBuf::new(),
-            }],
-        };
-        let mut block = Block {
-            header: Header {
-                version: Version::from_consensus(0x2000_0000),
-                prev_blockhash: BlockHash::all_zeros(),
-                merkle_root: TxMerkleNode::all_zeros(),
-                time: 1_600_000_000,
-                bits: CompactTarget::from_consensus(0x207f_ffff),
-                nonce: 42,
-            },
-            txdata: vec![coinbase],
-        };
-        block.header.merkle_root = block.compute_merkle_root().expect("a merkle root");
-        block
     }
 
     #[tokio::test]
@@ -569,7 +521,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_block_is_served_as_its_bytes_and_its_coinbase_is_checked() {
-        let block = block_with_a_coinbase();
+        let block = test_chain::block_with_a_coinbase();
         let hash = block.block_hash();
         let raw = serialize(&block);
         let served = raw.clone();
@@ -597,7 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_block_that_isnt_the_one_asked_for_is_refused() {
-        let raw = serialize(&block_with_a_coinbase());
+        let raw = serialize(&test_chain::block_with_a_coinbase());
         // Answers with that block whatever hash is asked for.
         let server = serve(move |_: &Request| Response::bytes(200, raw.clone()));
         let node = node_for(&server.url);
@@ -610,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_block_whose_transactions_dont_match_its_merkle_root_is_refused() {
-        let mut block = block_with_a_coinbase();
+        let mut block = test_chain::block_with_a_coinbase();
         // A transaction the merkle root in the header doesn't account for.
         let another = block.txdata[0].clone();
         block.txdata.push(another);
