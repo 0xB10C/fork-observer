@@ -453,7 +453,11 @@ pub async fn insert_new_headers_into_tree(tree: &Tree, new_headers: &[HeaderInfo
 mod tests {
     use super::*;
     use crate::backend::NodeInfo;
-    use corepc_client::bitcoin::BlockHash;
+    use crate::types::ChainTipStatus;
+    use corepc_client::bitcoin::blockdata::block::{Header, Version};
+    use corepc_client::bitcoin::hashes::Hash;
+    use corepc_client::bitcoin::{BlockHash, CompactTarget, TxMerkleNode};
+    use petgraph::graph::DiGraph;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -659,5 +663,216 @@ mod tests {
         let block_cache = &locked.get(&network_id).unwrap().block_cache;
         assert!(block_cache.contains_key(&keep));
         assert!(!block_cache.contains_key(&drop_it));
+    }
+
+    fn node_info(id: u32, name: &str) -> NodeInfo {
+        NodeInfo {
+            id,
+            name: name.to_string(),
+            description: "".to_string(),
+            implementation: "".to_string(),
+        }
+    }
+
+    fn cache_with(header_infos_json: Vec<HeaderInfoJson>, node_data: NodeData) -> Cache {
+        Cache {
+            header_infos_json,
+            node_data,
+            forks: vec![],
+            stale_blocks: vec![],
+            block_cache: HashMap::new(),
+            recent_miners: vec![],
+        }
+    }
+
+    // A structurally valid (PoW-invalid) header. The nonce gives the headers
+    // distinct block hashes.
+    fn test_header(nonce: u32) -> Header {
+        Header {
+            version: Version::from_consensus(0x2000_0000),
+            prev_blockhash: BlockHash::all_zeros(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: 1_600_000_000,
+            bits: CompactTarget::from_consensus(0x207f_ffff),
+            nonce,
+        }
+    }
+
+    fn header_info(height: u64, nonce: u32) -> HeaderInfo {
+        HeaderInfo {
+            height,
+            header: test_header(nonce),
+            miner: MINER_UNKNOWN.to_string(),
+        }
+    }
+
+    fn chain_tip(height: u64, status: ChainTipStatus) -> ChainTip {
+        ChainTip {
+            height,
+            hash: format!("tip at height {}", height),
+            branchlen: 0,
+            status,
+        }
+    }
+
+    async fn cached_network(caches: &Caches, network_id: u32, cache: Cache) {
+        caches.lock().await.insert(network_id, cache);
+    }
+
+    #[tokio::test]
+    async fn active_tip_heights_only_reports_the_active_tip() {
+        let network_id: u32 = 0;
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        let tips = vec![
+            chain_tip(100, ChainTipStatus::Active),
+            chain_tip(105, ChainTipStatus::ValidFork),
+        ];
+        let mut node_data: NodeData = BTreeMap::new();
+        node_data.insert(
+            0,
+            NodeDataJson::new(node_info(0, "with tips"), &tips, "".to_string(), 0, true),
+        );
+        node_data.insert(
+            1,
+            NodeDataJson::new(node_info(1, "without tips"), &[], "".to_string(), 0, true),
+        );
+        cached_network(&caches, network_id, cache_with(vec![], node_data)).await;
+
+        let heights = active_tip_heights(network_id, &caches).await;
+
+        // The higher valid-fork tip isn't the node's active tip, and the node
+        // without tips isn't in the map at all.
+        assert_eq!(heights.len(), 1);
+        assert_eq!(heights.get(&0), Some(&100));
+    }
+
+    #[tokio::test]
+    async fn a_miner_update_only_touches_the_header_it_is_for() {
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        let mined = header_info(1, 1);
+        let other = header_info(1, 2);
+        let headers = vec![
+            HeaderInfoJson::new(&mined, 0, usize::MAX),
+            HeaderInfoJson::new(&other, 1, 0),
+        ];
+        cached_network(&caches, network_id, cache_with(headers, BTreeMap::new())).await;
+
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::HeaderMiner {
+                header_info: HeaderInfo {
+                    miner: "Miner A".to_string(),
+                    ..mined
+                },
+            },
+            &dummy_sender,
+        )
+        .await;
+
+        let locked = caches.lock().await;
+        let cached = &locked.get(&network_id).unwrap().header_infos_json;
+        assert_eq!(cached[0].miner, "Miner A");
+        assert_eq!(cached[1].miner, MINER_UNKNOWN);
+    }
+
+    #[tokio::test]
+    async fn the_cache_remembers_the_last_five_miners() {
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        cached_network(&caches, network_id, cache_with(vec![], BTreeMap::new())).await;
+
+        for i in 0..7u32 {
+            update_cache(
+                &caches,
+                network_id,
+                CacheUpdate::HeaderMiner {
+                    header_info: HeaderInfo {
+                        miner: format!("Miner {}", i),
+                        ..header_info(i as u64, i)
+                    },
+                },
+                &dummy_sender,
+            )
+            .await;
+        }
+
+        let locked = caches.lock().await;
+        let miners: Vec<String> = locked
+            .get(&network_id)
+            .unwrap()
+            .recent_miners
+            .iter()
+            .map(|(_, miner)| miner.clone())
+            .collect();
+        assert_eq!(
+            miners,
+            ["Miner 2", "Miner 3", "Miner 4", "Miner 5", "Miner 6"]
+        );
+    }
+
+    #[tokio::test]
+    async fn node_tips_below_the_oldest_cached_header_are_dropped() {
+        let network_id: u32 = 0;
+        let (dummy_sender, _) = broadcast::channel(2);
+        let caches: Caches = Arc::new(Mutex::new(BTreeMap::new()));
+        // The oldest header the cache knows about is at height 100, so a tip
+        // below that isn't something the header tree could show.
+        let oldest = header_info(100, 1);
+        let mut node_data: NodeData = BTreeMap::new();
+        node_data.insert(
+            0,
+            NodeDataJson::new(node_info(0, "node"), &[], "".to_string(), 0, true),
+        );
+        cached_network(
+            &caches,
+            network_id,
+            cache_with(vec![HeaderInfoJson::new(&oldest, 0, usize::MAX)], node_data),
+        )
+        .await;
+
+        update_cache(
+            &caches,
+            network_id,
+            CacheUpdate::NodeTips {
+                node_id: 0,
+                tips: vec![
+                    chain_tip(99, ChainTipStatus::ValidFork),
+                    chain_tip(100, ChainTipStatus::Active),
+                ],
+            },
+            &dummy_sender,
+        )
+        .await;
+
+        let locked = caches.lock().await;
+        let tips = &locked.get(&network_id).unwrap().node_data[&0].tips;
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].height, 100);
+    }
+
+    #[tokio::test]
+    async fn headers_are_inserted_once_and_connected_to_their_parent() {
+        let tree: Tree = Arc::new(Mutex::new((DiGraph::new(), HashMap::new())));
+        let root = header_info(0, 1);
+        let child = HeaderInfo {
+            header: Header {
+                prev_blockhash: root.header.block_hash(),
+                ..test_header(2)
+            },
+            ..header_info(1, 2)
+        };
+        let headers = [root, child];
+
+        assert!(insert_new_headers_into_tree(&tree, &headers).await);
+        // The same headers again change nothing.
+        assert!(!insert_new_headers_into_tree(&tree, &headers).await);
+
+        let locked = tree.lock().await;
+        assert_eq!(locked.0.node_count(), 2);
+        assert_eq!(locked.0.edge_count(), 1);
     }
 }
