@@ -175,3 +175,79 @@ async fn load_header_infos(db: Db, network: u32) -> Result<Vec<HeaderInfo>, DbEr
 
     Ok(headers)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::test_chain::{block_with_a_coinbase, chain};
+    use rusqlite::Connection;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn test_db() -> Db {
+        let db: Db = Arc::new(Mutex::new(
+            Connection::open_in_memory().expect("in-memory database"),
+        ));
+        setup_db(db.clone()).await.expect("setup");
+        db
+    }
+
+    #[tokio::test]
+    async fn headers_are_written_and_read_back_as_a_tree() {
+        let db = test_db().await;
+        let headers: Vec<HeaderInfo> = chain(4)
+            .into_iter()
+            .enumerate()
+            .map(|(height, header)| HeaderInfo {
+                height: height as u64,
+                header,
+                miner: String::new(),
+            })
+            .collect();
+        write_to_db(&headers, db.clone(), 1).await.expect("write");
+        // Another network's headers must stay out of the tree below.
+        let other = HeaderInfo {
+            height: 0,
+            header: block_with_a_coinbase().header,
+            miner: String::new(),
+        };
+        write_to_db(&vec![other.clone()], db.clone(), 2)
+            .await
+            .expect("write");
+
+        let (graph, index) = load_treeinfos(db.clone(), 1).await.expect("load");
+
+        assert_eq!(graph.node_count(), headers.len());
+        // The headers are connected to their parents, so the chain has one
+        // root and one tip.
+        assert_eq!(graph.externals(petgraph::Direction::Incoming).count(), 1);
+        assert_eq!(graph.externals(petgraph::Direction::Outgoing).count(), 1);
+        assert!(index.contains_key(&headers[2].header.block_hash()));
+        assert!(!index.contains_key(&other.header.block_hash()));
+    }
+
+    #[tokio::test]
+    async fn the_miner_of_a_written_header_can_be_updated() {
+        let db = test_db().await;
+        let header = chain(1)[0];
+        let hash = header.block_hash();
+        write_to_db(
+            &vec![HeaderInfo {
+                height: 0,
+                header,
+                miner: String::new(),
+            }],
+            db.clone(),
+            1,
+        )
+        .await
+        .expect("write");
+
+        update_miner(db.clone(), 1, &hash, "Some Pool".to_string())
+            .await
+            .expect("update");
+
+        let (graph, _) = load_treeinfos(db.clone(), 1).await.expect("load");
+        assert_eq!(graph.raw_nodes()[0].weight.miner, "Some Pool");
+    }
+}
