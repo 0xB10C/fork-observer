@@ -17,6 +17,8 @@ pub struct Request {
     pub path: String,
     /// The `Range` header, if the request had one.
     pub range: Option<String>,
+    /// The request body, empty unless the backend posted one.
+    pub body: String,
 }
 
 /// What the server answers with.
@@ -118,18 +120,28 @@ fn read_request<R: BufRead>(reader: &mut R) -> Request {
         .to_string();
 
     let mut range = None;
+    let mut body_len = 0;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).expect("a header line") == 0 || line == "\r\n" {
             break;
         }
         let (name, value) = line.split_once(':').unwrap_or(("", ""));
-        if name.to_lowercase() == "range" {
-            range = Some(value.trim().to_string());
+        match name.to_lowercase().as_str() {
+            "range" => range = Some(value.trim().to_string()),
+            "content-length" => body_len = value.trim().parse().unwrap_or(0),
+            _ => (),
         }
     }
 
-    Request { path, range }
+    let mut body = vec![0u8; body_len];
+    reader.read_exact(&mut body).expect("the body");
+
+    Request {
+        path,
+        range,
+        body: String::from_utf8_lossy(&body).to_string(),
+    }
 }
 
 fn write_response<W: Write>(stream: &mut W, response: &Response) -> std::io::Result<()> {
