@@ -371,3 +371,31 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ChainTipStatus;
+
+    #[test]
+    fn a_chain_tip_status_round_trips_through_its_string() {
+        for status in [
+            ChainTipStatus::Active,
+            ChainTipStatus::Invalid,
+            ChainTipStatus::HeadersOnly,
+            ChainTipStatus::ValidHeaders,
+            ChainTipStatus::ValidFork,
+            ChainTipStatus::Unknown,
+        ] {
+            let as_string = status.to_string();
+            assert_eq!(
+                ChainTipStatus::from(as_string.clone()).to_string(),
+                as_string
+            );
+        }
+        // Any other status a node might report.
+        assert_eq!(
+            ChainTipStatus::from("something new".to_string()).to_string(),
+            "unknown"
+        );
+    }
+}
